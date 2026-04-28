@@ -68,12 +68,12 @@ function LayoutContextInner(params: { children: ReactNode }) {
           return true;
         }
       }
-      if (response?.headers?.get('onboarding')) {
-        window.location.href = isGeneral
-          ? '/launches?onboarding=true'
-          : '/analytics?onboarding=true';
-        return true;
-      }
+//      if (response?.headers?.get('onboarding')) {
+//        window.location.href = isGeneral
+//          ? '/launches?onboarding=true'
+//          : '/analytics?onboarding=true';
+//        return true;
+//      }
 
       if (response?.headers?.get('reload')) {
         window.location.reload();

@@ -924,6 +924,7 @@ enum Provider {
   FARCASTER
   WALLET
   GENERIC
+  X
 }
 
 enum Role {

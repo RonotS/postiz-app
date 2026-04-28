@@ -42,9 +42,11 @@ export function Register() {
   const fetch = useFetch();
   const [provider] = useState(getQuery?.get('provider')?.toUpperCase());
   const [code, setCode] = useState(getQuery?.get('code') || '');
-  const [show, setShow] = useState(false);
+  const [state] = useState(getQuery?.get('state') || '');
+  const [tokenFromUrl] = useState(getQuery?.get('token') || '');
+  const [show, setShow] = useState(!!tokenFromUrl);
   useEffect(() => {
-    if (provider && code) {
+    if (provider && code && !tokenFromUrl) {
       load();
     }
   }, []);
@@ -54,6 +56,7 @@ export function Register() {
         method: 'POST',
         body: JSON.stringify({
           code,
+          state,
         }),
       })
     ).json();
@@ -61,15 +64,15 @@ export function Register() {
       setCode(token);
       setShow(true);
     }
-  }, [provider, code]);
-  if (!code && !provider) {
+  }, [provider, code, state]);
+  if (!code && !provider && !tokenFromUrl) {
     return <RegisterAfter token="" provider="LOCAL" />;
   }
   if (!show) {
     return <LoadingComponent />;
   }
   return (
-    <RegisterAfter token={code} provider={provider?.toUpperCase() || 'LOCAL'} />
+    <RegisterAfter token={tokenFromUrl || code} provider={provider?.toUpperCase() || 'LOCAL'} />
   );
 }
 function getHelpfulReasonForRegistrationFailure(httpCode: number) {

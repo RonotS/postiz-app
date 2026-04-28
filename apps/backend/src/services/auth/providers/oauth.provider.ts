@@ -1,94 +1,87 @@
+import { TwitterApi } from 'twitter-api-v2';
 import {
   AuthProvider,
   AuthProviderAbstract,
 } from '@gitroom/backend/services/auth/providers.interface';
+import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 
-@AuthProvider({ provider: 'GENERIC' })
+@AuthProvider({ provider: 'X' })
 export class OauthProvider extends AuthProviderAbstract {
   private getConfig() {
-    const {
-      POSTIZ_OAUTH_AUTH_URL,
-      POSTIZ_OAUTH_CLIENT_ID,
-      POSTIZ_OAUTH_CLIENT_SECRET,
-      POSTIZ_OAUTH_TOKEN_URL,
-      POSTIZ_OAUTH_USERINFO_URL,
-      FRONTEND_URL,
-    } = process.env;
+    const { X_API_KEY, X_API_SECRET, FRONTEND_URL } = process.env;
 
-    if (
-      !POSTIZ_OAUTH_USERINFO_URL ||
-      !POSTIZ_OAUTH_TOKEN_URL ||
-      !POSTIZ_OAUTH_CLIENT_ID ||
-      !POSTIZ_OAUTH_CLIENT_SECRET ||
-      !POSTIZ_OAUTH_AUTH_URL ||
-      !FRONTEND_URL
-    ) {
-      throw new Error('POSTIZ_OAUTH environment variables are not set');
+    if (!X_API_KEY || !X_API_SECRET || !FRONTEND_URL) {
+      throw new Error('X_API_KEY, X_API_SECRET, and FRONTEND_URL must be set');
     }
 
     return {
-      authUrl: POSTIZ_OAUTH_AUTH_URL,
-      clientId: POSTIZ_OAUTH_CLIENT_ID,
-      clientSecret: POSTIZ_OAUTH_CLIENT_SECRET,
-      tokenUrl: POSTIZ_OAUTH_TOKEN_URL,
-      userInfoUrl: POSTIZ_OAUTH_USERINFO_URL,
+      appKey: X_API_KEY,
+      appSecret: X_API_SECRET,
       frontendUrl: FRONTEND_URL,
     };
   }
 
-  generateLink(): string {
-    const { authUrl, clientId, frontendUrl } = this.getConfig();
-    const params = new URLSearchParams({
-      client_id: clientId,
-      scope: 'openid profile email',
-      response_type: 'code',
-      redirect_uri: `${frontendUrl}/settings`,
+  async generateLink(): Promise<string> {
+    const { appKey, appSecret, frontendUrl } = this.getConfig();
+    const client = new TwitterApi({
+      appKey,
+      appSecret,
     });
 
-    return `${authUrl}?${params.toString()}`;
+    const { url, oauth_token, oauth_token_secret } = await client.generateAuthLink(
+      `${frontendUrl}/auth/login?provider=X`,
+      {
+        authAccessType: 'write',
+        linkMode: 'authenticate',
+        forceLogin: false,
+      }
+    );
+
+    await ioRedis.set(`x-login:${oauth_token}`, oauth_token_secret, 'EX', 600);
+
+    return url;
   }
 
-  async getToken(code: string, _redirectUri?: string): Promise<string> {
-    const { tokenUrl, clientId, clientSecret, frontendUrl } = this.getConfig();
-    const response = await fetch(`${tokenUrl}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Accept: 'application/json',
-      },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        client_id: clientId,
-        client_secret: clientSecret,
-        code,
-        redirect_uri: `${frontendUrl}/settings`,
-      }),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`Token request failed: ${error}`);
+  async getToken(code: string, _redirectUri?: string, state?: string) {
+    const { appKey, appSecret } = this.getConfig();
+    if (!state) {
+      throw new Error('Missing X login state');
     }
 
-    const { access_token } = await response.json();
-    return access_token;
+    const oauthTokenSecret = await ioRedis.get(`x-login:${state}`);
+    if (!oauthTokenSecret) {
+      throw new Error('X login session expired, please try again');
+    }
+
+    const startingClient = new TwitterApi({
+      appKey,
+      appSecret,
+      accessToken: state,
+      accessSecret: oauthTokenSecret,
+    });
+
+    const { accessToken, accessSecret } = await startingClient.login(code);
+    return `${accessToken}:${accessSecret}`;
   }
 
-  async getUser(access_token: string): Promise<{ email: string; id: string }> {
-    const { userInfoUrl } = this.getConfig();
-    const response = await fetch(`${userInfoUrl}`, {
-      headers: {
-        Authorization: `Bearer ${access_token}`,
-        Accept: 'application/json',
-      },
+  async getUser(accessToken: string): Promise<{ email: string; id: string }> {
+    const { appKey, appSecret } = this.getConfig();
+    const [token, tokenSecret] = accessToken.split(':');
+    const client = new TwitterApi({
+      appKey,
+      appSecret,
+      accessToken: token,
+      accessSecret: tokenSecret,
     });
 
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`User info request failed: ${error}`);
-    }
+    const data: any = await client.v1.verifyCredentials({
+      include_email: true,
+      skip_status: true,
+    });
 
-    const { email, sub: id } = await response.json();
+    const id = String(data.id_str || data.id || '');
+    const email = String(data.email || `${data.screen_name || id}@x.local`);
+
     return { email, id };
   }
 }

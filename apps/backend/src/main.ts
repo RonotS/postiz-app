@@ -23,7 +23,7 @@ async function start() {
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
     cors: {
-      ...(!process.env.NOT_SECURED ? { credentials: true } : {}),
+      credentials: true,
       allowedHeaders: [
         'Content-Type',
         'Authorization',
@@ -42,6 +42,8 @@ async function start() {
       origin: [
         process.env.FRONTEND_URL,
         'http://localhost:6274',
+        'http://localhost:4200',
+        'http://127.0.0.1:4200',
         ...(process.env.MAIN_URL ? [process.env.MAIN_URL] : []),
       ],
     },
