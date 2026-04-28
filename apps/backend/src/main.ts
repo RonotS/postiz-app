@@ -51,7 +51,7 @@ async function start() {
   });
 
   await startMcp(app);
-  app.setGlobalPrefix('api');
+  // app.setGlobalPrefix('api'); // Nginx handles prefix stripping
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -70,7 +70,9 @@ async function start() {
 
   loadSwagger(app);
 
-  const port = process.env.PORT || 3000;
+  // In production Docker, Nginx expects the backend on 3000. 
+  // We ignore the Railway PORT here because Nginx is already using it.
+  const port = process.env.IS_DOCKER ? 3000 : (process.env.PORT || 3000);
 
   try {
     await app.listen(port);
