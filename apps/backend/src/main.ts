@@ -51,6 +51,7 @@ async function start() {
   });
 
   await startMcp(app);
+  app.setGlobalPrefix('api');
 
   app.useGlobalPipes(
     new ValidationPipe({
