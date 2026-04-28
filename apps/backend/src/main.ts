@@ -20,9 +20,17 @@ import { ConfigurationChecker } from '@gitroom/helpers/configuration/configurati
 import { startMcp } from '@gitroom/nestjs-libraries/chat/start.mcp';
 
 async function start() {
+  const frontendUrl = process.env.FRONTEND_URL;
   const app = await NestFactory.create(AppModule, {
     rawBody: true,
     cors: {
+      origin: [
+        ...(frontendUrl ? [frontendUrl] : []),
+        'http://localhost:6274',
+        'http://localhost:4200',
+        'http://127.0.0.1:4200',
+        ...(process.env.MAIN_URL ? [process.env.MAIN_URL] : []),
+      ],
       credentials: true,
       allowedHeaders: [
         'Content-Type',
@@ -38,13 +46,6 @@ async function start() {
         'activate',
         'x-copilotkit-runtime-client-gql-version',
         ...(process.env.NOT_SECURED ? ['auth', 'showorg', 'impersonate'] : []),
-      ],
-      origin: [
-        process.env.FRONTEND_URL,
-        'http://localhost:6274',
-        'http://localhost:4200',
-        'http://127.0.0.1:4200',
-        ...(process.env.MAIN_URL ? [process.env.MAIN_URL] : []),
       ],
     },
   });
