@@ -82,6 +82,12 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           'The video you are trying to post is longer than 2 minutes, which is not allowed for this account',
       };
     }
+    if (body.includes('CreditsDepleted')) {
+      return {
+        type: 'bad-body',
+        value: 'X API credits depleted. Please check your X Developer Portal quota.',
+      };
+    }
     return undefined;
   }
 
@@ -231,25 +237,30 @@ export class XProvider extends SocialAbstract implements SocialProvider {
   }
 
   async generateAuthUrl() {
-    const client = new TwitterApi({
-      appKey: process.env.X_API_KEY!,
-      appSecret: process.env.X_API_SECRET!,
-    });
-    const { url, oauth_token, oauth_token_secret } =
-      await client.generateAuthLink(
-        (process.env.X_URL || process.env.FRONTEND_URL) +
-          `/integrations/social/x`,
-        {
-          authAccessType: 'write',
-          linkMode: 'authenticate',
-          forceLogin: false,
-        }
-      );
-    return {
-      url,
-      codeVerifier: oauth_token + ':' + oauth_token_secret,
-      state: oauth_token,
-    };
+    try {
+      const client = new TwitterApi({
+        appKey: process.env.X_API_KEY!,
+        appSecret: process.env.X_API_SECRET!,
+      });
+      const { url, oauth_token, oauth_token_secret } =
+        await client.generateAuthLink(
+          (process.env.X_URL || process.env.FRONTEND_URL) +
+            `/integrations/social/x`,
+          {
+            authAccessType: 'write',
+            linkMode: 'authenticate',
+            forceLogin: false,
+          }
+        );
+      return {
+        url,
+        codeVerifier: oauth_token + ':' + oauth_token_secret,
+        state: oauth_token,
+      };
+    } catch (err) {
+      console.error('X AUTH ERROR:', err);
+      throw err;
+    }
   }
 
   async authenticate(params: { code: string; codeVerifier: string }) {
@@ -370,55 +381,60 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       paid_partnership?: boolean;
     }>[]
   ): Promise<PostResponse[]> {
-    const client = await this.getClient(accessToken);
-    const {
-      data: { username },
-    } = await this.runInConcurrent(async () =>
-      client.v2.me({
-        'user.fields': 'username',
-      })
-    );
-
-    const [firstPost] = postDetails;
-
-    // upload media for the first post
-    const uploadAll = await this.uploadMedia(client, [firstPost]);
-
-    const media_ids = (uploadAll[firstPost.id] || []).filter((f) => f);
-
-    // @ts-ignore
-    const { data }: { data: { id: string } } = await this.runInConcurrent(
-      async () =>
-        // @ts-ignore
-        client.v2.tweet({
-          ...(!firstPost?.settings?.who_can_reply_post ||
-          firstPost?.settings?.who_can_reply_post === 'everyone'
-            ? {}
-            : {
-                reply_settings: firstPost?.settings?.who_can_reply_post,
-              }),
-          ...(firstPost?.settings?.community
-            ? {
-                share_with_followers: true,
-                community_id:
-                  firstPost?.settings?.community?.split('/').pop() || '',
-              }
-            : {}),
-          text: firstPost.message,
-          ...(media_ids.length ? { media: { media_ids } } : {}),
-          made_with_ai: !!firstPost?.settings?.made_with_ai,
-          paid_partnership: !!firstPost?.settings?.paid_partnership,
+    try {
+      const client = await this.getClient(accessToken);
+      const {
+        data: { username },
+      } = await this.runInConcurrent(async () =>
+        client.v2.me({
+          'user.fields': 'username',
         })
-    );
+      );
 
-    return [
-      {
-        postId: data.id,
-        id: firstPost.id,
-        releaseURL: `https://twitter.com/${username}/status/${data.id}`,
-        status: 'posted',
-      },
-    ];
+      const [firstPost] = postDetails;
+
+      // upload media for the first post
+      const uploadAll = await this.uploadMedia(client, [firstPost]);
+
+      const media_ids = (uploadAll[firstPost.id] || []).filter((f) => f);
+
+      // @ts-ignore
+      const { data }: { data: { id: string } } = await this.runInConcurrent(
+        async () =>
+          // @ts-ignore
+          client.v2.tweet({
+            ...(!firstPost?.settings?.who_can_reply_post ||
+            firstPost?.settings?.who_can_reply_post === 'everyone'
+              ? {}
+              : {
+                  reply_settings: firstPost?.settings?.who_can_reply_post,
+                }),
+            ...(firstPost?.settings?.community
+              ? {
+                  share_with_followers: true,
+                  community_id:
+                    firstPost?.settings?.community?.split('/').pop() || '',
+                }
+              : {}),
+            text: firstPost.message,
+            ...(media_ids.length ? { media: { media_ids } } : {}),
+            made_with_ai: !!firstPost?.settings?.made_with_ai,
+            paid_partnership: !!firstPost?.settings?.paid_partnership,
+          })
+      );
+
+      return [
+        {
+          postId: data.id,
+          id: firstPost.id,
+          releaseURL: `https://twitter.com/${username}/status/${data.id}`,
+          status: 'posted',
+        },
+      ];
+    } catch (err) {
+      console.error('X POST ERROR:', err);
+      throw err;
+    }
   }
 
   async comment(
@@ -434,45 +450,50 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     }>[],
     integration: Integration
   ): Promise<PostResponse[]> {
-    const client = await this.getClient(accessToken);
-    const {
-      data: { username },
-    } = await this.runInConcurrent(async () =>
-      client.v2.me({
-        'user.fields': 'username',
-      })
-    );
-
-    const [commentPost] = postDetails;
-
-    // upload media for the comment
-    const uploadAll = await this.uploadMedia(client, [commentPost]);
-
-    const media_ids = (uploadAll[commentPost.id] || []).filter((f) => f);
-
-    const replyToId = lastCommentId || postId;
-
-    // @ts-ignore
-    const { data }: { data: { id: string } } = await this.runInConcurrent(
-      async () =>
-        // @ts-ignore
-        client.v2.tweet({
-          text: commentPost.message,
-          ...(media_ids.length ? { media: { media_ids } } : {}),
-          reply: { in_reply_to_tweet_id: replyToId },
-          made_with_ai: !!commentPost?.settings?.made_with_ai,
-          paid_partnership: !!commentPost?.settings?.paid_partnership,
+    try {
+      const client = await this.getClient(accessToken);
+      const {
+        data: { username },
+      } = await this.runInConcurrent(async () =>
+        client.v2.me({
+          'user.fields': 'username',
         })
-    );
+      );
 
-    return [
-      {
-        postId: data.id,
-        id: commentPost.id,
-        releaseURL: `https://twitter.com/${username}/status/${data.id}`,
-        status: 'posted',
-      },
-    ];
+      const [commentPost] = postDetails;
+
+      // upload media for the comment
+      const uploadAll = await this.uploadMedia(client, [commentPost]);
+
+      const media_ids = (uploadAll[commentPost.id] || []).filter((f) => f);
+
+      const replyToId = lastCommentId || postId;
+
+      // @ts-ignore
+      const { data }: { data: { id: string } } = await this.runInConcurrent(
+        async () =>
+          // @ts-ignore
+          client.v2.tweet({
+            text: commentPost.message,
+            ...(media_ids.length ? { media: { media_ids } } : {}),
+            reply: { in_reply_to_tweet_id: replyToId },
+            made_with_ai: !!commentPost?.settings?.made_with_ai,
+            paid_partnership: !!commentPost?.settings?.paid_partnership,
+          })
+      );
+
+      return [
+        {
+          postId: data.id,
+          id: commentPost.id,
+          releaseURL: `https://twitter.com/${username}/status/${data.id}`,
+          status: 'posted',
+        },
+      ];
+    } catch (err) {
+      console.error('X COMMENT ERROR:', err);
+      throw err;
+    }
   }
 
   private loadAllTweets = async (

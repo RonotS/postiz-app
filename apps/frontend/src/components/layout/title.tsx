@@ -10,5 +10,5 @@ export const Title = () => {
     return menuItems.find((item) => path === item.path || (item.path !== '/' && item.path !== '/dashboard' && path.startsWith(item.path)))?.name;
   }, [path]);
 
-  return <h1>{currentTitle}</h1>;
+  return <h1 className="text-[18px] md:text-[24px] truncate">{currentTitle}</h1>;
 };

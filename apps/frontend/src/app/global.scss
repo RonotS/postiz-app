@@ -689,12 +689,18 @@ html[dir='rtl'] [dir='ltr'] {
 }
 
 .agent {
+  width: 100%;
   .copilotKitInputContainer {
-    padding: 0 24px !important;
+    @apply px-[10px] md:px-[24px] !important;
   }
 
   .copilotKitInput {
     width: 100% !important;
+  }
+
+  .copilotKitMessagesContainer {
+    width: 100% !important;
+    max-width: 100% !important;
   }
 }
 .rm-bg .b2 {
