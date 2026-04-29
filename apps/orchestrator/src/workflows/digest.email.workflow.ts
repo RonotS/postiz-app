@@ -40,6 +40,13 @@ export async function digestEmailWorkflow({
 
     const org = await getUserOrgs(organizationId);
 
+    if (!org?.users) {
+      return await continueAsNew({
+        organizationId,
+        queue,
+      });
+    }
+
     for (const user of org.users) {
       const allowFailure = user.user.sendFailureEmails ? 'fail' : null;
       const allowSuccess = user.user.sendSuccessEmails ? 'success' : null;
