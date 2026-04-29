@@ -1,5 +1,5 @@
 [build]
-dockerfilePath = "Dockerfile.orchestrator"
+dockerfilePath = "Dockerfile.dev"
 
 [deploy]
 healthcheckPath = "/"
