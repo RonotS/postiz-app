@@ -4,6 +4,11 @@ import { Connection } from '@temporalio/client';
 
 @Controller('health')
 export class HealthController {
+  @Get('')
+  getHealth() {
+    return { status: 'ok' };
+  }
+
   @Get('/status')
   async getHealthStatus(@Res() res: Response) {
     let connection: Connection | undefined;
