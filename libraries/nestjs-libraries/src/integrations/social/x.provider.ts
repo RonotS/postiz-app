@@ -466,19 +466,9 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const startedAt = Date.now();
     const [firstPost] = postDetails;
     let client: TwitterApi | undefined;
-    let username = '';
-    let userId = '';
 
     try {
       client = await this.getClient(accessToken);
-      const { data: me } = await this.runInConcurrent(async () =>
-        client!.v2.me({
-          'user.fields': 'username',
-        })
-      );
-
-      username = me.username;
-      userId = me.id;
 
       // upload media for the first post
       const uploadAll = await this.uploadMedia(client, [firstPost]);
@@ -514,25 +504,25 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         {
           postId: data.id,
           id: firstPost.id,
-          releaseURL: `https://twitter.com/${username}/status/${data.id}`,
+          releaseURL: `https://twitter.com/i/web/status/${data.id}`,
           status: 'posted',
         },
       ];
     } catch (err) {
-      if (client && firstPost && userId) {
+      if (client && firstPost) {
         const recentTweet = await this.findRecentlyPostedTweet(
           client,
-          userId,
+          id,
           firstPost.message || '',
           startedAt
         );
 
-        if (recentTweet && username) {
+        if (recentTweet) {
           return [
             {
               postId: recentTweet.id,
               id: firstPost.id,
-              releaseURL: `https://twitter.com/${username}/status/${recentTweet.id}`,
+              releaseURL: `https://twitter.com/i/web/status/${recentTweet.id}`,
               status: 'posted',
             },
           ];
@@ -560,19 +550,9 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const startedAt = Date.now();
     const [commentPost] = postDetails;
     let client: TwitterApi | undefined;
-    let username = '';
-    let userId = '';
 
     try {
       client = await this.getClient(accessToken);
-      const { data: me } = await this.runInConcurrent(async () =>
-        client!.v2.me({
-          'user.fields': 'username',
-        })
-      );
-
-      username = me.username;
-      userId = me.id;
 
       // upload media for the comment
       const uploadAll = await this.uploadMedia(client, [commentPost]);
@@ -598,25 +578,25 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         {
           postId: data.id,
           id: commentPost.id,
-          releaseURL: `https://twitter.com/${username}/status/${data.id}`,
+          releaseURL: `https://twitter.com/i/web/status/${data.id}`,
           status: 'posted',
         },
       ];
     } catch (err) {
-      if (client && commentPost && userId) {
+      if (client && commentPost) {
         const recentTweet = await this.findRecentlyPostedTweet(
           client,
-          userId,
+          id,
           commentPost.message || '',
           startedAt
         );
 
-        if (recentTweet && username) {
+        if (recentTweet) {
           return [
             {
               postId: recentTweet.id,
               id: commentPost.id,
-              releaseURL: `https://twitter.com/${username}/status/${recentTweet.id}`,
+              releaseURL: `https://twitter.com/i/web/status/${recentTweet.id}`,
               status: 'posted',
             },
           ];
