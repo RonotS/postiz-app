@@ -29,32 +29,21 @@ export class BadBody extends ApplicationFailure {
 export class NotEnoughScopes {
   constructor(
     public message = 'Not enough scopes, when choosing a provider, please add all the scopes'
-  ) {}
+  ) { }
 }
 
 function safeStringify(obj: any) {
   const seen = new WeakSet();
 
-  return JSON.stringify(
-    obj,
-    (key, value) => {
-      if (value instanceof Error) {
-        return {
-          message: value.message,
-          stack: value.stack,
-          ...(value as any),
-        };
+  return JSON.stringify(obj, (key, value) => {
+    if (typeof value === 'object' && value !== null) {
+      if (seen.has(value)) {
+        return '[Circular]';
       }
-      if (typeof value === 'object' && value !== null) {
-        if (seen.has(value)) {
-          return '[Circular]';
-        }
-        seen.add(value);
-      }
-      return value;
-    },
-    2
-  );
+      seen.add(value);
+    }
+    return value;
+  });
 }
 
 export abstract class SocialAbstract {
@@ -90,12 +79,16 @@ export abstract class SocialAbstract {
     try {
       value = await func();
     } catch (err: any) {
-      console.error('ORIGINAL PROVIDER ERROR:', err);
-      if (err?.data) {
-        console.error('PROVIDER ERROR DATA:', JSON.stringify(err.data, null, 2));
-      }
       const handle = this.handleErrors(safeStringify(err), 200);
-      value = { err: true, value: 'Unknown Error', ...(handle || {}) };
+      const fallback =
+        err?.data?.detail ||
+        err?.data?.errors?.[0]?.message ||
+        err?.data?.title ||
+        err?.requestError?.message ||
+        err?.cause?.message ||
+        err?.message ||
+        'Unknown Error';
+      value = { err: true, value: fallback, ...(handle || {}) };
     }
 
     if (value && value?.err && value?.value) {

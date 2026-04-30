@@ -400,6 +400,52 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     }, {} as Record<string, string[]>);
   }
 
+  private normalizeTweetText(text: string) {
+    return text.replace(/\s+/g, ' ').trim();
+  }
+
+  private async findRecentlyPostedTweet(
+    client: TwitterApi,
+    userId: string,
+    text: string,
+    startedAt: number
+  ) {
+    const normalizedText = this.normalizeTweetText(text);
+
+    for (const attempt of [0, 1, 2]) {
+      if (attempt > 0) {
+        await timer(2000);
+      }
+
+      try {
+        const timeline = await client.v2.userTimeline(userId, {
+          'tweet.fields': ['id', 'text', 'created_at'],
+          exclude: ['replies', 'retweets'],
+          max_results: 10,
+        });
+
+        const recentTweet = timeline.data.data?.find((tweet) => {
+          if (!tweet?.text || !tweet?.created_at) {
+            return false;
+          }
+
+          return (
+            this.normalizeTweetText(tweet.text) === normalizedText &&
+            new Date(tweet.created_at).getTime() >= startedAt - 60000
+          );
+        });
+
+        if (recentTweet) {
+          return recentTweet;
+        }
+      } catch (err) {
+        console.error('X POST VERIFICATION ERROR:', err);
+      }
+    }
+
+    return undefined;
+  }
+
   async post(
     id: string,
     accessToken: string,
@@ -417,17 +463,22 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       paid_partnership?: boolean;
     }>[]
   ): Promise<PostResponse[]> {
+    const startedAt = Date.now();
+    const [firstPost] = postDetails;
+    let client: TwitterApi | undefined;
+    let username = '';
+    let userId = '';
+
     try {
-      const client = await this.getClient(accessToken);
-      const {
-        data: { username },
-      } = await this.runInConcurrent(async () =>
-        client.v2.me({
+      client = await this.getClient(accessToken);
+      const { data: me } = await this.runInConcurrent(async () =>
+        client!.v2.me({
           'user.fields': 'username',
         })
       );
 
-      const [firstPost] = postDetails;
+      username = me.username;
+      userId = me.id;
 
       // upload media for the first post
       const uploadAll = await this.uploadMedia(client, [firstPost]);
@@ -468,6 +519,26 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         },
       ];
     } catch (err) {
+      if (client && firstPost && userId) {
+        const recentTweet = await this.findRecentlyPostedTweet(
+          client,
+          userId,
+          firstPost.message || '',
+          startedAt
+        );
+
+        if (recentTweet && username) {
+          return [
+            {
+              postId: recentTweet.id,
+              id: firstPost.id,
+              releaseURL: `https://twitter.com/${username}/status/${recentTweet.id}`,
+              status: 'posted',
+            },
+          ];
+        }
+      }
+
       console.error('X POST ERROR:', err);
       throw err;
     }
@@ -486,17 +557,22 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     }>[],
     integration: Integration
   ): Promise<PostResponse[]> {
+    const startedAt = Date.now();
+    const [commentPost] = postDetails;
+    let client: TwitterApi | undefined;
+    let username = '';
+    let userId = '';
+
     try {
-      const client = await this.getClient(accessToken);
-      const {
-        data: { username },
-      } = await this.runInConcurrent(async () =>
-        client.v2.me({
+      client = await this.getClient(accessToken);
+      const { data: me } = await this.runInConcurrent(async () =>
+        client!.v2.me({
           'user.fields': 'username',
         })
       );
 
-      const [commentPost] = postDetails;
+      username = me.username;
+      userId = me.id;
 
       // upload media for the comment
       const uploadAll = await this.uploadMedia(client, [commentPost]);
@@ -527,6 +603,26 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         },
       ];
     } catch (err) {
+      if (client && commentPost && userId) {
+        const recentTweet = await this.findRecentlyPostedTweet(
+          client,
+          userId,
+          commentPost.message || '',
+          startedAt
+        );
+
+        if (recentTweet && username) {
+          return [
+            {
+              postId: recentTweet.id,
+              id: commentPost.id,
+              releaseURL: `https://twitter.com/${username}/status/${recentTweet.id}`,
+              status: 'posted',
+            },
+          ];
+        }
+      }
+
       console.error('X COMMENT ERROR:', err);
       throw err;
     }
