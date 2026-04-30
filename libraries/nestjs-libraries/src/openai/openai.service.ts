@@ -35,7 +35,7 @@ export class OpenaiService {
     return (
       (
         await openai.chat.completions.parse({
-          model: 'gpt-4.1',
+          model: 'gpt-4o',
           messages: [
             {
               role: 'system',
@@ -56,7 +56,7 @@ export class OpenaiService {
     return (
       (
         await openai.chat.completions.parse({
-          model: 'gpt-4.1',
+          model: 'gpt-4o',
           messages: [
             {
               role: 'system',
@@ -90,7 +90,7 @@ export class OpenaiService {
           ],
           n: 5,
           temperature: 1,
-          model: 'gpt-4.1',
+          model: 'gpt-4o',
         }),
         openai.chat.completions.create({
           messages: [
@@ -106,7 +106,7 @@ export class OpenaiService {
           ],
           n: 5,
           temperature: 1,
-          model: 'gpt-4.1',
+          model: 'gpt-4o',
         }),
       ])
     ).flatMap((p) => p.choices);
@@ -144,7 +144,7 @@ export class OpenaiService {
           content,
         },
       ],
-      model: 'gpt-4.1',
+      model: 'gpt-4o',
     });
 
     const { content: articleContent } = websiteContent.choices[0].message;
@@ -164,7 +164,7 @@ export class OpenaiService {
     const posts =
       (
         await openai.chat.completions.parse({
-          model: 'gpt-4.1',
+          model: 'gpt-4o',
           messages: [
             {
               role: 'system',
@@ -197,7 +197,7 @@ export class OpenaiService {
               return (
                 (
                   await openai.chat.completions.parse({
-                    model: 'gpt-4.1',
+                    model: 'gpt-4o',
                     messages: [
                       {
                         role: 'system',
@@ -233,7 +233,7 @@ export class OpenaiService {
         const parse =
           (
             await openai.chat.completions.parse({
-              model: 'gpt-4.1',
+              model: 'gpt-4o',
               messages: [
                 {
                   role: 'system',

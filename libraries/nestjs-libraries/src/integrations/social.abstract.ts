@@ -35,15 +35,26 @@ export class NotEnoughScopes {
 function safeStringify(obj: any) {
   const seen = new WeakSet();
 
-  return JSON.stringify(obj, (key, value) => {
-    if (typeof value === 'object' && value !== null) {
-      if (seen.has(value)) {
-        return '[Circular]';
+  return JSON.stringify(
+    obj,
+    (key, value) => {
+      if (value instanceof Error) {
+        return {
+          message: value.message,
+          stack: value.stack,
+          ...(value as any),
+        };
       }
-      seen.add(value);
-    }
-    return value;
-  });
+      if (typeof value === 'object' && value !== null) {
+        if (seen.has(value)) {
+          return '[Circular]';
+        }
+        seen.add(value);
+      }
+      return value;
+    },
+    2
+  );
 }
 
 export abstract class SocialAbstract {
