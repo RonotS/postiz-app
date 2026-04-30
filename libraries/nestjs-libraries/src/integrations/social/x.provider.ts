@@ -88,6 +88,42 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         value: 'X API credits depleted. Please check your X Developer Portal quota.',
       };
     }
+
+    if (body.includes('exceeded the limit of 1500 Tweets')) {
+      return {
+        type: 'bad-body',
+        value:
+          'You have exceeded the monthly limit of 1,500 Tweets for the Free tier. Please upgrade your X API plan or check your usage.',
+      };
+    }
+
+    if (body.includes('not permitted to access this endpoint')) {
+      return {
+        type: 'bad-body',
+        value:
+          'X API permissions issue: Please ensure your App has "Read and Write" permissions enabled in the X Developer Portal under "User authentication settings".',
+      };
+    }
+
+    try {
+      const parsed = JSON.parse(body);
+      const errors = parsed?.data?.errors || parsed?.errors;
+      if (Array.isArray(errors) && errors.length > 0) {
+        return {
+          type: 'bad-body',
+          value: errors[0].message || 'Unknown X API Error',
+        };
+      }
+      if (parsed?.data?.detail) {
+        return {
+          type: 'bad-body',
+          value: parsed.data.detail,
+        };
+      }
+    } catch (e) {
+      /**/
+    }
+
     return undefined;
   }
 
