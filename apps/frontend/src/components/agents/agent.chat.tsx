@@ -1,28 +1,28 @@
 'use client';
 
 import React, {
-  FC,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
+    FC,
+    useCallback,
+    useContext,
+    useEffect,
+    useMemo,
+    useState,
 } from 'react';
 import { CopilotChat, CopilotKitCSSProperties } from '@copilotkit/react-ui';
 import {
-  InputProps,
-  UserMessageProps,
+    InputProps,
+    UserMessageProps,
 } from '@copilotkit/react-ui/dist/components/chat/props';
 import { Input } from '@gitroom/frontend/components/agents/agent.input';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import {
-  CopilotKit,
-  useCopilotAction,
-  useCopilotMessagesContext,
+    CopilotKit,
+    useCopilotAction,
+    useCopilotMessagesContext,
 } from '@copilotkit/react-core';
 import {
-  MediaPortal,
-  PropertiesContext,
+    MediaPortal,
+    PropertiesContext,
 } from '@gitroom/frontend/components/agents/agent';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { useParams } from 'next/navigation';
@@ -35,39 +35,39 @@ import { ExistingDataContextProvider } from '@gitroom/frontend/components/launch
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 
 export const AgentChat: FC = () => {
-  const { backendUrl } = useVariables();
-  const params = useParams<{ id: string }>();
-  const { properties } = useContext(PropertiesContext);
-  const t = useT();
+    const { backendUrl } = useVariables();
+    const params = useParams<{ id: string }>();
+    const { properties } = useContext(PropertiesContext);
+    const t = useT();
 
-  return (
-    <CopilotKit
-      {...(params.id === 'new' ? {} : { threadId: params.id })}
-      credentials="include"
-      runtimeUrl={backendUrl + '/copilot/agent'}
-      showDevConsole={false}
-      agent="postiz"
-      properties={{
-        integrations: properties,
-      }}
-    >
-      <Hooks />
-      <LoadMessages id={params.id} />
-      <div
-        style={
-          {
-            '--copilot-kit-primary-color': 'var(--new-btn-text)',
-            '--copilot-kit-background-color': 'var(--new-bg-color)',
-          } as CopilotKitCSSProperties
-        }
-        className="trz agent bg-newBgColorInner flex flex-col gap-[15px] transition-all flex-1 items-center relative"
-      >
-        <div className="absolute left-0 w-full h-full pb-[20px]">
-          <CopilotChat
-            className="w-full h-full"
-            labels={{
-              title: t('your_assistant', 'Your Assistant'),
-              initial: t('agent_welcome_message', `Hello, I am your Postiz agent 🙌🏻.
+    return (
+        <CopilotKit
+            {...(params.id === 'new' ? {} : { threadId: params.id })}
+            credentials="include"
+            runtimeUrl={backendUrl + '/copilot/agent'}
+            showDevConsole={false}
+            agent="postiz"
+            properties={{
+                integrations: properties,
+            }}
+        >
+            <Hooks />
+            <LoadMessages id={params.id} />
+            <div
+                style={
+                    {
+                        '--copilot-kit-primary-color': 'var(--new-btn-text)',
+                        '--copilot-kit-background-color': 'var(--new-bg-color)',
+                    } as CopilotKitCSSProperties
+                }
+                className="trz agent bg-newBgColorInner flex flex-col gap-[15px] transition-all flex-1 items-center relative"
+            >
+                <div className="absolute left-0 w-full h-full pb-[20px]">
+                    <CopilotChat
+                        className="w-full h-full"
+                        labels={{
+                            title: t('your_assistant', 'Your Assistant'),
+                            initial: t('agent_welcome_message', `Hello, I am your Postiz agent 🙌🏻.
               
 I can schedule a post or multiple posts to multiple channels and generate pictures and videos.
 
@@ -77,286 +77,285 @@ You can see your previous conversations from the right menu.
 
 You can also use me as an MCP Server, check Settings >> Public API
 `),
-            }}
-            UserMessage={Message}
-            Input={NewInput}
-          />
-        </div>
-      </div>
-    </CopilotKit>
-  );
+                        }}
+                        UserMessage={Message}
+                        Input={NewInput}
+                    />
+                </div>
+            </div>
+        </CopilotKit>
+    );
 };
 
 const LoadMessages: FC<{ id: string }> = ({ id }) => {
-  const { setMessages } = useCopilotMessagesContext();
-  const fetch = useFetch();
+    const { setMessages } = useCopilotMessagesContext();
+    const fetch = useFetch();
 
-  const loadMessages = useCallback(async (idToSet: string) => {
-    const data = await (await fetch(`/copilot/${idToSet}/list`)).json();
-    console.log(data);
-    setMessages(
-      data.messages.map((p: any) => {
-        return new TextMessage({
-          content: p.content.content,
-          role: p.role,
-        });
-      })
-    );
-  }, []);
+    const loadMessages = useCallback(async (idToSet: string) => {
+        const data = await (await fetch(`/copilot/${idToSet}/list`)).json();
+        console.log(data);
+        setMessages(
+            data.messages.map((p: any) => {
+                return new TextMessage({
+                    content: p.content.content,
+                    role: p.role,
+                });
+            })
+        );
+    }, []);
 
-  useEffect(() => {
-    if (id === 'new') {
-      setMessages([]);
-      return;
-    }
-    loadMessages(id);
-  }, [id]);
+    useEffect(() => {
+        if (id === 'new') {
+            setMessages([]);
+            return;
+        }
+        loadMessages(id);
+    }, [id]);
 
-  return null;
+    return null;
 };
 
 const Message: FC<UserMessageProps> = (props) => {
-  const convertContentToImagesAndVideo = useMemo(() => {
-    return (props.message?.content || '')
-      .replace(/Video: (http.*mp4\n)/g, (match, p1) => {
-        return `<video controls class="h-[150px] w-[150px] rounded-[8px] mb-[10px]"><source src="${p1.trim()}" type="video/mp4">Your browser does not support the video tag.</video>`;
-      })
-      .replace(/Image: (http.*\n)/g, (match, p1) => {
-        return `<img src="${p1.trim()}" class="h-[150px] w-[150px] max-w-full border border-newBgColorInner" />`;
-      })
-      .replace(/\[\-\-Media\-\-\](.*)\[\-\-Media\-\-\]/g, (match, p1) => {
-        return `<div class="flex justify-center mt-[20px]">${p1}</div>`;
-      })
-      .replace(
-        /(\[--integrations--\][\s\S]*?\[--integrations--\])/g,
-        (match, p1) => {
-          return ``;
-        }
-      );
-  }, [props.message?.content]);
-  return (
-    <div
-      className="copilotKitMessage copilotKitUserMessage min-w-[300px]"
-      dangerouslySetInnerHTML={{ __html: convertContentToImagesAndVideo }}
-    />
-  );
+    const convertContentToImagesAndVideo = useMemo(() => {
+        return (props.message?.content || '')
+            .replace(/Video: (http.*mp4\n)/g, (match, p1) => {
+                return `<video controls class="h-[150px] w-[150px] rounded-[8px] mb-[10px]"><source src="${p1.trim()}" type="video/mp4">Your browser does not support the video tag.</video>`;
+            })
+            .replace(/Image: (http.*\n)/g, (match, p1) => {
+                return `<img src="${p1.trim()}" class="h-[150px] w-[150px] max-w-full border border-newBgColorInner" />`;
+            })
+            .replace(/\[\-\-Media\-\-\](.*)\[\-\-Media\-\-\]/g, (match, p1) => {
+                return `<div class="flex justify-center mt-[20px]">${p1}</div>`;
+            })
+            .replace(
+                /(\[--integrations--\][\s\S]*?\[--integrations--\])/g,
+                (match, p1) => {
+                    return ``;
+                }
+            );
+    }, [props.message?.content]);
+    return (
+        <div
+            className="copilotKitMessage copilotKitUserMessage min-w-[300px]"
+            dangerouslySetInnerHTML={{ __html: convertContentToImagesAndVideo }}
+        />
+    );
 };
 const NewInput: FC<InputProps> = (props) => {
-  const [media, setMedia] = useState([] as { path: string; id: string }[]);
-  const [value, setValue] = useState('');
-  const { properties } = useContext(PropertiesContext);
-  return (
-    <>
-      <MediaPortal
-        value={value}
-        media={media}
-        setMedia={(e) => setMedia(e.target.value)}
-      />
-      <Input
-        {...props}
-        onChange={setValue}
-        onSend={(text) => {
-          const send = props.onSend(
-            text +
-              (media.length > 0
-                ? '\n[--Media--]' +
-                  media
-                    .map((m) =>
-                      m.path.indexOf('mp4') > -1
-                        ? `Video: ${m.path}`
-                        : `Image: ${m.path}`
-                    )
-                    .join('\n') +
-                  '\n[--Media--]'
-                : '') +
-              `
-${
-  properties.length
-    ? `[--integrations--]
+    const [media, setMedia] = useState([] as { path: string; id: string }[]);
+    const [value, setValue] = useState('');
+    const { properties } = useContext(PropertiesContext);
+    return (
+        <>
+            <MediaPortal
+                value={value}
+                media={media}
+                setMedia={(e) => setMedia(e.target.value)}
+            />
+            <Input
+                {...props}
+                onChange={setValue}
+                onSend={(text) => {
+                    const send = props.onSend(
+                        text +
+                        (media.length > 0
+                            ? '\n[--Media--]' +
+                            media
+                                .map((m) =>
+                                    m.path.indexOf('mp4') > -1
+                                        ? `Video: ${m.path} (ID: ${m.id})`
+                                        : `Image: ${m.path} (ID: ${m.id})`
+                                )
+                                .join('\n') +
+                            '\n[--Media--]'
+                            : '') +
+                        `
+${properties.length
+                            ? `[--integrations--]
 Use the following social media platforms: ${JSON.stringify(
-        properties.map((p) => ({
-          id: p.id,
-          platform: p.identifier,
-          profilePicture: p.picture,
-          additionalSettings: p.additionalSettings,
-        }))
-      )}
+                                properties.map((p) => ({
+                                    id: p.id,
+                                    platform: p.identifier,
+                                    profilePicture: p.picture,
+                                    additionalSettings: p.additionalSettings,
+                                }))
+                            )}
 [--integrations--]`
-    : ``
-}`
-          );
-          setValue('');
-          setMedia([]);
-          return send;
-        }}
-      />
-    </>
-  );
+                            : ``
+                        }`
+                    );
+                    setValue('');
+                    setMedia([]);
+                    return send;
+                }}
+            />
+        </>
+    );
 };
 
 export const Hooks: FC = () => {
-  const modals = useModals();
+    const modals = useModals();
 
-  useCopilotAction({
-    name: 'manualPosting',
-    description:
-      'This tool should be triggered when the user wants to manually add the generated post',
-    parameters: [
-      {
-        name: 'list',
-        type: 'object[]',
+    useCopilotAction({
+        name: 'manualPosting',
         description:
-          'list of posts to schedule to different social media (integration ids)',
-        attributes: [
-          {
-            name: 'integrationId',
-            type: 'string',
-            description: 'The integration id',
-          },
-          {
-            name: 'date',
-            type: 'string',
-            description: 'UTC date of the scheduled post',
-          },
-          {
-            name: 'settings',
-            type: 'object',
-            description: 'Settings for the integration [input:settings]',
-          },
-          {
-            name: 'posts',
-            type: 'object[]',
-            description: 'list of posts / comments (one under another)',
-            attributes: [
-              {
-                name: 'content',
-                type: 'string',
-                description: 'the content of the post',
-              },
-              {
-                name: 'attachments',
+            'This tool should be triggered when the user wants to manually edit or review the generated post before scheduling. Use this if the user wants to see the post in the editor.',
+        parameters: [
+            {
+                name: 'list',
                 type: 'object[]',
-                description: 'list of attachments',
+                description:
+                    'list of posts to schedule to different social media channels (by integrationId)',
                 attributes: [
-                  {
-                    name: 'id',
-                    type: 'string',
-                    description: 'id of the attachment',
-                  },
-                  {
-                    name: 'path',
-                    type: 'string',
-                    description: 'url of the attachment',
-                  },
+                    {
+                        name: 'integrationId',
+                        type: 'string',
+                        description: 'The UUID of the integration (from the provided list)',
+                    },
+                    {
+                        name: 'date',
+                        type: 'string',
+                        description: 'UTC date of the scheduled post',
+                    },
+                    {
+                        name: 'settings',
+                        type: 'object',
+                        description: 'Settings for the integration [input:settings]',
+                    },
+                    {
+                        name: 'posts',
+                        type: 'object[]',
+                        description: 'list of posts / comments (one under another)',
+                        attributes: [
+                            {
+                                name: 'content',
+                                type: 'string',
+                                description: 'the content of the post',
+                            },
+                            {
+                                name: 'attachments',
+                                type: 'object[]',
+                                description: 'list of attachments',
+                                attributes: [
+                                    {
+                                        name: 'id',
+                                        type: 'string',
+                                        description: 'id of the attachment',
+                                    },
+                                    {
+                                        name: 'path',
+                                        type: 'string',
+                                        description: 'url of the attachment',
+                                    },
+                                ],
+                            },
+                        ],
+                    },
                 ],
-              },
-            ],
-          },
+            },
         ],
-      },
-    ],
-    renderAndWaitForResponse: ({ args, status, respond }) => {
-      if (status === 'executing') {
-        return <OpenModal args={args} respond={respond} />;
-      }
+        renderAndWaitForResponse: ({ args, status, respond }) => {
+            if (status === 'executing') {
+                return <OpenModal args={args} respond={respond} />;
+            }
 
-      return null;
-    },
-  });
-  return null;
+            return null;
+        },
+    });
+    return null;
 };
 
 const OpenModal: FC<{
-  respond: (value: any) => void;
-  args: {
-    list: {
-      integrationId: string;
-      date: string;
-      settings?: Record<string, any>;
-      posts: { content: string; attachments: { id: string; path: string }[] }[];
-    }[];
-  };
+    respond: (value: any) => void;
+    args: {
+        list: {
+            integrationId: string;
+            date: string;
+            settings?: Record<string, any>;
+            posts: { content: string; attachments: { id: string; path: string }[] }[];
+        }[];
+    };
 }> = ({ args, respond }) => {
-  const modals = useModals();
-  const { properties } = useContext(PropertiesContext);
-  const startModal = useCallback(async () => {
-    for (const integration of args.list) {
-      await new Promise((res) => {
-        const group = makeId(10);
-        modals.openModal({
-          id: 'add-edit-modal',
-          closeOnClickOutside: false,
-          removeLayout: true,
-          closeOnEscape: false,
-          withCloseButton: false,
-          askClose: true,
-          size: '80%',
-          title: ``,
-          classNames: {
-            modal: 'w-[100%] max-w-[1400px] text-textColor',
-          },
-          children: (
-            <ExistingDataContextProvider
-              value={{
-                group,
-                integration: integration.integrationId,
-                integrationPicture:
-                  properties.find((p) => p.id === integration.integrationId)
-                    .picture || '',
-                settings: integration.settings || {},
-                posts: integration.posts.map((p) => ({
-                  approvedSubmitForOrder: 'NO',
-                  content: p.content,
-                  createdAt: new Date().toISOString(),
-                  state: 'DRAFT',
-                  id: makeId(10),
-                  settings: JSON.stringify(integration.settings || {}),
-                  group,
-                  integrationId: integration.integrationId,
-                  integration: properties.find(
-                    (p) => p.id === integration.integrationId
-                  ),
-                  publishDate: dayjs.utc(integration.date).toISOString(),
-                  image: p.attachments.map((a) => ({
-                    id: a.id,
-                    path: a.path,
-                  })),
-                })),
-              }}
-            >
-              <AddEditModal
-                date={dayjs.utc(integration.date)}
-                allIntegrations={properties}
-                integrations={properties.filter(
-                  (p) => p.id === integration.integrationId
-                )}
-                onlyValues={integration.posts.map((p) => ({
-                  content: p.content,
-                  id: makeId(10),
-                  settings: integration.settings || {},
-                  image: p.attachments.map((a) => ({
-                    id: a.id,
-                    path: a.path,
-                  })),
-                }))}
-                reopenModal={() => {}}
-                mutate={() => res(true)}
-              />
-            </ExistingDataContextProvider>
-          ),
-        });
-      });
-    }
+    const modals = useModals();
+    const { properties } = useContext(PropertiesContext);
+    const startModal = useCallback(async () => {
+        for (const integration of args.list) {
+            const targetIntegrationId = integration.integrationId || properties[0]?.id;
+            const targetIntegration = properties.find((p) => p.id === targetIntegrationId) || properties[0];
 
-    respond('User scheduled all the posts');
-  }, [args, respond, properties]);
+            await new Promise((res) => {
+                const group = makeId(10);
+                modals.openModal({
+                    id: 'add-edit-modal',
+                    closeOnClickOutside: false,
+                    removeLayout: true,
+                    closeOnEscape: false,
+                    withCloseButton: false,
+                    askClose: true,
+                    size: '80%',
+                    title: ``,
+                    classNames: {
+                        modal: 'w-[100%] max-w-[1400px] text-textColor',
+                    },
+                    children: (
+                        <ExistingDataContextProvider
+                            value={{
+                                group,
+                                integration: targetIntegration?.id,
+                                integrationPicture: targetIntegration?.picture || '',
+                                settings: integration.settings || {},
+                                posts: integration.posts.map((p) => ({
+                                    approvedSubmitForOrder: 'NO',
+                                    content: p.content,
+                                    createdAt: new Date().toISOString(),
+                                    state: 'DRAFT',
+                                    id: makeId(10),
+                                    settings: JSON.stringify(integration.settings || {}),
+                                    group,
+                                    integrationId: targetIntegration?.id,
+                                    integration: targetIntegration,
+                                    publishDate: dayjs.utc(integration.date).toISOString(),
+                                    image: p.attachments.map((a) => ({
+                                        id: a.id,
+                                        path: a.path,
+                                    })),
+                                })),
+                            }}
+                        >
+                            <AddEditModal
+                                date={dayjs.utc(integration.date)}
+                                allIntegrations={properties}
+                                integrations={properties.filter(
+                                    (p) => p.id === targetIntegration?.id
+                                )}
+                                selectedChannels={[targetIntegration?.id!]}
+                                onlyValues={integration.posts.map((p) => ({
+                                    content: p.content,
+                                    id: makeId(10),
+                                    settings: integration.settings || {},
+                                    image: p.attachments.map((a) => ({
+                                        id: a.id,
+                                        path: a.path,
+                                    })),
+                                }))}
+                                reopenModal={() => { }}
+                                mutate={() => res(true)}
+                            />
+                        </ExistingDataContextProvider>
+                    ),
+                });
+            });
+        }
 
-  useEffect(() => {
-    startModal();
-  }, []);
-  return (
-    <div onClick={() => respond('continue')}>
-      Opening manually ${JSON.stringify(args)}
-    </div>
-  );
+        respond('User scheduled all the posts');
+    }, [args, respond, properties]);
+
+    useEffect(() => {
+        startModal();
+    }, []);
+    return (
+        <div onClick={() => respond('continue')}>
+            Opening manually ${JSON.stringify(args)}
+        </div>
+    );
 };

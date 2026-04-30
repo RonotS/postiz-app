@@ -14,33 +14,33 @@ import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validatio
 import { weightedLength } from '@gitroom/helpers/utils/count.length';
 
 function countCharacters(text: string, type: string): number {
-  if (type !== 'x') {
-    return text.length;
-  }
-  return weightedLength(text);
+    if (type !== 'x') {
+        return text.length;
+    }
+    return weightedLength(text);
 }
 
 @Injectable()
 export class IntegrationSchedulePostTool implements AgentToolInterface {
-  constructor(
-    private _postsService: PostsService,
-    private _integrationService: IntegrationService
-  ) {}
-  name = 'integrationSchedulePostTool';
+    constructor(
+        private _postsService: PostsService,
+        private _integrationService: IntegrationService
+    ) { }
+    name = 'integrationSchedulePostTool';
 
-  run() {
-    return createTool({
-      id: 'schedulePostTool',
-      mcp: {
-        annotations: {
-          title: 'Schedule Social Media Post',
-          readOnlyHint: false,
-          destructiveHint: false,
-          idempotentHint: false,
-          openWorldHint: true,
-        },
-      },
-      description: `
+    run() {
+        return createTool({
+            id: 'schedulePostTool',
+            mcp: {
+                annotations: {
+                    title: 'Schedule Social Media Post',
+                    readOnlyHint: false,
+                    destructiveHint: false,
+                    idempotentHint: false,
+                    openWorldHint: true,
+                },
+            },
+            description: `
 This tool allows you to schedule a post to a social media platform, based on integrationSchema tool.
 So for example:
 
@@ -54,183 +54,188 @@ If the user want to post 20 posts for facebook each in individual days without c
 
 If the tools return errors, you would need to rerun it with the right parameters, don't ask again, just run it
 `,
-      inputSchema: z.object({
-        socialPost: z
-          .array(
-            z.object({
-              integrationId: z
-                .string()
-                .describe('The id of the integration (not internal id)'),
-              isPremium: z
-                .boolean()
-                .describe(
-                  "If the integration is X, return if it's premium or not"
-                ),
-              date: z.string().describe('The date of the post in UTC time'),
-              shortLink: z
-                .boolean()
-                .describe(
-                  'If the post has a link inside, we can ask the user if they want to add a short link'
-                ),
-              type: z
-                .enum(['draft', 'schedule', 'now'])
-                .describe(
-                  'The type of the post, if we pass now, we should pass the current date also'
-                ),
-              postsAndComments: z
-                .array(
-                  z.object({
-                    content: z
-                      .string()
-                      .describe(
-                        "The content of the post, HTML, Each line must be wrapped in <p> here is the possible tags: h1, h2, h3, u, strong, li, ul, p (you can't have u and strong together)"
-                      ),
-                    attachments: z
-                      .array(z.string())
-                      .describe('The image of the post (URLS)'),
-                  })
-                )
-                .describe(
-                  'first item is the post, every other item is the comments'
-                ),
-              settings: z
-                .array(
-                  z.object({
-                    key: z
-                      .string()
-                      .describe('Name of the settings key to pass'),
-                    value: z
-                      .any()
-                      .describe(
-                        'Value of the key, always prefer the id then label if possible'
-                      ),
-                  })
-                )
-                .describe(
-                  'This relies on the integrationSchema tool to get the settings [input:settings]'
-                ),
-            })
-          )
-          .describe('Individual post'),
-      }),
-      outputSchema: z.object({
-        output: z
-          .array(
-            z.object({
-              postId: z.string(),
-              integration: z.string(),
-            })
-          )
-          .or(z.object({ errors: z.string() })),
-      }),
-      execute: async (inputData, context) => {
-        checkAuth(inputData, context);
-        const organizationId = JSON.parse(
-          (context?.requestContext as any)?.get('organization') as string
-        ).id;
-        const finalOutput = [];
+            inputSchema: z.object({
+                socialPost: z
+                    .array(
+                        z.object({
+                            integrationId: z
+                                .string()
+                                .describe('The id of the integration (not internal id)'),
+                            isPremium: z
+                                .boolean()
+                                .describe(
+                                    "If the integration is X, return if it's premium or not"
+                                ),
+                            date: z.string().describe('The date of the post in UTC time'),
+                            shortLink: z
+                                .boolean()
+                                .describe(
+                                    'If the post has a link inside, we can ask the user if they want to add a short link'
+                                ),
+                            type: z
+                                .enum(['draft', 'schedule', 'now'])
+                                .describe(
+                                    'The type of the post, if we pass now, we should pass the current date also'
+                                ),
+                            postsAndComments: z
+                                .array(
+                                    z.object({
+                                        content: z
+                                            .string()
+                                            .describe(
+                                                "The content of the post, HTML, Each line must be wrapped in <p> here is the possible tags: h1, h2, h3, u, strong, li, ul, p (you can't have u and strong together)"
+                                            ),
+                                        attachments: z
+                                            .array(
+                                                z.object({
+                                                    id: z.string().describe('The id of the media if provided'),
+                                                    path: z.string().describe('The URL or path of the media'),
+                                                })
+                                            )
+                                            .describe('The image/video of the post. Always provide both id and path if available.'),
+                                    })
+                                )
+                                .describe(
+                                    'first item is the post, every other item is the comments'
+                                ),
+                            settings: z
+                                .array(
+                                    z.object({
+                                        key: z
+                                            .string()
+                                            .describe('Name of the settings key to pass'),
+                                        value: z
+                                            .any()
+                                            .describe(
+                                                'Value of the key, always prefer the id then label if possible'
+                                            ),
+                                    })
+                                )
+                                .describe(
+                                    'This relies on the integrationSchema tool to get the settings [input:settings]'
+                                ),
+                        })
+                    )
+                    .describe('Individual post'),
+            }),
+            outputSchema: z.object({
+                output: z
+                    .array(
+                        z.object({
+                            postId: z.string(),
+                            integration: z.string(),
+                        })
+                    )
+                    .or(z.object({ errors: z.string() })),
+            }),
+            execute: async (inputData, context) => {
+                checkAuth(inputData, context);
+                const organizationId = JSON.parse(
+                    (context?.requestContext as any)?.get('organization') as string
+                ).id;
+                const finalOutput = [];
 
-        const integrations = {} as Record<string, Integration>;
-        for (const platform of inputData.socialPost) {
-          integrations[platform.integrationId] =
-            await this._integrationService.getIntegrationById(
-              organizationId,
-              platform.integrationId
-            );
+                const integrations = {} as Record<string, Integration>;
+                for (const platform of inputData.socialPost) {
+                    integrations[platform.integrationId] =
+                        await this._integrationService.getIntegrationById(
+                            organizationId,
+                            platform.integrationId
+                        );
 
-          const { dto, maxLength, identifier } = socialIntegrationList.find(
-            (p) =>
-              p.identifier ===
-              integrations[platform.integrationId].providerIdentifier
-          )!;
+                    const { dto, maxLength, identifier } = socialIntegrationList.find(
+                        (p) =>
+                            p.identifier ===
+                            integrations[platform.integrationId].providerIdentifier
+                    )!;
 
-          if (dto) {
-            const newDTO = new dto();
-            const obj = Object.assign(
-              newDTO,
-              platform.settings.reduce(
-                (acc: AllProvidersSettings, s: { key: string; value: any }) => ({
-                  ...acc,
-                  [s.key]: s.value,
-                }),
-                {} as AllProvidersSettings
-              )
-            );
-            const errors = await validate(obj);
-            if (errors.length) {
-              return {
-                errors: JSON.stringify(errors),
-              };
-            }
+                    if (dto) {
+                        const newDTO = new dto();
+                        const obj = Object.assign(
+                            newDTO,
+                            platform.settings.reduce(
+                                (acc: AllProvidersSettings, s: { key: string; value: any }) => ({
+                                    ...acc,
+                                    [s.key]: s.value,
+                                }),
+                                {} as AllProvidersSettings
+                            )
+                        );
+                        const errors = await validate(obj);
+                        if (errors.length) {
+                            return {
+                                errors: JSON.stringify(errors),
+                            };
+                        }
 
-            const errorsLength = [];
-            for (const post of platform.postsAndComments) {
-              const maximumCharacters = maxLength(platform.isPremium);
-              const strip = stripHtmlValidation('normal', post.content, true);
-              const weightedLength = countCharacters(strip, identifier || '');
-              const totalCharacters =
-                weightedLength > strip.length ? weightedLength : strip.length;
+                        const errorsLength = [];
+                        for (const post of platform.postsAndComments) {
+                            const maximumCharacters = maxLength(platform.isPremium);
+                            const strip = stripHtmlValidation('normal', post.content, true);
+                            const weightedLength = countCharacters(strip, identifier || '');
+                            const totalCharacters =
+                                weightedLength > strip.length ? weightedLength : strip.length;
 
-              if (totalCharacters > (maximumCharacters || 1000000)) {
-                errorsLength.push({
-                  value: post.content,
-                  error: `The maximum characters is ${maximumCharacters}, we got ${totalCharacters}, please fix it, and try integrationSchedulePostTool again.`,
-                });
-              }
-            }
+                            if (totalCharacters > (maximumCharacters || 1000000)) {
+                                errorsLength.push({
+                                    value: post.content,
+                                    error: `The maximum characters is ${maximumCharacters}, we got ${totalCharacters}, please fix it, and try integrationSchedulePostTool again.`,
+                                });
+                            }
+                        }
 
-            if (errorsLength.length) {
-              return {
-                errors: JSON.stringify(errorsLength),
-              };
-            }
-          }
-        }
+                        if (errorsLength.length) {
+                            return {
+                                errors: JSON.stringify(errorsLength),
+                            };
+                        }
+                    }
+                }
 
-        for (const post of inputData.socialPost) {
-          const integration = integrations[post.integrationId];
+                for (const post of inputData.socialPost) {
+                    const integration = integrations[post.integrationId];
 
-          if (!integration) {
-            throw new Error('Integration not found');
-          }
+                    if (!integration) {
+                        throw new Error('Integration not found');
+                    }
 
-          const output = await this._postsService.createPost(organizationId, {
-            date: post.date,
-            type: post.type as 'draft' | 'schedule' | 'now',
-            shortLink: post.shortLink,
-            tags: [],
-            posts: [
-              {
-                integration,
-                group: makeId(10),
-                settings: post.settings.reduce(
-                  (acc: AllProvidersSettings, s: { key: string; value: any }) => ({
-                    ...acc,
-                    [s.key]: s.value,
-                  }),
-                  {
-                    __type: integration.providerIdentifier,
-                  } as AllProvidersSettings
-                ),
-                value: post.postsAndComments.map((p: any) => ({
-                  content: p.content,
-                  id: makeId(10),
-                  delay: 0,
-                  image: p.attachments.map((p: any) => ({
-                    id: makeId(10),
-                    path: p,
-                  })),
-                })),
-              },
-            ],
-          });
-          finalOutput.push(...output);
-        }
+                    const output = await this._postsService.createPost(organizationId, {
+                        date: post.date,
+                        type: post.type as 'draft' | 'schedule' | 'now',
+                        shortLink: post.shortLink,
+                        tags: [],
+                        posts: [
+                            {
+                                integration,
+                                group: makeId(10),
+                                settings: post.settings.reduce(
+                                    (acc: AllProvidersSettings, s: { key: string; value: any }) => ({
+                                        ...acc,
+                                        [s.key]: s.value,
+                                    }),
+                                    {
+                                        __type: integration.providerIdentifier,
+                                    } as AllProvidersSettings
+                                ),
+                                value: post.postsAndComments.map((p: any) => ({
+                                    content: p.content,
+                                    id: makeId(10),
+                                    delay: 0,
+                                    image: p.attachments.map((a: any) => ({
+                                        id: a.id || makeId(10),
+                                        path: a.path,
+                                    })),
+                                })),
+                            },
+                        ],
+                    });
+                    finalOutput.push(...output);
+                }
 
-        return {
-          output: finalOutput,
-        };
-      },
-    });
-  }
+                return {
+                    output: finalOutput,
+                };
+            },
+        });
+    }
 }
