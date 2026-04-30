@@ -41,10 +41,18 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
   override handleErrors(body: string):
     | {
-        type: 'refresh-token' | 'bad-body';
-        value: string;
-      }
+      type: 'refresh-token' | 'bad-body';
+      value: string;
+    }
     | undefined {
+    if (body.includes('Unauthorized') || body.includes('"code":401') || body.includes('"code":32')) {
+      return {
+        type: 'bad-body',
+        value:
+          'X API returned Unauthorized. This may be a transient rate-limit issue on the Free tier. If this persists, try reconnecting your X account or check your X API plan limits.',
+      };
+    }
+
     if (body.includes('Unsupported Authentication')) {
       return {
         type: 'refresh-token',
@@ -281,7 +289,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       const { url, oauth_token, oauth_token_secret } =
         await client.generateAuthLink(
           (process.env.X_URL || process.env.FRONTEND_URL) +
-            `/integrations/social/x`,
+          `/integrations/social/x`,
           {
             authAccessType: 'write',
             linkMode: 'authenticate',
@@ -370,13 +378,13 @@ export class XProvider extends SocialAbstract implements SocialProvider {
                     m.path.indexOf('mp4') > -1
                       ? Buffer.from(await readOrFetch(m.path))
                       : await sharp(await readOrFetch(m.path), {
-                          animated: lookup(m.path) === 'image/gif',
+                        animated: lookup(m.path) === 'image/gif',
+                      })
+                        .resize({
+                          width: 1000,
                         })
-                          .resize({
-                            width: 1000,
-                          })
-                          .gif()
-                          .toBuffer(),
+                        .gif()
+                        .toBuffer(),
                     {
                       media_type: (lookup(m.path) || '') as any,
                     }
@@ -454,11 +462,11 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       thread_finisher: string;
       community?: string;
       who_can_reply_post:
-        | 'everyone'
-        | 'following'
-        | 'mentionedUsers'
-        | 'subscribers'
-        | 'verified';
+      | 'everyone'
+      | 'following'
+      | 'mentionedUsers'
+      | 'subscribers'
+      | 'verified';
       made_with_ai?: boolean;
       paid_partnership?: boolean;
     }>[]
@@ -466,72 +474,93 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const startedAt = Date.now();
     const [firstPost] = postDetails;
     let client: TwitterApi | undefined;
+    const maxRetries = 2;
 
-    try {
-      client = await this.getClient(accessToken);
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        client = await this.getClient(accessToken);
 
-      // upload media for the first post
-      const uploadAll = await this.uploadMedia(client, [firstPost]);
+        // upload media for the first post
+        const uploadAll = await this.uploadMedia(client, [firstPost]);
 
-      const media_ids = (uploadAll[firstPost.id] || []).filter((f) => f);
+        const media_ids = (uploadAll[firstPost.id] || []).filter((f) => f);
 
-      // @ts-ignore
-      const { data }: { data: { id: string } } = await this.runInConcurrent(
-        async () =>
-          // @ts-ignore
-          client.v2.tweet({
-            ...(!firstPost?.settings?.who_can_reply_post ||
-            firstPost?.settings?.who_can_reply_post === 'everyone'
-              ? {}
-              : {
+        // @ts-ignore
+        const { data }: { data: { id: string } } = await this.runInConcurrent(
+          async () =>
+            // @ts-ignore
+            client.v2.tweet({
+              ...(!firstPost?.settings?.who_can_reply_post ||
+                firstPost?.settings?.who_can_reply_post === 'everyone'
+                ? {}
+                : {
                   reply_settings: firstPost?.settings?.who_can_reply_post,
                 }),
-            ...(firstPost?.settings?.community
-              ? {
+              ...(firstPost?.settings?.community
+                ? {
                   share_with_followers: true,
                   community_id:
                     firstPost?.settings?.community?.split('/').pop() || '',
                 }
-              : {}),
-            text: firstPost.message,
-            ...(media_ids.length ? { media: { media_ids } } : {}),
-            made_with_ai: !!firstPost?.settings?.made_with_ai,
-            paid_partnership: !!firstPost?.settings?.paid_partnership,
-          })
-      );
-
-      return [
-        {
-          postId: data.id,
-          id: firstPost.id,
-          releaseURL: `https://twitter.com/i/web/status/${data.id}`,
-          status: 'posted',
-        },
-      ];
-    } catch (err) {
-      if (client && firstPost) {
-        const recentTweet = await this.findRecentlyPostedTweet(
-          client,
-          id,
-          firstPost.message || '',
-          startedAt
+                : {}),
+              text: firstPost.message,
+              ...(media_ids.length ? { media: { media_ids } } : {}),
+              made_with_ai: !!firstPost?.settings?.made_with_ai,
+              paid_partnership: !!firstPost?.settings?.paid_partnership,
+            })
         );
 
-        if (recentTweet) {
-          return [
-            {
-              postId: recentTweet.id,
-              id: firstPost.id,
-              releaseURL: `https://twitter.com/i/web/status/${recentTweet.id}`,
-              status: 'posted',
-            },
-          ];
-        }
-      }
+        return [
+          {
+            postId: data.id,
+            id: firstPost.id,
+            releaseURL: `https://twitter.com/i/web/status/${data.id}`,
+            status: 'posted',
+          },
+        ];
+      } catch (err: any) {
+        const errMsg = err?.message || err?.cause?.message || '';
+        const isUnauthorized =
+          errMsg.includes('Unauthorized') ||
+          errMsg.includes('401');
 
-      console.error('X POST ERROR:', err);
-      throw err;
+        // Retry on transient Unauthorized errors (common on X Free tier)
+        if (isUnauthorized && attempt < maxRetries) {
+          console.warn(
+            `X POST: Transient Unauthorized error on attempt ${attempt + 1}/${maxRetries + 1}, retrying in ${5 + attempt * 5}s...`
+          );
+          await timer(5000 + attempt * 5000);
+          continue;
+        }
+
+        // On final attempt, check if the tweet was actually posted
+        if (client && firstPost) {
+          const recentTweet = await this.findRecentlyPostedTweet(
+            client,
+            id,
+            firstPost.message || '',
+            startedAt
+          );
+
+          if (recentTweet) {
+            return [
+              {
+                postId: recentTweet.id,
+                id: firstPost.id,
+                releaseURL: `https://twitter.com/i/web/status/${recentTweet.id}`,
+                status: 'posted',
+              },
+            ];
+          }
+        }
+
+        console.error('X POST ERROR:', err);
+        throw err;
+      }
     }
+
+    // Should never reach here, but just in case
+    throw new Error('X POST: Max retries exceeded');
   }
 
   async comment(
@@ -632,12 +661,12 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       ...tweets.data.data,
       ...(tweets.data.data.length === 100
         ? await this.loadAllTweets(
-            client,
-            id,
-            until,
-            since,
-            tweets.meta.next_token
-          )
+          client,
+          id,
+          until,
+          since,
+          tweets.meta.next_token
+        )
         : []),
     ];
   };
