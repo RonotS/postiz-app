@@ -491,6 +491,11 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
         const media_ids = (uploadAll[firstPost.id] || []).filter((f) => f);
 
+        // Anti-bot Jitter: Wait randomly between 8 to 25 seconds to break rigid bot-filter patterns
+        const jitterMs = Math.floor(Math.random() * 17000) + 8000;
+        console.log(`X POST Jitter: waiting ${jitterMs / 1000}s to mimic human behavior...`);
+        await timer(jitterMs);
+
         // @ts-ignore
         const { data }: { data: { id: string } } = await this.runInConcurrent(
           async () =>
@@ -607,6 +612,11 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         const media_ids = (uploadAll[commentPost.id] || []).filter((f) => f);
 
         const replyToId = lastCommentId || postId;
+
+        // Anti-bot Jitter: Wait randomly between 8 to 25 seconds
+        const jitterMs = Math.floor(Math.random() * 17000) + 8000;
+        console.log(`X COMMENT Jitter: waiting ${jitterMs / 1000}s to mimic human behavior...`);
+        await timer(jitterMs);
 
         // @ts-ignore
         const { data }: { data: { id: string } } = await this.runInConcurrent(
