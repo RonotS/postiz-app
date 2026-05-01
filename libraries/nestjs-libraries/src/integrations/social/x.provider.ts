@@ -595,6 +595,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const startedAt = Date.now();
     const [commentPost] = postDetails;
     let client: TwitterApi | undefined;
+    const maxRetries = 2;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
