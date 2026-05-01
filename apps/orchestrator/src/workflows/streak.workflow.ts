@@ -15,6 +15,9 @@ export async function streakWorkflow({
   await setStreak(organizationId, 'start');
   await sleep(79200000);
   const userOrgs = await getUserOrgs(organizationId);
+  if (!userOrgs || !userOrgs.users) {
+    return;
+  }
   for (const user of userOrgs.users) {
     if (!user.user.sendStreakEmails) {
       continue;

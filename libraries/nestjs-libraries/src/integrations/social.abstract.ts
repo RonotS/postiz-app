@@ -79,6 +79,10 @@ export abstract class SocialAbstract {
     try {
       value = await func();
     } catch (err: any) {
+      console.error('--- RAW SOCIAL API ERROR ---');
+      console.error('Message:', err?.message);
+      console.error('Data:', JSON.stringify(err?.data || err, null, 2));
+      console.error('----------------------------');
       const handle = this.handleErrors(safeStringify(err), 200);
       const fallback =
         err?.data?.detail ||
