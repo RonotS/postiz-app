@@ -481,7 +481,13 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         client = await this.getClient(accessToken);
 
         // upload media for the first post
-        const uploadAll = await this.uploadMedia(client, [firstPost]);
+        let uploadAll = {};
+        try {
+          uploadAll = await this.uploadMedia(client, [firstPost]);
+        } catch (mediaErr: any) {
+          console.error('X MEDIA UPLOAD ERROR:', JSON.stringify(mediaErr?.data || mediaErr, null, 2));
+          throw mediaErr;
+        }
 
         const media_ids = (uploadAll[firstPost.id] || []).filter((f) => f);
 
@@ -520,16 +526,26 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         ];
       } catch (err: any) {
         const errMsg = err?.message || err?.cause?.message || '';
+        const rawData = err?.data || {};
+        const rawString = JSON.stringify(rawData);
         const isUnauthorized =
           errMsg.includes('Unauthorized') ||
-          errMsg.includes('401');
+          errMsg.includes('401') ||
+          errMsg.includes('32') ||
+          rawString.includes('Unauthorized') ||
+          rawString.includes('401') ||
+          rawString.includes('32') ||
+          rawString.includes('Could not authenticate you');
 
         // Retry on transient Unauthorized errors (common on X Free tier)
         if (isUnauthorized && attempt < maxRetries) {
+          const waitTime = (10 + attempt * 10) * 1000;
           console.warn(
-            `X POST: Transient Unauthorized error on attempt ${attempt + 1}/${maxRetries + 1}, retrying in ${5 + attempt * 5}s...`
+            `X POST: Transient error on attempt ${attempt + 1}/${maxRetries + 1}. ` +
+            `Error: ${errMsg}. Raw Data: ${rawString}. ` +
+            `Retrying in ${waitTime / 1000}s...`
           );
-          await timer(5000 + attempt * 5000);
+          await timer(waitTime);
           continue;
         }
 
@@ -554,7 +570,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           }
         }
 
-        console.error('X POST ERROR:', err);
+        console.error('X POST FINAL ERROR:', JSON.stringify(err?.data || err, null, 2));
         throw err;
       }
     }
@@ -580,60 +596,85 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const [commentPost] = postDetails;
     let client: TwitterApi | undefined;
 
-    try {
-      client = await this.getClient(accessToken);
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        client = await this.getClient(accessToken);
 
-      // upload media for the comment
-      const uploadAll = await this.uploadMedia(client, [commentPost]);
+        // upload media for the comment
+        const uploadAll = await this.uploadMedia(client, [commentPost]);
 
-      const media_ids = (uploadAll[commentPost.id] || []).filter((f) => f);
+        const media_ids = (uploadAll[commentPost.id] || []).filter((f) => f);
 
-      const replyToId = lastCommentId || postId;
+        const replyToId = lastCommentId || postId;
 
-      // @ts-ignore
-      const { data }: { data: { id: string } } = await this.runInConcurrent(
-        async () =>
-          // @ts-ignore
-          client.v2.tweet({
-            text: commentPost.message,
-            ...(media_ids.length ? { media: { media_ids } } : {}),
-            reply: { in_reply_to_tweet_id: replyToId },
-            made_with_ai: !!commentPost?.settings?.made_with_ai,
-            paid_partnership: !!commentPost?.settings?.paid_partnership,
-          })
-      );
-
-      return [
-        {
-          postId: data.id,
-          id: commentPost.id,
-          releaseURL: `https://twitter.com/i/web/status/${data.id}`,
-          status: 'posted',
-        },
-      ];
-    } catch (err) {
-      if (client && commentPost) {
-        const recentTweet = await this.findRecentlyPostedTweet(
-          client,
-          id,
-          commentPost.message || '',
-          startedAt
+        // @ts-ignore
+        const { data }: { data: { id: string } } = await this.runInConcurrent(
+          async () =>
+            // @ts-ignore
+            client.v2.tweet({
+              text: commentPost.message,
+              ...(media_ids.length ? { media: { media_ids } } : {}),
+              reply: { in_reply_to_tweet_id: replyToId },
+              made_with_ai: !!commentPost?.settings?.made_with_ai,
+              paid_partnership: !!commentPost?.settings?.paid_partnership,
+            })
         );
 
-        if (recentTweet) {
-          return [
-            {
-              postId: recentTweet.id,
-              id: commentPost.id,
-              releaseURL: `https://twitter.com/i/web/status/${recentTweet.id}`,
-              status: 'posted',
-            },
-          ];
-        }
-      }
+        return [
+          {
+            postId: data.id,
+            id: commentPost.id,
+            releaseURL: `https://twitter.com/i/web/status/${data.id}`,
+            status: 'posted',
+          },
+        ];
+      } catch (err: any) {
+        const errMsg = err?.message || err?.cause?.message || '';
+        const rawData = err?.data || {};
+        const rawString = JSON.stringify(rawData);
+        const isUnauthorized =
+          errMsg.includes('Unauthorized') ||
+          errMsg.includes('401') ||
+          errMsg.includes('32') ||
+          rawString.includes('Unauthorized') ||
+          rawString.includes('401') ||
+          rawString.includes('32') ||
+          rawString.includes('Could not authenticate you');
 
-      console.error('X COMMENT ERROR:', err);
-      throw err;
+        // Retry on transient errors
+        if (isUnauthorized && attempt < maxRetries) {
+          const waitTime = (10 + attempt * 10) * 1000;
+          console.warn(
+            `X COMMENT: Transient error on attempt ${attempt + 1}/${maxRetries + 1}. ` +
+            `Retrying in ${waitTime / 1000}s...`
+          );
+          await timer(waitTime);
+          continue;
+        }
+
+        if (client && commentPost) {
+          const recentTweet = await this.findRecentlyPostedTweet(
+            client,
+            id,
+            commentPost.message || '',
+            startedAt
+          );
+
+          if (recentTweet) {
+            return [
+              {
+                postId: recentTweet.id,
+                id: commentPost.id,
+                releaseURL: `https://twitter.com/i/web/status/${recentTweet.id}`,
+                status: 'posted',
+              },
+            ];
+          }
+        }
+
+        console.error('X COMMENT ERROR:', JSON.stringify(err?.data || err, null, 2));
+        throw err;
+      }
     }
   }
 
