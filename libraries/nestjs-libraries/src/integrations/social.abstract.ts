@@ -92,19 +92,21 @@ export abstract class SocialAbstract {
         err?.cause?.message ||
         err?.message ||
         'Unknown Error';
-      value = { err: true, value: fallback, ...(handle || {}) };
+      const rawDiag = JSON.stringify(err?.data || err?.message || '');
+      value = { err: true, value: fallback, ...(handle || {}), rawDiag };
     }
 
     if (value && value?.err && value?.value) {
       if (value.type === 'refresh-token') {
         throw new RefreshToken(
-          '',
+          'Refresh token is needed',
           safeStringify({}),
           {} as any,
           value.value || ''
         );
       }
-      throw new BadBody('', safeStringify({}), {} as any, value.value || '');
+      const rawDiagMsg = value.rawDiag ? ` | DIAGNOSTICS: ${value.rawDiag}` : '';
+      throw new BadBody('', safeStringify({}), {} as any, (value.value || '') + rawDiagMsg);
     }
 
     return value;
