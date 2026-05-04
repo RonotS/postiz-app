@@ -285,7 +285,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     disabled: !!process.env.DISABLE_X_ANALYTICS,
     description:
       'When a post reaches a certain number of likes, send a Direct Message to those who liked it. Note: Users must follow you or have open DMs, and X API rate limits apply.',
-    runEveryMilliseconds: 120000, // Changed to 2 minutes for testing!
+    runEveryMilliseconds: 18000000, // 5 hours
     totalRuns: 3,
     fields: [
       {
