@@ -113,6 +113,17 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       };
     }
 
+    if (
+      body.includes('subset of X API V2 endpoints') ||
+      body.includes('different access level')
+    ) {
+      return {
+        type: 'bad-body',
+        value:
+          'This X endpoint is not available on your current API access. Auto-DM uses POST /2/dm_conversations/with/:participant_id/messages and requires DM permission on your X App plus a plan/credits that cover "DM Interaction: Create". Check your X Developer Portal app permissions ("Read and write and Direct Messages") and your billing plan.',
+      };
+    }
+
     try {
       const parsed = JSON.parse(body);
       const errors = parsed?.data?.errors || parsed?.errors;
@@ -268,6 +279,71 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     return false;
   }
 
+  @Plug({
+    identifier: 'x-autoDmEngagers',
+    title: 'Auto DM Engagers (Likes)',
+    disabled: !!process.env.DISABLE_X_ANALYTICS,
+    description:
+      'When a post reaches a certain number of likes, send a Direct Message to those who liked it. Note: Users must follow you or have open DMs, and X API rate limits apply.',
+    runEveryMilliseconds: 120000, // Changed to 2 minutes for testing!
+    totalRuns: 3,
+    fields: [
+      {
+        name: 'likesAmount',
+        type: 'number',
+        placeholder: 'Amount of likes',
+        description: 'The amount of likes to trigger the DMs',
+        validation: /^\d+$/,
+      },
+      {
+        name: 'message',
+        type: 'richtext',
+        placeholder: 'Message to send',
+        description: 'The Direct Message content to send',
+        validation: /^[\s\S]{3,}$/g,
+      },
+    ],
+  })
+  async autoDmEngagers(
+    integration: Integration,
+    id: string,
+    fields: { likesAmount: string; message: string }
+  ) {
+    const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+    const client = new TwitterApi({
+      appKey: process.env.X_API_KEY!,
+      appSecret: process.env.X_API_SECRET!,
+      accessToken: accessTokenSplit,
+      accessSecret: accessSecretSplit,
+    });
+
+    try {
+      const likesResponse = await client.v2.tweetLikedBy(id, { max_results: 100 });
+      if (likesResponse.meta.result_count >= +fields.likesAmount) {
+        const users = likesResponse.data;
+        if (!users) return false;
+
+        let dmSent = false;
+        for (const user of users) {
+          try {
+            await timer(2000); // 2 second delay to avoid aggressive rate limits
+            await client.v2.sendDmToParticipant(user.id, {
+              text: stripHtmlValidation('normal', fields.message, true),
+            });
+            dmSent = true;
+          } catch (dmErr: any) {
+            console.error(`X AUTO DM ERROR for user ${user.id}:`, dmErr?.data || dmErr);
+          }
+        }
+        return dmSent;
+      }
+    } catch (err) {
+      console.error('X AUTO DM FATAL ERROR:', err);
+    }
+
+    return false;
+  }
+
   async refreshToken(): Promise<AuthTokenDetails> {
     return {
       id: '',
@@ -291,9 +367,12 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           (process.env.X_URL || process.env.FRONTEND_URL) +
           `/integrations/social/x`,
           {
-            authAccessType: 'write',
+            // Omit authAccessType so the minted token inherits the App's full
+            // permission set (Read + Write + Direct Messages). Passing 'write'
+            // caps the token at write-only and excludes DM scope, regardless
+            // of what the App is configured for in the X Developer Portal.
             linkMode: 'authenticate',
-            forceLogin: false,
+            forceLogin: true,
           }
         );
       return {
@@ -481,7 +560,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         client = await this.getClient(accessToken);
 
         // upload media for the first post
-        let uploadAll = {};
+        let uploadAll: Record<string, string[]> = {};
         try {
           uploadAll = await this.uploadMedia(client, [firstPost]);
         } catch (mediaErr: any) {
@@ -489,7 +568,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           throw mediaErr;
         }
 
-        const media_ids = (uploadAll[firstPost.id] || []).filter((f) => f);
+        const media_ids = (uploadAll[firstPost.id] || []).filter((f: string) => f);
 
         // Anti-bot Jitter: Wait randomly between 8 to 25 seconds to break rigid bot-filter patterns
         const jitterMs = Math.floor(Math.random() * 17000) + 8000;
@@ -609,7 +688,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         // upload media for the comment
         const uploadAll = await this.uploadMedia(client, [commentPost]);
 
-        const media_ids = (uploadAll[commentPost.id] || []).filter((f) => f);
+        const media_ids = (uploadAll[commentPost.id] || []).filter((f: string) => f);
 
         const replyToId = lastCommentId || postId;
 
