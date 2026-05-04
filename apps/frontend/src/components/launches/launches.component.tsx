@@ -594,7 +594,7 @@ export const LaunchesComponent = () => {
         </div>
         <div className="bg-newBgColorInner flex-1 flex-col flex p-[10px] md:p-[20px] gap-[12px] min-w-0 overflow-hidden">
           <Filters />
-          <div className="flex-1 flex">
+          <div className="flex-1 flex overflow-x-auto overflow-y-hidden min-w-0">
             <Calendar />
           </div>
         </div>

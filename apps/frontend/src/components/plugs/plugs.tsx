@@ -122,7 +122,7 @@ export const Plugs = () => {
     <>
       <div
         className={clsx(
-          'bg-newBgColorInner p-[20px] flex flex-col gap-[15px] transition-all',
+          'bg-newBgColorInner p-[20px] hidden md:flex flex-col gap-[15px] transition-all flex-shrink-0',
           collapseMenu === '1' ? 'group sidebar w-[100px]' : 'w-[260px]'
         )}
       >
@@ -220,7 +220,47 @@ export const Plugs = () => {
           ))}
         </div>
       </div>
-      <div className="bg-newBgColorInner flex-1 flex-col flex p-[20px] gap-[12px]">
+      <div className="bg-newBgColorInner flex-1 flex-col flex p-[10px] md:p-[20px] gap-[12px] min-w-0 overflow-x-hidden">
+        <div className="md:hidden flex gap-[8px] overflow-x-auto pb-[8px] scrollbar-thin">
+          {sortedIntegrations.map((integration, index) => (
+            <div
+              key={integration.id}
+              onClick={() => {
+                if (integration.refreshNeeded) {
+                  toaster.show(
+                    'Please refresh the integration from the calendar',
+                    'warning'
+                  );
+                  return;
+                }
+                setRefresh(true);
+                setTimeout(() => setRefresh(false), 10);
+                setCurrent(index);
+              }}
+              className={clsx(
+                'relative flex-shrink-0 cursor-pointer',
+                currentIntegration?.id !== integration.id &&
+                  'opacity-40 hover:opacity-100'
+              )}
+            >
+              <ImageWithFallback
+                fallbackSrc={`/icons/platforms/${integration.identifier}.png`}
+                src={integration.picture}
+                className="rounded-[8px]"
+                alt={integration.identifier}
+                width={36}
+                height={36}
+              />
+              <SafeImage
+                src={`/icons/platforms/${integration.identifier}.png`}
+                className="rounded-[8px] absolute z-10 bottom-[3px] -end-[3px] border border-fifth"
+                alt={integration.identifier}
+                width={14}
+                height={14}
+              />
+            </div>
+          ))}
+        </div>
         <PlugsContext.Provider value={currentIntegrationPlug}>
           <Plug />
         </PlugsContext.Provider>

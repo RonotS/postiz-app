@@ -101,16 +101,18 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
                   <AnnouncementBanner />
                   <div className="flex-1 flex gap-[8px]">
                     <Support />
-                    <div className="hidden md:flex flex-col bg-newBgColorInner w-[80px] rounded-[12px]">
+                    <div className="hidden md:flex flex-col bg-newBgColorInner w-[180px] rounded-[12px]">
                       <div
                         id="left-menu"
                         className={clsx(
-                          'hidden md:flex fixed h-full w-[64px] start-[17px] top-0',
+                          'hidden md:flex fixed h-full w-[164px] start-[20px] top-0',
                           user?.admin && 'pt-[60px] max-h-[1000px]:w-[500px]'
                         )}
                       >
-                        <div className="flex flex-col h-full gap-[32px] flex-1 py-[12px]">
-                          <Logo />
+                        <div className="flex flex-col h-full gap-[32px] flex-1 py-[12px] px-[8px]">
+                          <div className="flex items-center justify-start ps-[12px]">
+                            <Logo />
+                          </div>
                           <TopMenu />
                         </div>
                       </div>

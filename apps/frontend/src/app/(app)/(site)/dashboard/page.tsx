@@ -43,13 +43,13 @@ export default function DashboardPage() {
   ];
 
   return (
-    <div className="flex h-screen bg-[#111] overflow-hidden text-white flex-col">
-      <div className="flex flex-1 overflow-hidden">
+    <div className="flex flex-1 min-h-0 bg-[#111] text-white flex-col w-full">
+      <div className="flex flex-1 min-h-0 flex-col lg:flex-row w-full">
         {/* Left Section: Inspirations */}
-        <div className="flex-1 overflow-y-auto p-8 border-r border-white/5 custom-scrollbar">
-          <header className="mb-8">
-            <div className="flex items-center gap-2 mb-2">
-              <h1 className="text-2xl font-bold text-white">
+        <div className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 lg:p-8 border-b lg:border-b-0 lg:border-r border-white/5 custom-scrollbar">
+          <header className="mb-6 sm:mb-8">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
+              <h1 className="text-xl sm:text-2xl font-bold text-white">
                 {t('tweet_inspirations', 'Tweet Inspirations For You')}
               </h1>
               <span className="text-white/40 cursor-help">ⓘ</span>
@@ -68,24 +68,24 @@ export default function DashboardPage() {
             </button>
           </div>
 
-          <div className="columns-1 md:columns-2 gap-6 space-y-6">
+          <div className="columns-1 md:columns-2 gap-4 sm:gap-6 space-y-4 sm:space-y-6">
             {inspirations.map((item) => (
-              <div key={item.id} className="break-inside-avoid bg-white/[0.03] border border-white/10 rounded-xl p-5 hover:border-white/20 transition-all group">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <img src={item.avatar} className="w-8 h-8 rounded-full bg-white/10" alt="" />
-                    <span className="text-white/40 text-xs font-medium">{item.date}</span>
+              <div key={item.id} className="break-inside-avoid bg-white/[0.03] border border-white/10 rounded-xl p-4 sm:p-5 hover:border-white/20 transition-all group">
+                <div className="flex items-center justify-between mb-4 gap-2">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <img src={item.avatar} className="w-8 h-8 rounded-full bg-white/10 flex-shrink-0" alt="" />
+                    <span className="text-white/40 text-xs font-medium truncate">{item.date}</span>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-shrink-0">
                     <span className="text-blue-400 text-xs opacity-60">⚡</span>
                     <span className="text-orange-400 text-xs opacity-60">☆</span>
                   </div>
                 </div>
-                <p className="text-white/90 text-[15px] leading-relaxed mb-6 whitespace-pre-wrap font-medium">
+                <p className="text-white/90 text-[15px] leading-relaxed mb-6 whitespace-pre-wrap font-medium break-words">
                   {item.content}
                 </p>
-                <div className="flex items-center justify-between pt-4 border-t border-white/5">
-                  <div className="flex gap-4">
+                <div className="flex items-center justify-between pt-4 border-t border-white/5 gap-2 flex-wrap">
+                  <div className="flex gap-3 sm:gap-4 flex-wrap">
                     <div className="flex items-center gap-1 text-white/40 text-xs">
                       <span>♡</span> {item.stats.likes}
                     </div>
@@ -96,8 +96,8 @@ export default function DashboardPage() {
                       <span>📊</span> {item.stats.views}
                     </div>
                   </div>
-                  <div className="flex gap-2">
-                    <button className="px-4 py-1.5 rounded-full bg-white/5 border border-white/10 text-blue-400 text-xs font-bold hover:bg-white/10 transition-colors">
+                  <div className="flex gap-2 flex-shrink-0">
+                    <button className="px-3 sm:px-4 py-1.5 rounded-full bg-white/5 border border-white/10 text-blue-400 text-xs font-bold hover:bg-white/10 transition-colors whitespace-nowrap">
                       {t('edit_tweet', 'Edit & tweet')}
                     </button>
                     <button className="text-white/20 hover:text-white transition-colors">...</button>
@@ -109,7 +109,7 @@ export default function DashboardPage() {
         </div>
 
         {/* Right Section: Composer */}
-        <div className="w-[400px] flex flex-col bg-[#161616] border-l border-white/10">
+        <div className="w-full lg:w-[400px] lg:flex-shrink-0 flex flex-col bg-[#161616] lg:border-l border-white/10">
           <div className="p-4 border-b border-white/5 flex gap-2">
             <button className="p-2 hover:bg-white/5 rounded-lg text-white/40">⇥</button>
             <button className="p-2 hover:bg-white/5 rounded-lg text-white/40">⛶</button>
@@ -128,13 +128,13 @@ export default function DashboardPage() {
             ))}
           </nav>
 
-          <div className="flex-1 p-6 flex flex-col gap-4">
+          <div className="flex-1 p-4 sm:p-6 flex flex-col gap-4 min-h-[280px]">
             <div className="flex justify-between items-center">
               <h3 className="text-white font-bold text-sm">{t('your_content', 'Your content')}</h3>
               <button className="text-blue-400 text-xs font-bold hover:underline">+ {t('new_draft', 'New draft')}</button>
             </div>
 
-            <div className="flex-1 bg-white/[0.02] border border-white/5 rounded-2xl p-6 relative group focus-within:border-white/20 transition-all">
+            <div className="flex-1 bg-white/[0.02] border border-white/5 rounded-2xl p-4 sm:p-6 relative group focus-within:border-white/20 transition-all">
               <textarea
                 className="w-full h-full bg-transparent border-none outline-none text-white resize-none placeholder:text-white/20 text-[15px]"
                 placeholder={t('write_here', 'Write here.\n\nSkip 3 lines to start a thread.')}
@@ -145,7 +145,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="p-6 border-t border-white/5 flex flex-col gap-4">
+          <div className="p-4 sm:p-6 border-t border-white/5 flex flex-col gap-4">
             <div className="flex gap-4">
               <button className="text-white/40 hover:text-white transition-colors text-xl">📷</button>
               <button className="text-white/40 hover:text-white transition-colors text-xl">T</button>
