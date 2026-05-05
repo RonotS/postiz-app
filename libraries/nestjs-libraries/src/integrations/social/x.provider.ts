@@ -179,13 +179,15 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       accessSecret: accessSecretSplit,
     });
 
-    if (
-      (await client.v2.tweetLikedBy(id)).meta.result_count >=
-      +fields.likesAmount
-    ) {
-      await timer(2000);
-      await client.v2.retweet(integration.internalId, id);
-      return true;
+    try {
+      const likes = await client.v2.tweetLikedBy(id);
+      if ((likes?.meta?.result_count || 0) >= +fields.likesAmount) {
+        await timer(2000);
+        await client.v2.retweet(integration.internalId, id);
+        return true;
+      }
+    } catch (err) {
+      console.error('X AUTO REPOST ERROR:', err);
     }
 
     return false;
@@ -225,11 +227,11 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
   @Plug({
     identifier: 'x-autoPlugPost',
-    title: 'Auto plug post',
+    title: 'Auto Reply (Plug)',
     disabled: !!process.env.DISABLE_X_ANALYTICS,
     description:
-      'When a post reached a certain number of likes, add another post to it so you followers get a notification about your promotion',
-    runEveryMilliseconds: 21600000,
+      'When a post reaches a certain number of likes, automatically reply to the original post with your promotional message.',
+    runEveryMilliseconds: 120000, // 2 minutes for testing
     totalRuns: 3,
     fields: [
       {
@@ -263,17 +265,19 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       accessSecret: accessSecretSplit,
     });
 
-    if (
-      (await client.v2.tweetLikedBy(id)).meta.result_count >=
-      +fields.likesAmount
-    ) {
-      await timer(2000);
+    try {
+      const likes = await client.v2.tweetLikedBy(id);
+      if ((likes?.meta?.result_count || 0) >= +fields.likesAmount) {
+        await timer(2000);
 
-      await client.v2.tweet({
-        text: stripHtmlValidation('normal', fields.post, true),
-        reply: { in_reply_to_tweet_id: id },
-      });
-      return true;
+        await client.v2.tweet({
+          text: stripHtmlValidation('normal', fields.post, true),
+          reply: { in_reply_to_tweet_id: id },
+        });
+        return true;
+      }
+    } catch (err) {
+      console.error('X AUTO PLUG ERROR:', err);
     }
 
     return false;
@@ -281,11 +285,11 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
   @Plug({
     identifier: 'x-autoDmEngagers',
-    title: 'Auto DM Engagers (Likes)',
+    title: 'Direct Message',
     disabled: !!process.env.DISABLE_X_ANALYTICS,
     description:
       'When a post reaches a certain number of likes, send a Direct Message to those who liked it. Note: Users must follow you or have open DMs, and X API rate limits apply.',
-    runEveryMilliseconds: 18000000, // 5 hours
+    runEveryMilliseconds: 120000, // 2 minutes for testing
     totalRuns: 3,
     fields: [
       {
@@ -319,8 +323,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
     try {
       const likesResponse = await client.v2.tweetLikedBy(id, { max_results: 100 });
-      if (likesResponse.meta.result_count >= +fields.likesAmount) {
-        const users = likesResponse.data;
+      if ((likesResponse?.meta?.result_count || 0) >= +fields.likesAmount) {
+        const users = likesResponse?.data;
         if (!users) return false;
 
         let dmSent = false;
@@ -372,7 +376,6 @@ export class XProvider extends SocialAbstract implements SocialProvider {
             // caps the token at write-only and excludes DM scope, regardless
             // of what the App is configured for in the X Developer Portal.
             linkMode: 'authenticate',
-            forceLogin: true,
           }
         );
       return {

@@ -33,7 +33,6 @@ export class OauthProvider extends AuthProviderAbstract {
       {
         authAccessType: 'write',
         linkMode: 'authenticate',
-        forceLogin: false,
       }
     );
 
