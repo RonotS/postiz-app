@@ -152,7 +152,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     disabled: !!process.env.DISABLE_X_ANALYTICS,
     description:
       'When a post reached a certain number of likes, repost it to increase engagement (1 week old posts)',
-    runEveryMilliseconds: 300000, // 5 minutes for testing
+    runEveryMilliseconds: 5400000, // 1 hour 30 minutes for testing
     totalRuns: 3,
     fields: [
       {
@@ -232,7 +232,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     description:
       'When a post reaches a certain number of likes, automatically reply to the original post with your promotional message.',
     runEveryMilliseconds: 300000, // 5 minutes for testing
-    totalRuns: 3,
+    totalRuns: 40,
     fields: [
       {
         name: 'likesAmount',
@@ -289,7 +289,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     disabled: !!process.env.DISABLE_X_ANALYTICS,
     description:
       'When a post reaches a certain number of likes, send a Direct Message to those who liked it. Note: Users must follow you or have open DMs, and X API rate limits apply.',
-    runEveryMilliseconds: 300000, // 5 minutes for testing
+    runEveryMilliseconds: 5400000, // 1 hour 30 minutes for testing
     totalRuns: 3,
     fields: [
       {
