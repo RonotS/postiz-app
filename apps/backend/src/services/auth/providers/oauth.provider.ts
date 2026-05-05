@@ -32,7 +32,6 @@ export class OauthProvider extends AuthProviderAbstract {
       `${frontendUrl}/auth/login?provider=X`,
       {
         authAccessType: 'write',
-        linkMode: 'authenticate',
       }
     );
 

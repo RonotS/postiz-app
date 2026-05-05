@@ -371,11 +371,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           (process.env.X_URL || process.env.FRONTEND_URL) +
           `/integrations/social/x`,
           {
-            // Omit authAccessType so the minted token inherits the App's full
-            // permission set (Read + Write + Direct Messages). Passing 'write'
-            // caps the token at write-only and excludes DM scope, regardless
-            // of what the App is configured for in the X Developer Portal.
-            linkMode: 'authenticate',
+            authAccessType: 'write',
           }
         );
       return {
