@@ -573,36 +573,35 @@ export class XProvider extends SocialAbstract implements SocialProvider {
   ): Promise<PostResponse[]> {
     const startedAt = Date.now();
     const [firstPost] = postDetails;
-    let client: TwitterApi | undefined;
     const maxRetries = 3;
+
+    // Create the client ONCE for this post. Reusing it across retries keeps the
+    // Node.js HTTP agent connection pool warm: if attempt 1 fails because of
+    // an HTTPS cold-start (fresh TCP handshake, TLS edge case on a datacenter
+    // egress), attempt 2 reuses the now-warmed connection and typically succeeds.
+    // Creating a fresh client per retry would re-introduce the cold-start each time.
+    const client = await this.getClient(accessToken);
+
+    // Upload media once up front (only matters when media exists). This also
+    // serves as a connection-pool warmup before the tweet call.
+    let uploadAll: Record<string, string[]> = {};
+    if (firstPost?.media?.length) {
+      try {
+        uploadAll = await this.uploadMedia(client, [firstPost]);
+      } catch (mediaErr: any) {
+        console.error('X MEDIA UPLOAD ERROR:', JSON.stringify(mediaErr?.data || mediaErr, null, 2));
+        throw mediaErr;
+      }
+    }
+
+    const media_ids = (uploadAll[firstPost.id] || []).filter((f: string) => f);
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        // Upload media first using a short-lived client (only matters when media exists).
-        let uploadAll: Record<string, string[]> = {};
-        if (firstPost?.media?.length) {
-          const uploadClient = await this.getClient(accessToken);
-          try {
-            uploadAll = await this.uploadMedia(uploadClient, [firstPost]);
-          } catch (mediaErr: any) {
-            console.error('X MEDIA UPLOAD ERROR:', JSON.stringify(mediaErr?.data || mediaErr, null, 2));
-            throw mediaErr;
-          }
-        }
-
-        const media_ids = (uploadAll[firstPost.id] || []).filter((f: string) => f);
-
         // Anti-bot Jitter: Wait randomly between 8 to 25 seconds to break rigid bot-filter patterns
         const jitterMs = Math.floor(Math.random() * 17000) + 8000;
         console.log(`X POST Jitter (attempt ${attempt + 1}/${maxRetries + 1}): waiting ${jitterMs / 1000}s to mimic human behavior...`);
         await timer(jitterMs);
-
-        // Build a fresh TwitterApi client AFTER the jitter so the HTTP keep-alive
-        // socket isn't sitting idle on Railway during the wait. Idle outbound
-        // connections in datacenter environments can be killed by intermediate
-        // network components, leading to spurious 401/Unauthorized responses on
-        // the first request after the wait.
-        client = await this.getClient(accessToken);
 
         // @ts-ignore
         const { data }: { data: { id: string } } = await this.runInConcurrent(
@@ -689,7 +688,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           const waitTime = (15 + attempt * 15) * 1000;
           console.warn(
             `X POST: Transient error on attempt ${attempt + 1}/${maxRetries + 1}. ` +
-            `Retrying in ${waitTime / 1000}s with a fresh client...`
+            `Retrying in ${waitTime / 1000}s (reusing same client to keep connection pool warm)...`
           );
           await timer(waitTime);
           continue;
@@ -740,30 +739,29 @@ export class XProvider extends SocialAbstract implements SocialProvider {
   ): Promise<PostResponse[]> {
     const startedAt = Date.now();
     const [commentPost] = postDetails;
-    let client: TwitterApi | undefined;
     const maxRetries = 3;
+
+    // Create the client ONCE for this comment. Reusing it across retries keeps
+    // the HTTP connection pool warm so attempt-2 doesn't repeat the cold-start
+    // failure attempt-1 may have hit.
+    const client = await this.getClient(accessToken);
+
+    // Upload media once up front (only matters when media exists).
+    let uploadAll: Record<string, string[]> = {};
+    if (commentPost?.media?.length) {
+      uploadAll = await this.uploadMedia(client, [commentPost]);
+    }
+
+    const media_ids = (uploadAll[commentPost.id] || []).filter((f: string) => f);
+
+    const replyToId = lastCommentId || postId;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        // Upload media first using a short-lived client (only matters when media exists).
-        let uploadAll: Record<string, string[]> = {};
-        if (commentPost?.media?.length) {
-          const uploadClient = await this.getClient(accessToken);
-          uploadAll = await this.uploadMedia(uploadClient, [commentPost]);
-        }
-
-        const media_ids = (uploadAll[commentPost.id] || []).filter((f: string) => f);
-
-        const replyToId = lastCommentId || postId;
-
         // Anti-bot Jitter: Wait randomly between 8 to 25 seconds
         const jitterMs = Math.floor(Math.random() * 17000) + 8000;
         console.log(`X COMMENT Jitter (attempt ${attempt + 1}/${maxRetries + 1}): waiting ${jitterMs / 1000}s to mimic human behavior...`);
         await timer(jitterMs);
-
-        // Build a fresh TwitterApi client AFTER the jitter to avoid stale
-        // keep-alive sockets in datacenter environments.
-        client = await this.getClient(accessToken);
 
         // @ts-ignore
         const { data }: { data: { id: string } } = await this.runInConcurrent(
@@ -826,7 +824,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           const waitTime = (15 + attempt * 15) * 1000;
           console.warn(
             `X COMMENT: Transient error on attempt ${attempt + 1}/${maxRetries + 1}. ` +
-            `Retrying in ${waitTime / 1000}s with a fresh client...`
+            `Retrying in ${waitTime / 1000}s (reusing same client to keep connection pool warm)...`
           );
           await timer(waitTime);
           continue;
@@ -856,6 +854,10 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         throw err;
       }
     }
+
+    // Unreachable in practice (the loop above either returns or throws), but
+    // satisfies TypeScript's all-paths-return check.
+    throw new Error('X COMMENT: Max retries exceeded');
   }
 
   private loadAllTweets = async (
