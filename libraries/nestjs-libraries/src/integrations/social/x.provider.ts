@@ -366,12 +366,30 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         appKey: process.env.X_API_KEY!,
         appSecret: process.env.X_API_SECRET!,
       });
+      // IMPORTANT: do NOT pass authAccessType here.
+      //
+      // Twitter's OAuth 1.0a `x_auth_access_type` parameter (which the
+      // twitter-api-v2 library forwards from `authAccessType`) only accepts
+      // 'read' | 'write'. There is no 'dm' value, and passing 'write'
+      // CAPS the minted token at write-only — explicitly excluding Direct
+      // Message scope, even when the X App itself is configured with
+      // "Read and write and Direct messages" permission.
+      //
+      // The correct behavior is to OMIT this parameter entirely so the token
+      // inherits the App's full configured permission set. This is required
+      // for auto-DM to work; otherwise X returns 403
+      // "oauth1-permissions" on every DM call.
+      //
+      // Also keep linkMode: 'authenticate' + forceLogin: true so the user is
+      // forced through the consent flow on every reconnect (matters when the
+      // App's permission set has changed since last auth).
       const { url, oauth_token, oauth_token_secret } =
         await client.generateAuthLink(
           (process.env.X_URL || process.env.FRONTEND_URL) +
           `/integrations/social/x`,
           {
-            authAccessType: 'write',
+            linkMode: 'authenticate',
+            forceLogin: true,
           }
         );
       return {
