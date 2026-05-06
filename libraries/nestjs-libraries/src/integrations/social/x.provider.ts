@@ -441,6 +441,28 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     });
   }
 
+  // Race a promise against a timeout. If the timeout wins, throw an error
+  // tagged so the post() retry loop can recognize it as transient.
+  // Without this, X API calls can hang for the full 10-minute Temporal activity
+  // timeout when the connection stalls between Railway and X.
+  private withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const t = setTimeout(() => {
+        reject(new Error(`${label} timed out after ${ms}ms (likely network stall)`));
+      }, ms);
+      p.then(
+        (v) => {
+          clearTimeout(t);
+          resolve(v);
+        },
+        (e) => {
+          clearTimeout(t);
+          reject(e);
+        }
+      );
+    });
+  }
+
   private async uploadMedia(
     client: TwitterApi,
     postDetails: PostDetails<any>[]
@@ -585,26 +607,33 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         // @ts-ignore
         const { data }: { data: { id: string } } = await this.runInConcurrent(
           async () =>
-            // @ts-ignore
-            client.v2.tweet({
-              ...(!firstPost?.settings?.who_can_reply_post ||
-                firstPost?.settings?.who_can_reply_post === 'everyone'
-                ? {}
-                : {
-                  reply_settings: firstPost?.settings?.who_can_reply_post,
-                }),
-              ...(firstPost?.settings?.community
-                ? {
-                  share_with_followers: true,
-                  community_id:
-                    firstPost?.settings?.community?.split('/').pop() || '',
-                }
-                : {}),
-              text: firstPost.message,
-              ...(media_ids.length ? { media: { media_ids } } : {}),
-              made_with_ai: !!firstPost?.settings?.made_with_ai,
-              paid_partnership: !!firstPost?.settings?.paid_partnership,
-            })
+            // 30-second hard timeout per attempt: aborts hung connections so
+            // the retry loop can run instead of blocking until Temporal's
+            // 10-minute activity timeout.
+            this.withTimeout(
+              // @ts-ignore
+              client.v2.tweet({
+                ...(!firstPost?.settings?.who_can_reply_post ||
+                  firstPost?.settings?.who_can_reply_post === 'everyone'
+                  ? {}
+                  : {
+                    reply_settings: firstPost?.settings?.who_can_reply_post,
+                  }),
+                ...(firstPost?.settings?.community
+                  ? {
+                    share_with_followers: true,
+                    community_id:
+                      firstPost?.settings?.community?.split('/').pop() || '',
+                  }
+                  : {}),
+                text: firstPost.message,
+                ...(media_ids.length ? { media: { media_ids } } : {}),
+                made_with_ai: !!firstPost?.settings?.made_with_ai,
+                paid_partnership: !!firstPost?.settings?.paid_partnership,
+              }),
+              30000,
+              'X tweet'
+            )
         );
 
         return [
@@ -647,6 +676,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           errMsg.includes('ETIMEDOUT') ||
           errMsg.includes('ECONNRESET') ||
           errMsg.includes('ENOTFOUND') ||
+          errMsg.includes('timed out') ||
+          errMsg.includes('network stall') ||
           rawString.includes('Unauthorized') ||
           rawString.includes('about:blank') ||
           rawString.includes('Could not authenticate you') ||
@@ -737,14 +768,18 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         // @ts-ignore
         const { data }: { data: { id: string } } = await this.runInConcurrent(
           async () =>
-            // @ts-ignore
-            client.v2.tweet({
-              text: commentPost.message,
-              ...(media_ids.length ? { media: { media_ids } } : {}),
-              reply: { in_reply_to_tweet_id: replyToId },
-              made_with_ai: !!commentPost?.settings?.made_with_ai,
-              paid_partnership: !!commentPost?.settings?.paid_partnership,
-            })
+            this.withTimeout(
+              // @ts-ignore
+              client.v2.tweet({
+                text: commentPost.message,
+                ...(media_ids.length ? { media: { media_ids } } : {}),
+                reply: { in_reply_to_tweet_id: replyToId },
+                made_with_ai: !!commentPost?.settings?.made_with_ai,
+                paid_partnership: !!commentPost?.settings?.paid_partnership,
+              }),
+              30000,
+              'X comment tweet'
+            )
         );
 
         return [
@@ -778,6 +813,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           errMsg.includes('ETIMEDOUT') ||
           errMsg.includes('ECONNRESET') ||
           errMsg.includes('ENOTFOUND') ||
+          errMsg.includes('timed out') ||
+          errMsg.includes('network stall') ||
           rawString.includes('Unauthorized') ||
           rawString.includes('about:blank') ||
           rawString.includes('Could not authenticate you') ||
