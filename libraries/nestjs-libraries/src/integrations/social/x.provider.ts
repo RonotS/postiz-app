@@ -552,27 +552,35 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const startedAt = Date.now();
     const [firstPost] = postDetails;
     let client: TwitterApi | undefined;
-    const maxRetries = 2;
+    const maxRetries = 3;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        client = await this.getClient(accessToken);
-
-        // upload media for the first post
+        // Upload media first using a short-lived client (only matters when media exists).
         let uploadAll: Record<string, string[]> = {};
-        try {
-          uploadAll = await this.uploadMedia(client, [firstPost]);
-        } catch (mediaErr: any) {
-          console.error('X MEDIA UPLOAD ERROR:', JSON.stringify(mediaErr?.data || mediaErr, null, 2));
-          throw mediaErr;
+        if (firstPost?.media?.length) {
+          const uploadClient = await this.getClient(accessToken);
+          try {
+            uploadAll = await this.uploadMedia(uploadClient, [firstPost]);
+          } catch (mediaErr: any) {
+            console.error('X MEDIA UPLOAD ERROR:', JSON.stringify(mediaErr?.data || mediaErr, null, 2));
+            throw mediaErr;
+          }
         }
 
         const media_ids = (uploadAll[firstPost.id] || []).filter((f: string) => f);
 
         // Anti-bot Jitter: Wait randomly between 8 to 25 seconds to break rigid bot-filter patterns
         const jitterMs = Math.floor(Math.random() * 17000) + 8000;
-        console.log(`X POST Jitter: waiting ${jitterMs / 1000}s to mimic human behavior...`);
+        console.log(`X POST Jitter (attempt ${attempt + 1}/${maxRetries + 1}): waiting ${jitterMs / 1000}s to mimic human behavior...`);
         await timer(jitterMs);
+
+        // Build a fresh TwitterApi client AFTER the jitter so the HTTP keep-alive
+        // socket isn't sitting idle on Railway during the wait. Idle outbound
+        // connections in datacenter environments can be killed by intermediate
+        // network components, leading to spurious 401/Unauthorized responses on
+        // the first request after the wait.
+        client = await this.getClient(accessToken);
 
         // @ts-ignore
         const { data }: { data: { id: string } } = await this.runInConcurrent(
@@ -611,22 +619,46 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         const errMsg = err?.message || err?.cause?.message || '';
         const rawData = err?.data || {};
         const rawString = JSON.stringify(rawData);
-        const isUnauthorized =
+        const errCode = err?.code || err?.cause?.code || '';
+        const errStatus = err?.status || err?.cause?.status || rawData?.status || '';
+
+        // Always log the raw error on every attempt so we can see what X actually
+        // returned, regardless of how it gets classified below. Without this, a
+        // failure path that doesn't match the keyword checks below disappears
+        // silently from logs.
+        console.warn(
+          `X POST: attempt ${attempt + 1}/${maxRetries + 1} failed. ` +
+          `errMsg="${errMsg}" errCode="${errCode}" errStatus="${errStatus}" ` +
+          `rawData=${rawString}`
+        );
+
+        // Broaden the retry condition: anything that smells like 401/403/auth
+        // failure, network hiccup, or unspecified about:blank from X is treated
+        // as transient. Datacenter-to-X connections occasionally produce these
+        // even on valid tokens; retrying with a fresh client (after jitter) is
+        // the most reliable mitigation.
+        const isTransient =
           errMsg.includes('Unauthorized') ||
           errMsg.includes('401') ||
+          errMsg.includes('403') ||
           errMsg.includes('32') ||
+          errMsg.includes('about:blank') ||
+          errMsg.includes('socket hang up') ||
+          errMsg.includes('ETIMEDOUT') ||
+          errMsg.includes('ECONNRESET') ||
+          errMsg.includes('ENOTFOUND') ||
           rawString.includes('Unauthorized') ||
-          rawString.includes('401') ||
-          rawString.includes('32') ||
-          rawString.includes('Could not authenticate you');
+          rawString.includes('about:blank') ||
+          rawString.includes('Could not authenticate you') ||
+          errStatus === 401 ||
+          errStatus === 403 ||
+          errStatus === 429;
 
-        // Retry on transient Unauthorized errors (common on X Free tier)
-        if (isUnauthorized && attempt < maxRetries) {
-          const waitTime = (10 + attempt * 10) * 1000;
+        if (isTransient && attempt < maxRetries) {
+          const waitTime = (15 + attempt * 15) * 1000;
           console.warn(
             `X POST: Transient error on attempt ${attempt + 1}/${maxRetries + 1}. ` +
-            `Error: ${errMsg}. Raw Data: ${rawString}. ` +
-            `Retrying in ${waitTime / 1000}s...`
+            `Retrying in ${waitTime / 1000}s with a fresh client...`
           );
           await timer(waitTime);
           continue;
@@ -678,14 +710,16 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const startedAt = Date.now();
     const [commentPost] = postDetails;
     let client: TwitterApi | undefined;
-    const maxRetries = 2;
+    const maxRetries = 3;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        client = await this.getClient(accessToken);
-
-        // upload media for the comment
-        const uploadAll = await this.uploadMedia(client, [commentPost]);
+        // Upload media first using a short-lived client (only matters when media exists).
+        let uploadAll: Record<string, string[]> = {};
+        if (commentPost?.media?.length) {
+          const uploadClient = await this.getClient(accessToken);
+          uploadAll = await this.uploadMedia(uploadClient, [commentPost]);
+        }
 
         const media_ids = (uploadAll[commentPost.id] || []).filter((f: string) => f);
 
@@ -693,8 +727,12 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
         // Anti-bot Jitter: Wait randomly between 8 to 25 seconds
         const jitterMs = Math.floor(Math.random() * 17000) + 8000;
-        console.log(`X COMMENT Jitter: waiting ${jitterMs / 1000}s to mimic human behavior...`);
+        console.log(`X COMMENT Jitter (attempt ${attempt + 1}/${maxRetries + 1}): waiting ${jitterMs / 1000}s to mimic human behavior...`);
         await timer(jitterMs);
+
+        // Build a fresh TwitterApi client AFTER the jitter to avoid stale
+        // keep-alive sockets in datacenter environments.
+        client = await this.getClient(accessToken);
 
         // @ts-ignore
         const { data }: { data: { id: string } } = await this.runInConcurrent(
@@ -721,21 +759,37 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         const errMsg = err?.message || err?.cause?.message || '';
         const rawData = err?.data || {};
         const rawString = JSON.stringify(rawData);
-        const isUnauthorized =
+        const errCode = err?.code || err?.cause?.code || '';
+        const errStatus = err?.status || err?.cause?.status || rawData?.status || '';
+
+        console.warn(
+          `X COMMENT: attempt ${attempt + 1}/${maxRetries + 1} failed. ` +
+          `errMsg="${errMsg}" errCode="${errCode}" errStatus="${errStatus}" ` +
+          `rawData=${rawString}`
+        );
+
+        const isTransient =
           errMsg.includes('Unauthorized') ||
           errMsg.includes('401') ||
+          errMsg.includes('403') ||
           errMsg.includes('32') ||
+          errMsg.includes('about:blank') ||
+          errMsg.includes('socket hang up') ||
+          errMsg.includes('ETIMEDOUT') ||
+          errMsg.includes('ECONNRESET') ||
+          errMsg.includes('ENOTFOUND') ||
           rawString.includes('Unauthorized') ||
-          rawString.includes('401') ||
-          rawString.includes('32') ||
-          rawString.includes('Could not authenticate you');
+          rawString.includes('about:blank') ||
+          rawString.includes('Could not authenticate you') ||
+          errStatus === 401 ||
+          errStatus === 403 ||
+          errStatus === 429;
 
-        // Retry on transient errors
-        if (isUnauthorized && attempt < maxRetries) {
-          const waitTime = (10 + attempt * 10) * 1000;
+        if (isTransient && attempt < maxRetries) {
+          const waitTime = (15 + attempt * 15) * 1000;
           console.warn(
             `X COMMENT: Transient error on attempt ${attempt + 1}/${maxRetries + 1}. ` +
-            `Retrying in ${waitTime / 1000}s...`
+            `Retrying in ${waitTime / 1000}s with a fresh client...`
           );
           await timer(waitTime);
           continue;
