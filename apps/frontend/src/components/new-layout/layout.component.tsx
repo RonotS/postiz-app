@@ -122,17 +122,17 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
                           <MobileDrawer />
                           <Title />
                         </div>
-                        <div className="flex gap-[10px] md:gap-[20px] text-textItemBlur">
+                        <div className="flex gap-[10px] md:gap-[20px] text-textItemBlur items-center">
                           <div className="hidden sm:block"><StreakComponent /></div>
-                          <div className="hidden sm:block w-[1px] h-[20px] bg-blockSeparator" />
                           <OrganizationSelector />
+                          <div className="hidden lg:block"><ChromeExtensionComponent /></div>
+                          <AttachToFeedbackIcon />
+                          {/* Single divider before the right-most cluster (theme toggle + notifications). */}
+                          <div className="hidden sm:block w-[1px] h-[20px] bg-blockSeparator" />
+                          {/* Theme toggle (sun/moon) and notifications kept adjacent — no divider between them. */}
                           <div className="hidden sm:block hover:text-newTextColor">
                             <ModeComponent />
                           </div>
-                          <div className="hidden sm:block w-[1px] h-[20px] bg-blockSeparator" />
-                          <div className="hidden lg:block"><ChromeExtensionComponent /></div>
-                          <div className="hidden lg:block w-[1px] h-[20px] bg-blockSeparator" />
-                          <AttachToFeedbackIcon />
                           <NotificationComponent />
                         </div>
                       </div>

@@ -267,16 +267,23 @@ export default function DashboardPage() {
     return allPosts.filter((p) => p.state === 'DRAFT');
   }, [allPosts, queueTab]);
 
-  // Group filtered posts by day for the upcoming 7 days window.
+  // Group filtered posts by day, showing 7 days before today through 7 days
+  // after — gives a full-calendar feel rather than just an upcoming queue.
   const days = useMemo(() => {
     const today = newDayjs().startOf('day');
-    return Array.from({ length: 7 }).map((_, i) => {
-      const d = today.add(i, 'day');
+    const PAST_DAYS = 7;
+    const FUTURE_DAYS = 7;
+    const TOTAL = PAST_DAYS + 1 + FUTURE_DAYS;
+    return Array.from({ length: TOTAL }).map((_, i) => {
+      const offset = i - PAST_DAYS; // -7..0..+7
+      const d = today.add(offset, 'day');
       const isoDate = d.format('YYYY-MM-DD');
       const label =
-        i === 0
+        offset === -1
+          ? t('yesterday', 'Yesterday')
+          : offset === 0
           ? t('today', 'Today')
-          : i === 1
+          : offset === 1
           ? t('tomorrow', 'Tomorrow')
           : d.format('dddd');
       const dayPosts = filteredPosts

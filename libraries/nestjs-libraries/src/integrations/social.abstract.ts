@@ -50,6 +50,15 @@ export abstract class SocialAbstract {
   abstract identifier: string;
   maxConcurrentJob = 1;
 
+  // Per-instance serialization lock. When `maxConcurrentJob = 1` and
+  // `ignoreConcurrency` is not set, runInConcurrent uses this to chain calls
+  // so that two posts scheduled at the same instant (e.g., both at 3:20 PM)
+  // hit the upstream API one at a time instead of in parallel — preventing
+  // the upstream from seeing two concurrent requests from the same token,
+  // which several providers (notably X) treat as a rate-limit / abuse signal
+  // and reject with 401/429.
+  private _serialLock: Promise<void> = Promise.resolve();
+
   public handleErrors(
     body: string,
     status: number,
@@ -75,6 +84,32 @@ export abstract class SocialAbstract {
     func: (...args: any[]) => Promise<T>,
     ignoreConcurrency?: boolean
   ) {
+    const shouldSerialize = this.maxConcurrentJob === 1 && !ignoreConcurrency;
+
+    if (shouldSerialize) {
+      // Wait for the previous call (success or failure) to fully release.
+      const previousLock = this._serialLock;
+      let release!: () => void;
+      this._serialLock = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      try {
+        await previousLock;
+      } catch {
+        /* prior failure must not block this call */
+      }
+
+      try {
+        return await this._runOnce(func);
+      } finally {
+        release();
+      }
+    }
+
+    return this._runOnce(func);
+  }
+
+  private async _runOnce<T>(func: (...args: any[]) => Promise<T>): Promise<any> {
     let value: any;
     try {
       value = await func();
