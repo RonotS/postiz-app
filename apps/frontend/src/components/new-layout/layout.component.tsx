@@ -33,7 +33,6 @@ import { Impersonate } from '@gitroom/frontend/components/layout/impersonate';
 import { AnnouncementBanner } from '@gitroom/frontend/components/layout/announcement.banner';
 import { Title } from '@gitroom/frontend/components/layout/title';
 import { TopMenu } from '@gitroom/frontend/components/layout/top.menu';
-import { LanguageComponent } from '@gitroom/frontend/components/layout/language.component';
 import { ChromeExtensionComponent } from '@gitroom/frontend/components/layout/chrome.extension.component';
 import NotificationComponent from '@gitroom/frontend/components/notifications/notification.component';
 import { OrganizationSelector } from '@gitroom/frontend/components/layout/organization.selector';
@@ -131,7 +130,6 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
                             <ModeComponent />
                           </div>
                           <div className="hidden sm:block w-[1px] h-[20px] bg-blockSeparator" />
-                          <div className="hidden lg:block"><LanguageComponent /></div>
                           <div className="hidden lg:block"><ChromeExtensionComponent /></div>
                           <div className="hidden lg:block w-[1px] h-[20px] bg-blockSeparator" />
                           <AttachToFeedbackIcon />

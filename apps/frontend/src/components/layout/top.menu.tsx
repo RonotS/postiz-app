@@ -6,6 +6,7 @@ import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { MenuItem } from '@gitroom/frontend/components/new-layout/menu-item';
+import { ConnectedAccount } from '@gitroom/frontend/components/layout/connected.account';
 
 interface MenuItemInterface {
   name: string;
@@ -373,31 +374,41 @@ export const TopMenu: FC = () => {
         }
       </div>
       <div className="flex flex-col gap-[4px] minCustom:gap-[8px] blurMe">
-        {secondMenu
-          .filter((f) => {
-            if (f.hide) {
-              return false;
-            }
-            if (f.requireBilling && !billingEnabled) {
-              return false;
-            }
-            if (f.name === 'Billing' && user?.isLifetime) {
-              return false;
-            }
-            if (f.role) {
-              return f.role.includes(user?.role!);
-            }
+        {(() => {
+          const visible = secondMenu.filter((f) => {
+            if (f.hide) return false;
+            if (f.requireBilling && !billingEnabled) return false;
+            if (f.name === 'Billing' && user?.isLifetime) return false;
+            if (f.role) return f.role.includes(user?.role!);
             return true;
-          })
-          .map((item, index) => (
-            <MenuItem
-              path={item.path}
-              label={item.name}
-              icon={item.icon}
-              key={item.name}
-              onClick={item.onClick}
-            />
-          ))}
+          });
+          const settingsIdx = visible.findIndex((f) => f.path === '/settings');
+          const beforeSettings = settingsIdx === -1 ? visible : visible.slice(0, settingsIdx);
+          const settingsAndAfter = settingsIdx === -1 ? [] : visible.slice(settingsIdx);
+          return (
+            <>
+              {beforeSettings.map((item) => (
+                <MenuItem
+                  path={item.path}
+                  label={item.name}
+                  icon={item.icon}
+                  key={item.name}
+                  onClick={item.onClick}
+                />
+              ))}
+              {user?.orgId && <ConnectedAccount />}
+              {settingsAndAfter.map((item) => (
+                <MenuItem
+                  path={item.path}
+                  label={item.name}
+                  icon={item.icon}
+                  key={item.name}
+                  onClick={item.onClick}
+                />
+              ))}
+            </>
+          );
+        })()}
       </div>
     </>
   );

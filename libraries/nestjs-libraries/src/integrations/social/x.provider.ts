@@ -1,4 +1,5 @@
 import { TweetV2, TwitterApi } from 'twitter-api-v2';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import {
   AnalyticsData,
   AuthTokenDetails,
@@ -172,7 +173,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     // @ts-ignore
     // eslint-disable-next-line prefer-rest-params
     const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
-    const client = new TwitterApi({
+    const client = this.buildTwitterApi({
       appKey: process.env.X_API_KEY!,
       appSecret: process.env.X_API_SECRET!,
       accessToken: accessTokenSplit,
@@ -207,7 +208,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     information: any
   ) {
     const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
-    const client = new TwitterApi({
+    const client = this.buildTwitterApi({
       appKey: process.env.X_API_KEY!,
       appSecret: process.env.X_API_SECRET!,
       accessToken: accessTokenSplit,
@@ -258,7 +259,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     // @ts-ignore
     // eslint-disable-next-line prefer-rest-params
     const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
-    const client = new TwitterApi({
+    const client = this.buildTwitterApi({
       appKey: process.env.X_API_KEY!,
       appSecret: process.env.X_API_SECRET!,
       accessToken: accessTokenSplit,
@@ -314,7 +315,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     fields: { likesAmount: string; message: string }
   ) {
     const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
-    const client = new TwitterApi({
+    const client = this.buildTwitterApi({
       appKey: process.env.X_API_KEY!,
       appSecret: process.env.X_API_SECRET!,
       accessToken: accessTokenSplit,
@@ -362,7 +363,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
   async generateAuthUrl() {
     try {
-      const client = new TwitterApi({
+      const client = this.buildTwitterApi({
         appKey: process.env.X_API_KEY!,
         appSecret: process.env.X_API_SECRET!,
       });
@@ -407,7 +408,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const { code, codeVerifier } = params;
     const [oauth_token, oauth_token_secret] = codeVerifier.split(':');
 
-    const startingClient = new TwitterApi({
+    const startingClient = this.buildTwitterApi({
       appKey: process.env.X_API_KEY!,
       appSecret: process.env.X_API_SECRET!,
       accessToken: oauth_token,
@@ -449,9 +450,55 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     };
   }
 
+  // Pick a random proxy from the X_PROXIES env var if configured. Format:
+  //   X_PROXIES="http://user:pass@host1:port1,http://user:pass@host2:port2,..."
+  // When set, all X API calls (post, comment, OAuth, plugs that go through
+  // buildTwitterApi) route through a randomly-selected residential proxy so
+  // X sees a non-datacenter source IP.
+  //
+  // Trade-off: this can violate X's Developer Agreement if the proxy is
+  // detected as anonymizing. Use only with full understanding of the risk.
+  // If X_PROXIES is unset or empty, behavior is unchanged (direct connection).
+  private getProxyAgent(): HttpsProxyAgent<string> | undefined {
+    const proxiesEnv = process.env.X_PROXIES?.trim();
+    if (!proxiesEnv) return undefined;
+    const proxies = proxiesEnv
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean);
+    if (proxies.length === 0) return undefined;
+    const proxyUrl = proxies[Math.floor(Math.random() * proxies.length)];
+    try {
+      return new HttpsProxyAgent(proxyUrl);
+    } catch (err) {
+      console.error('X PROXY: failed to construct proxy agent for', proxyUrl, err);
+      return undefined;
+    }
+  }
+
+  // Centralized TwitterApi factory — applies proxy agent if configured so that
+  // every code path (post, comment, OAuth, plugs) routes through the same egress.
+  private buildTwitterApi(creds: {
+    appKey: string;
+    appSecret: string;
+    accessToken?: string;
+    accessSecret?: string;
+  }): TwitterApi {
+    const httpAgent = this.getProxyAgent();
+    if (httpAgent) {
+      console.log('X PROXY: routing call through residential proxy');
+    }
+    // The twitter-api-v2 second arg is Partial<IClientSettings>; httpAgent is
+    // typed as `Agent` but HttpsProxyAgent satisfies the runtime contract.
+    return new TwitterApi(
+      creds as any,
+      httpAgent ? ({ httpAgent } as any) : undefined
+    );
+  }
+
   private async getClient(accessToken: string) {
     const [accessTokenSplit, accessSecretSplit] = accessToken.split(':');
-    return new TwitterApi({
+    return this.buildTwitterApi({
       appKey: process.env.X_API_KEY!,
       appSecret: process.env.X_API_SECRET!,
       accessToken: accessTokenSplit,
@@ -925,7 +972,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const since = dayjs().subtract(date > 100 ? 100 : date, 'day');
 
     const [accessTokenSplit, accessSecretSplit] = accessToken.split(':');
-    const client = new TwitterApi({
+    const client = this.buildTwitterApi({
       appKey: process.env.X_API_KEY!,
       appSecret: process.env.X_API_SECRET!,
       accessToken: accessTokenSplit,
@@ -1015,7 +1062,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const today = dayjs().format('YYYY-MM-DD');
 
     const [accessTokenSplit, accessSecretSplit] = accessToken.split(':');
-    const client = new TwitterApi({
+    const client = this.buildTwitterApi({
       appKey: process.env.X_API_KEY!,
       appSecret: process.env.X_API_SECRET!,
       accessToken: accessTokenSplit,
@@ -1094,7 +1141,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
   override async mention(token: string, d: { query: string }) {
     const [accessTokenSplit, accessSecretSplit] = token.split(':');
-    const client = new TwitterApi({
+    const client = this.buildTwitterApi({
       appKey: process.env.X_API_KEY!,
       appSecret: process.env.X_API_SECRET!,
       accessToken: accessTokenSplit,
