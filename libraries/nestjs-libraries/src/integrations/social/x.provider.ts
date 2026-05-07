@@ -459,7 +459,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
   // Trade-off: this can violate X's Developer Agreement if the proxy is
   // detected as anonymizing. Use only with full understanding of the risk.
   // If X_PROXIES is unset or empty, behavior is unchanged (direct connection).
-  private getProxyAgent(): HttpsProxyAgent<string> | undefined {
+  private getProxyAgent(): HttpsProxyAgent | undefined {
     const proxiesEnv = process.env.X_PROXIES?.trim();
     if (!proxiesEnv) return undefined;
     const proxies = proxiesEnv
