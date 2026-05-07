@@ -1,5 +1,9 @@
 import { TweetV2, TwitterApi } from 'twitter-api-v2';
-import { HttpsProxyAgent } from 'https-proxy-agent';
+// https-proxy-agent v5.0.1 uses `export =` (CommonJS) — must require it, not
+// destructure-import. Using `import { HttpsProxyAgent }` resolves to undefined
+// at runtime in some bundles, which is why proxy was working only intermittently.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const HttpsProxyAgent = require('https-proxy-agent');
 import {
   AnalyticsData,
   AuthTokenDetails,
@@ -459,7 +463,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
   // Trade-off: this can violate X's Developer Agreement if the proxy is
   // detected as anonymizing. Use only with full understanding of the risk.
   // If X_PROXIES is unset or empty, behavior is unchanged (direct connection).
-  private getProxyAgent(): HttpsProxyAgent | undefined {
+  private getProxyAgent(): any | undefined {
     const proxiesEnv = process.env.X_PROXIES?.trim();
     if (!proxiesEnv) return undefined;
     const proxies = proxiesEnv
