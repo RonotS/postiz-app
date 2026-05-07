@@ -359,7 +359,7 @@ export default function DashboardPage() {
           type,
           shortLink: false,
           date,
-          tags: [],
+          tags: [] as string[],
           posts: [
             {
               integration: { id: xIntegration.id },
