@@ -3,9 +3,11 @@ import { Activity, ActivityMethod } from 'nestjs-temporal-core';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import { Integration } from '@prisma/client';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
+import { TrackActivities } from '@gitroom/orchestrator/activities/activity.heartbeat';
 
 @Injectable()
 @Activity()
+@TrackActivities()
 export class IntegrationsActivity {
   constructor(
     private _integrationService: IntegrationService,

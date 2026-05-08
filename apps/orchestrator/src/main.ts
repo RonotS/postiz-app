@@ -8,10 +8,16 @@ dayjs.extend(utc);
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '@gitroom/orchestrator/app.module';
 import { Connection } from '@temporalio/client';
+import {
+  initActivityHeartbeat,
+  getMillisSinceActivity,
+} from '@gitroom/orchestrator/activities/activity.heartbeat';
 import * as dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 
 async function bootstrap() {
+  initActivityHeartbeat();
+  const startedAt = Date.now();
   const app = await NestFactory.create(AppModule);
   app.enableShutdownHooks();
   const port = process.env.ORCHESTRATOR_PORT || 3002;
@@ -108,6 +114,53 @@ async function bootstrap() {
       `Temporal health check enabled (every ${healthIntervalSec}s, ` +
       `${healthMaxFailures} consecutive failures triggers restart). ` +
       `Set ORCHESTRATOR_HEALTH_INTERVAL_SECONDS=0 to disable.`
+    );
+  }
+
+  // Activity-execution heartbeat watchdog.
+  //
+  // The Temporal connection ping above can succeed while the worker is
+  // silently failing to pull tasks from its task queue. To detect that
+  // specific failure mode, every Temporal activity calls markActivity()
+  // (via the @TrackActivities() class decorator). Here we periodically
+  // check how long it has been since ANY activity ran. If silence exceeds
+  // ORCHESTRATOR_ACTIVITY_STUCK_MINUTES (default 10) AND uptime is past
+  // ORCHESTRATOR_ACTIVITY_GRACE_MINUTES (default 5, to avoid restarting
+  // before the orchestrator is even fully started), exit so pm2 restarts
+  // the worker with a fresh task-queue connection.
+  //
+  // The grace period also prevents tight restart loops on truly idle
+  // periods — if the orchestrator has been silently idle for 10 minutes
+  // because no posts are scheduled, restarting doesn't hurt (the new
+  // process picks up where the old one left off).
+  //
+  // Disable by setting ORCHESTRATOR_ACTIVITY_STUCK_MINUTES=0.
+  const stuckMinutes = Number(
+    process.env.ORCHESTRATOR_ACTIVITY_STUCK_MINUTES ?? 10
+  );
+  const graceMinutes = Number(
+    process.env.ORCHESTRATOR_ACTIVITY_GRACE_MINUTES ?? 5
+  );
+  if (stuckMinutes > 0) {
+    const stuckMs = stuckMinutes * 60 * 1000;
+    const graceMs = graceMinutes * 60 * 1000;
+    setInterval(() => {
+      const uptime = Date.now() - startedAt;
+      if (uptime < graceMs) return;
+      const silence = getMillisSinceActivity();
+      if (silence >= stuckMs) {
+        console.warn(
+          `Activity heartbeat: no activity for ${(silence / 60000).toFixed(1)}m ` +
+          `(threshold ${stuckMinutes}m). Worker likely stuck — exiting so pm2 ` +
+          `can restart with a fresh task-queue connection.`
+        );
+        process.exit(0);
+      }
+    }, 60 * 1000); // check once a minute
+    console.log(
+      `Activity heartbeat watchdog enabled (restart if no activity for ` +
+      `${stuckMinutes}m after ${graceMinutes}m grace period). ` +
+      `Set ORCHESTRATOR_ACTIVITY_STUCK_MINUTES=0 to disable.`
     );
   }
 }

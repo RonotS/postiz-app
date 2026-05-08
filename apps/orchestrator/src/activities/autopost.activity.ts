@@ -13,10 +13,12 @@ import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integration
 import { timer } from '@gitroom/helpers/utils/timer';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import { WebhooksService } from '@gitroom/nestjs-libraries/database/prisma/webhooks/webhooks.service';
+import { TrackActivities } from '@gitroom/orchestrator/activities/activity.heartbeat';
 import { AutopostService } from '@gitroom/nestjs-libraries/database/prisma/autopost/autopost.service';
 
 @Injectable()
 @Activity()
+@TrackActivities()
 export class AutopostActivity {
   constructor(private _autoPostService: AutopostService) {}
 

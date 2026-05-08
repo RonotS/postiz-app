@@ -2,9 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { Activity, ActivityMethod } from 'nestjs-temporal-core';
 import { EmailService } from '@gitroom/nestjs-libraries/services/email.service';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
+import { TrackActivities } from '@gitroom/orchestrator/activities/activity.heartbeat';
 
 @Injectable()
 @Activity()
+@TrackActivities()
 export class EmailActivity {
   constructor(
     private _emailService: EmailService,

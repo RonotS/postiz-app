@@ -23,9 +23,11 @@ import {
   postId as postIdSearchParam,
 } from '@gitroom/nestjs-libraries/temporal/temporal.search.attribute';
 import { SubscriptionService } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscription.service';
+import { TrackActivities } from '@gitroom/orchestrator/activities/activity.heartbeat';
 
 @Injectable()
 @Activity()
+@TrackActivities()
 export class PostActivity {
   constructor(
     private _postService: PostsService,
