@@ -650,6 +650,13 @@ export class XProvider extends SocialAbstract implements SocialProvider {
   // buildTwitterApi) route through a randomly-selected residential proxy so
   // X sees a non-datacenter source IP.
   //
+  // STRICT MODE: when X_PROXIES is set, the proxy is *required*. If
+  // construction fails for the randomly-picked URL, this method tries every
+  // remaining configured proxy and only returns undefined as a last resort
+  // (which then triggers a hard error in buildTwitterApi). This prevents the
+  // silent fallback to a direct (datacenter-IP) connection that would defeat
+  // the whole point of configuring a proxy.
+  //
   // Trade-off: this can violate X's Developer Agreement if the proxy is
   // detected as anonymizing. Use only with full understanding of the risk.
   // If X_PROXIES is unset or empty, behavior is unchanged (direct connection).
@@ -661,27 +668,68 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       .map((p) => p.trim())
       .filter(Boolean);
     if (proxies.length === 0) return undefined;
-    const proxyUrl = proxies[Math.floor(Math.random() * proxies.length)];
-    try {
-      return new HttpsProxyAgent(proxyUrl);
-    } catch (err) {
-      console.error('X PROXY: failed to construct proxy agent for', proxyUrl, err);
-      return undefined;
+
+    // Shuffle so we still get random selection but fall back through all of
+    // them if one fails to construct.
+    const shuffled = [...proxies].sort(() => Math.random() - 0.5);
+    for (const proxyUrl of shuffled) {
+      try {
+        return new HttpsProxyAgent(proxyUrl);
+      } catch (err) {
+        console.error(
+          'X PROXY: failed to construct proxy agent for',
+          proxyUrl,
+          err
+        );
+        // try the next proxy
+      }
     }
+    // All proxies failed to construct — return undefined; buildTwitterApi
+    // will treat this as a hard error since X_PROXIES was set.
+    return undefined;
   }
 
   // Centralized TwitterApi factory — applies proxy agent if configured so that
   // every code path (post, comment, OAuth, plugs) routes through the same egress.
+  //
+  // When X_PROXIES is set but no usable proxy could be constructed, this
+  // throws explicitly rather than silently falling back to a direct (datacenter
+  // IP) connection. The thrown error propagates up the post() retry loop and
+  // shows up in logs / Temporal failure messages, so the cause is visible
+  // instead of producing a "post failed but proxy log missing" mystery.
   private buildTwitterApi(creds: {
     appKey: string;
     appSecret: string;
     accessToken?: string;
     accessSecret?: string;
   }): TwitterApi {
+    const proxiesConfigured = !!process.env.X_PROXIES?.trim();
     const httpAgent = this.getProxyAgent();
+
+    if (proxiesConfigured && !httpAgent) {
+      // X_PROXIES is set, but every entry failed to construct. Refuse to fall
+      // through to a direct connection — the operator clearly wants traffic
+      // routed through a proxy, and silently bypassing it would emit calls
+      // from Railway's datacenter IP (likely flagged by X), producing
+      // confusing "post fails on Railway but works on local" symptoms.
+      console.error(
+        'X PROXY: X_PROXIES is set but no proxy could be constructed. ' +
+        'Refusing to send X API call via direct connection. ' +
+        'Check that X_PROXIES contains valid http(s)://user:pass@host:port URLs.'
+      );
+      throw new Error(
+        'X_PROXIES is configured but no usable proxy is available — refusing to bypass to direct connection.'
+      );
+    }
+
     if (httpAgent) {
       console.log('X PROXY: routing call through residential proxy');
+    } else {
+      // Explicit log when proxy is NOT configured so operators can confirm
+      // direct-connection mode is intentional.
+      console.log('X PROXY: not configured — using direct connection');
     }
+
     // The twitter-api-v2 second arg is Partial<IClientSettings>; httpAgent is
     // typed as `Agent` but HttpsProxyAgent satisfies the runtime contract.
     return new TwitterApi(
