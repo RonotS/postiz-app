@@ -13,7 +13,84 @@ import {
   getMillisSinceActivity,
 } from '@gitroom/orchestrator/activities/activity.heartbeat';
 import * as dns from 'node:dns';
+import * as https from 'node:https';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const HttpsProxyAgent = require('https-proxy-agent');
 dns.setDefaultResultOrder('ipv4first');
+
+/**
+ * On orchestrator startup, prove that the X_PROXIES env var actually routes
+ * traffic through a proxy. Calls api.ipify.org (an IP-echo endpoint) twice:
+ *   1. Direct (no proxy) — should return Railway's egress IP
+ *   2. Through the configured proxy — should return the PROXY's IP
+ * If both come back equal, the proxy isn't actually intercepting traffic
+ * and we log a loud warning (operator should fix X_PROXIES).
+ *
+ * This is purely diagnostic — does not affect post execution.
+ */
+async function verifyProxy(): Promise<void> {
+  const proxiesEnv = process.env.X_PROXIES?.trim();
+  if (!proxiesEnv) {
+    console.log('X PROXY VERIFY: X_PROXIES not set — skipping startup verification.');
+    return;
+  }
+  const fetchIp = (agent: any): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const req = https.request(
+        'https://api.ipify.org?format=json',
+        { agent, timeout: 8000 },
+        (res) => {
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => {
+            try {
+              resolve(JSON.parse(body).ip);
+            } catch {
+              reject(new Error('non-json response'));
+            }
+          });
+        }
+      );
+      req.on('error', reject);
+      req.on('timeout', () => req.destroy(new Error('timeout')));
+      req.end();
+    });
+
+  let directIp: string | undefined;
+  try {
+    directIp = await fetchIp(undefined);
+    console.log(`X PROXY VERIFY: direct egress IP = ${directIp}`);
+  } catch (err: any) {
+    console.warn(`X PROXY VERIFY: direct call failed — ${err?.message || err}`);
+  }
+
+  const proxies = proxiesEnv
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (proxies.length === 0) return;
+  const proxyUrl = proxies[0];
+  try {
+    const agent = new HttpsProxyAgent(proxyUrl);
+    const proxyIp = await fetchIp(agent);
+    if (directIp && directIp === proxyIp) {
+      console.warn(
+        `X PROXY VERIFY: ⚠ proxy egress IP (${proxyIp}) equals direct IP (${directIp}). ` +
+        `The proxy may NOT be intercepting traffic. Check X_PROXIES URL format.`
+      );
+    } else {
+      console.log(
+        `X PROXY VERIFY: ✓ proxy is intercepting (proxy egress IP = ${proxyIp}, ` +
+        `direct egress IP = ${directIp ?? 'unknown'}). X API calls will go through the proxy.`
+      );
+    }
+  } catch (err: any) {
+    console.error(
+      `X PROXY VERIFY: ⚠ proxy call FAILED — ${err?.message || err}. ` +
+      `X API calls through this proxy will likely fail. Check the proxy URL and credentials.`
+    );
+  }
+}
 
 async function bootstrap() {
   initActivityHeartbeat();
@@ -23,6 +100,13 @@ async function bootstrap() {
   const port = process.env.ORCHESTRATOR_PORT || 3002;
   await app.listen(port);
   console.log(`Orchestrator health check listening on port ${port}`);
+
+  // Run the proxy verification once at startup. Non-fatal — we log results
+  // and let the orchestrator continue regardless. Fire-and-forget so it
+  // doesn't block bootstrap.
+  verifyProxy().catch((err) => {
+    console.error('X PROXY VERIFY: unexpected error during verification', err);
+  });
 
   // Periodic self-restart fallback for Temporal worker silently
   // dropping its task-queue connection after long idle periods.
