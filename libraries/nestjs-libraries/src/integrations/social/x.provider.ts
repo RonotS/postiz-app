@@ -157,8 +157,11 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     disabled: !!process.env.DISABLE_X_ANALYTICS,
     description:
       'When a post reached a certain number of likes, repost it to increase engagement (1 week old posts)',
-       // runEveryMilliseconds: 18000000, // 5 hours
-    runEveryMilliseconds: 120000,
+    // 5 hours between plug runs. Lower values cause the X worker (which has
+    // maxConcurrentJob=1) to be permanently busy with plug calls, queueing
+    // up new post workflows behind the plug backlog. Don't lower this in
+    // production; if you need faster plug testing, do it on local only.
+    runEveryMilliseconds: 18000000, // 5 hours
     totalRuns: 3,
     fields: [
       {
