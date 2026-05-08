@@ -3,7 +3,7 @@
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import Link from 'next/link';
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import useSWR from 'swr';
 
 type IntegrationItem = {
@@ -17,6 +17,7 @@ type IntegrationItem = {
 export const ConnectedAccount = () => {
   const t = useT();
   const fetch = useFetch();
+  const [connecting, setConnecting] = useState(false);
 
   const load = useCallback(async () => {
     const res = await fetch('/integrations/list');
@@ -34,11 +35,36 @@ export const ConnectedAccount = () => {
     (i) => !i.disabled && (i.identifier === 'x' || i.identifier === 'twitter')
   );
 
+  // Kick off the X OAuth flow directly from the sidebar — same call the
+  // /launches "Add X" button uses, just inlined here so the user doesn't have
+  // to navigate to a separate page first.
+  const connectX = useCallback(async () => {
+    if (connecting) return;
+    setConnecting(true);
+    try {
+      const res = await fetch('/integrations/social/x');
+      if (!res.ok) {
+        setConnecting(false);
+        return;
+      }
+      const data = await res.json();
+      if (data?.url) {
+        window.location.href = data.url;
+      } else {
+        setConnecting(false);
+      }
+    } catch {
+      setConnecting(false);
+    }
+  }, [fetch, connecting]);
+
   if (!xIntegration) {
     return (
-      <Link
-        href="/launches"
-        className="flex items-center gap-2 px-2 py-2 rounded-[8px] hover:bg-boxHover transition-colors"
+      <button
+        type="button"
+        onClick={connectX}
+        disabled={connecting}
+        className="w-full flex items-center gap-2 px-2 py-2 rounded-[8px] hover:bg-boxHover transition-colors disabled:opacity-60 text-left"
         title={t('connect_x_account', 'Connect an X account')}
       >
         <div className="w-8 h-8 rounded-full bg-newBgColor border border-newBorder flex items-center justify-center text-newTableText text-xs flex-shrink-0">
@@ -46,13 +72,17 @@ export const ConnectedAccount = () => {
         </div>
         <div className="flex flex-col min-w-0 flex-1">
           <span className="text-newTextColor text-[12px] font-semibold truncate">
-            {t('not_connected', 'Not connected')}
+            {connecting
+              ? t('connecting', 'Connecting…')
+              : t('not_connected', 'Not connected')}
           </span>
           <span className="text-customColor26 text-[10px] truncate">
-            {t('connect_account', 'Connect account')}
+            {connecting
+              ? t('please_wait', 'Please wait')
+              : t('connect_account', 'Connect account')}
           </span>
         </div>
-      </Link>
+      </button>
     );
   }
 

@@ -484,28 +484,8 @@ export default function DashboardPage() {
 
   return (
     <div className="flex flex-1 min-h-0 bg-newBgColor text-newTextColor flex-col w-full">
-      {/* Top alert */}
-      <div className="bg-customColor26/10 border-b border-customColor26/20 px-6 py-2 flex items-center gap-3 flex-shrink-0">
-        <span className="text-customColor26 text-sm">ⓘ</span>
-        <div className="text-newTextColor text-xs">
-          <span className="font-semibold">
-            {t(
-              'ai_settings_not_set',
-              'AI settings are not properly configured'
-            )}
-          </span>
-          <span className="text-newTableText ml-2">
-            {t(
-              'ai_settings_hint',
-              'It seems your AI settings are not set. Please,'
-            )}{' '}
-            <a href="/settings" className="text-customColor26 underline">
-              {t('update_them_here', 'update them here')}
-            </a>{' '}
-            {t('to_improve_ai', 'to improve the AI generation quality')}
-          </span>
-        </div>
-      </div>
+      {/* AI settings banner removed per request — keep this comment so the
+          area is easy to re-introduce later if needed. */}
 
       <div className="flex flex-1 min-h-0 flex-col lg:flex-row w-full">
         {/* Left Section: Queue */}

@@ -564,16 +564,24 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       // for auto-DM to work; otherwise X returns 403
       // "oauth1-permissions" on every DM call.
       //
-      // Also keep linkMode: 'authenticate' + forceLogin: true so the user is
-      // forced through the consent flow on every reconnect (matters when the
-      // App's permission set has changed since last auth).
+      // linkMode: 'authenticate' uses X's /oauth/authenticate endpoint, which
+      // auto-redirects when the user already has an X session in the same
+      // browser. We deliberately do NOT pass `forceLogin: true` — that would
+      // force the user to re-enter X credentials even when they're already
+      // logged in, which is the opposite of what /auth users expect.
+      //
+      // Trade-off: if you change your X App's permission set after a user has
+      // already authorized (e.g., add Direct Messages later), existing tokens
+      // won't auto-pick up the new scope. Users with stale tokens have to
+      // explicitly disconnect + reconnect to mint a fresh token. This is
+      // acceptable because the alternative — forcing every user through a
+      // login form on every connect — is much worse UX.
       const { url, oauth_token, oauth_token_secret } =
         await client.generateAuthLink(
           (process.env.X_URL || process.env.FRONTEND_URL) +
           `/integrations/social/x`,
           {
             linkMode: 'authenticate',
-            forceLogin: true,
           }
         );
       return {

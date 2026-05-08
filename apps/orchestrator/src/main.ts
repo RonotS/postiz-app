@@ -7,6 +7,7 @@ dayjs.extend(utc);
 
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from '@gitroom/orchestrator/app.module';
+import { Connection } from '@temporalio/client';
 import * as dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
 
@@ -17,16 +18,12 @@ async function bootstrap() {
   await app.listen(port);
   console.log(`Orchestrator health check listening on port ${port}`);
 
-  // Periodic self-restart workaround for Temporal worker silently
+  // Periodic self-restart fallback for Temporal worker silently
   // dropping its task-queue connection after long idle periods.
   // After ORCHESTRATOR_RESTART_HOURS (default 4h), the process exits
-  // cleanly. pm2 (which manages this process inside the Railway
-  // container) detects the exit and restarts the orchestrator with
-  // a fresh Temporal client connection. This causes a brief
-  // (~5 second) gap where new workflow signals queue at Temporal
-  // before the worker reconnects and drains them — acceptable for
-  // social-post throughput; far better than the current state where
-  // the worker stays alive but stops processing tasks indefinitely.
+  // cleanly. pm2 detects the exit and restarts the orchestrator with
+  // a fresh Temporal client connection. This is a safety net only —
+  // the health-check loop below should catch most stuck states first.
   //
   // Disable by setting ORCHESTRATOR_RESTART_HOURS=0 in env.
   const restartHours = Number(process.env.ORCHESTRATOR_RESTART_HOURS ?? 4);
@@ -37,14 +34,80 @@ async function bootstrap() {
         `Orchestrator scheduled self-restart after ${restartHours}h uptime. ` +
         `Exiting cleanly so pm2 can restart with a fresh Temporal connection.`
       );
-      // Exit code 0 so pm2 sees a clean exit and auto-restarts. Do not
-      // use a non-zero code: that would also burn through Railway's
-      // ON_FAILURE retry budget (10 attempts) every 4 hours.
       process.exit(0);
     }, restartMs);
     console.log(
       `Orchestrator scheduled self-restart in ${restartHours}h ` +
       `(set ORCHESTRATOR_RESTART_HOURS to override; 0 disables).`
+    );
+  }
+
+  // Active Temporal connection health check.
+  //
+  // Independent of the worker setup in TemporalModule, we poll the Temporal
+  // server every ORCHESTRATOR_HEALTH_INTERVAL_SECONDS (default 60s) using a
+  // fresh standalone Connection. Each ping calls getSystemInfo() — a cheap
+  // round-trip that confirms gRPC reachability and authentication.
+  //
+  // After ORCHESTRATOR_HEALTH_FAILURES_BEFORE_EXIT (default 3) consecutive
+  // ping failures, exit the process. pm2 then restarts the orchestrator
+  // with a fresh worker connection — recovering from the "alive but not
+  // pulling tasks" state without waiting for the time-based fallback above.
+  //
+  // The ping uses its own short-lived Connection, so it does NOT mask
+  // actual worker-connection problems by holding open a healthy parallel
+  // connection — every ping opens its own gRPC stream.
+  //
+  // Disable by setting ORCHESTRATOR_HEALTH_INTERVAL_SECONDS=0.
+  const healthIntervalSec = Number(
+    process.env.ORCHESTRATOR_HEALTH_INTERVAL_SECONDS ?? 60
+  );
+  const healthMaxFailures = Number(
+    process.env.ORCHESTRATOR_HEALTH_FAILURES_BEFORE_EXIT ?? 3
+  );
+  if (healthIntervalSec > 0) {
+    let consecutiveFailures = 0;
+    const temporalAddress = process.env.TEMPORAL_ADDRESS || 'localhost:7233';
+    const tlsEnabled = process.env.TEMPORAL_TLS === 'true';
+    const apiKey = process.env.TEMPORAL_API_KEY;
+
+    const checkHealth = async () => {
+      try {
+        const conn = await Connection.connect({
+          address: temporalAddress,
+          ...(tlsEnabled ? { tls: true } : {}),
+          ...(apiKey ? { apiKey } : {}),
+        });
+        // getSystemInfo is a cheap server-side capability check.
+        await conn.workflowService.getSystemInfo({});
+        await conn.close();
+        if (consecutiveFailures > 0) {
+          console.log(
+            `Temporal health: recovered after ${consecutiveFailures} failure(s).`
+          );
+        }
+        consecutiveFailures = 0;
+      } catch (err: any) {
+        consecutiveFailures++;
+        console.warn(
+          `Temporal health: ping failed (${consecutiveFailures}/${healthMaxFailures}). ` +
+          `Reason: ${err?.message || err}`
+        );
+        if (consecutiveFailures >= healthMaxFailures) {
+          console.error(
+            `Temporal health: ${consecutiveFailures} consecutive failures. ` +
+            `Exiting so pm2 can restart with a fresh connection.`
+          );
+          process.exit(0); // exit 0 so pm2 restarts; non-zero would burn Railway retry budget
+        }
+      }
+    };
+
+    setInterval(checkHealth, healthIntervalSec * 1000);
+    console.log(
+      `Temporal health check enabled (every ${healthIntervalSec}s, ` +
+      `${healthMaxFailures} consecutive failures triggers restart). ` +
+      `Set ORCHESTRATOR_HEALTH_INTERVAL_SECONDS=0 to disable.`
     );
   }
 }

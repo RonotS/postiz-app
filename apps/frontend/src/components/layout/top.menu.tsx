@@ -79,6 +79,8 @@ export const useMenuItem = () => {
     },
     {
       name: 'Agent',
+      // Hidden per request — keep entry so it can be re-enabled later by removing `hide: true`.
+      hide: true,
       icon: (
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -139,6 +141,8 @@ export const useMenuItem = () => {
     },
     {
       name: t('plugs', 'Plugs'),
+      // Hidden per request — keep entry so it can be re-enabled later by removing `hide: true`.
+      hide: true,
       icon: (
         <svg
           xmlns="http://www.w3.org/2000/svg"
