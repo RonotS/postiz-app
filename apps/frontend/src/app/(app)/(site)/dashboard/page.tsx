@@ -735,6 +735,7 @@ export default function DashboardPage() {
               {t('long_form_post_enabled', 'Long form post enabled')}
             </label>
 
+            {/* Hidden per request — kept so it can be re-enabled later.
             <div className="flex flex-col gap-1">
               <label className="text-newTableText text-[11px] font-medium flex items-center gap-2">
                 <span>📅</span>
@@ -750,6 +751,7 @@ export default function DashboardPage() {
                 className="bg-newBgColor border border-newBorder rounded-lg px-3 py-2 text-sm text-newTextColor outline-none focus:border-newSep w-full"
               />
             </div>
+            */}
 
             <div className="flex items-stretch gap-2 mt-1">
               {editingPost ? (
@@ -773,6 +775,7 @@ export default function DashboardPage() {
                       ? t('posting', 'Posting…')
                       : t('tweet_now', 'Tweet now')}
                   </button>
+                  {/* Draft button hidden per request.
                   <button
                     onClick={() => submitPost('draft')}
                     disabled={submitting}
@@ -782,6 +785,7 @@ export default function DashboardPage() {
                       ? t('saving_dots', 'Saving…')
                       : t('draft', 'Draft')}
                   </button>
+                  */}
                   <button
                     onClick={() => submitPost('queue')}
                     disabled={submitting}
@@ -821,9 +825,10 @@ export default function DashboardPage() {
                       settings.autoDm && 'auto-dm',
                       settings.autoRetweet && 'auto-retweet',
                       settings.threadDelay && 'thread-delay',
-                      settings.linkedinPublish && 'linkedin',
-                      settings.generateBlog && 'blog',
-                      settings.paidPartnership && 'paid-partnership',
+                      // Hidden per request:
+                      // settings.linkedinPublish && 'linkedin',
+                      // settings.generateBlog && 'blog',
+                      // settings.paidPartnership && 'paid-partnership',
                     ]
                       .filter(Boolean)
                       .join(', ') || '—'}
@@ -917,6 +922,7 @@ export default function DashboardPage() {
                     onChange={(v) => updateSetting('threadDelay', v)}
                   />
 
+                  {/* Hidden per request — kept so they can be re-enabled later.
                   <SettingRow
                     icon="in"
                     label={t('also_publish_linkedin', 'Also publish to Linkedin')}
@@ -945,6 +951,7 @@ export default function DashboardPage() {
                     enabled={settings.paidPartnership}
                     onChange={(v) => updateSetting('paidPartnership', v)}
                   />
+                  */}
                 </div>
               )}
             </div>
