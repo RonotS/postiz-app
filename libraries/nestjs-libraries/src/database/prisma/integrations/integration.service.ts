@@ -481,6 +481,67 @@ export class IntegrationService {
       getPlugById.integration.providerIdentifier
     );
 
+    // Look up the Postiz post that was published as this tweet (data.postId is
+    // the platform-side release ID, e.g. the X tweet ID). Pass its settings
+    // JSON to the plug method so plugs can honor per-post overrides
+    // (e.g. auto-DM message, target toggles) without breaking older plugs that
+    // don't use the parameter.
+    let postSettings: any = undefined;
+    try {
+      const post = await this._integrationRepository.getPostByReleaseId(
+        getPlugById.integration.id,
+        data.postId
+      );
+      if (post?.settings) {
+        try {
+          postSettings = JSON.parse(post.settings);
+        } catch {
+          /* invalid JSON in post.settings — ignore, plug will fall back to plug-level defaults */
+        }
+      }
+    } catch (err) {
+      console.error('processPlugs: failed to load post settings:', err);
+    }
+
+    // Build a small per-plug context that lets the plug method persist state
+    // across runs (e.g., the auto-DM plug uses this to remember which user IDs
+    // have already received a DM for this post, so a user who liked first and
+    // then later retweeted the same post doesn't receive a second DM).
+    //
+    // Stored values are scoped to (methodName, integrationId, value) where
+    // value is "<postReleaseId>:<userId>" — prefixing with the post ID makes
+    // dedup per-post, not global. Different posts can DM the same user.
+    const integrationId = getPlugById.integration.id;
+    const plugContext = {
+      // Returns the subset of `userIds` that have ALREADY been recorded for
+      // this post (i.e., already DM'd in a prior run). Caller filters them out
+      // before sending DMs.
+      loadDmdUserIds: async (userIds: string[]): Promise<Set<string>> => {
+        if (userIds.length === 0) return new Set();
+        const candidates = userIds.map((uid) => `${data.postId}:${uid}`);
+        const existing = await this._integrationRepository.loadExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          candidates
+        );
+        const existingValues = new Set(existing.map((e: any) => e.value));
+        return new Set(
+          userIds.filter((uid) => existingValues.has(`${data.postId}:${uid}`))
+        );
+      },
+      // Persist the user IDs that were successfully DM'd in this run so the
+      // next run doesn't DM them again.
+      saveDmdUserIds: async (userIds: string[]) => {
+        if (userIds.length === 0) return;
+        const values = userIds.map((uid) => `${data.postId}:${uid}`);
+        await this._integrationRepository.saveExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          values
+        );
+      },
+    };
+
     // @ts-ignore
     const process = await integration[getPlugById.plugFunction](
       getPlugById.integration,
@@ -488,7 +549,9 @@ export class IntegrationService {
       JSON.parse(getPlugById.data).reduce((all: any, current: any) => {
         all[current.name] = current.value;
         return all;
-      }, {})
+      }, {}),
+      postSettings,
+      plugContext
     );
 
     if (process) {

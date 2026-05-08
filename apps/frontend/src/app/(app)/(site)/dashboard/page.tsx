@@ -22,30 +22,35 @@ const DRAFT_STORAGE_KEY = 'dashboard-composer-draft';
 type ComposerSettings = {
   longForm: boolean;
   autoRetweet: boolean;
-  autoPlug: boolean;
-  autoPlugLikes: number;
+  autoRetweetInterval: number; // hours between retweets
+  autoRetweetTimes: number; // total number of times to retweet
   autoDm: boolean;
+  autoDmThreshold: number;
+  autoDmMessage: string;
+  autoDmTargetLikes: boolean;
+  autoDmTargetRetweets: boolean;
+  autoDmTargetReplies: boolean;
   threadDelay: boolean;
   linkedinPublish: boolean;
   generateBlog: boolean;
   paidPartnership: boolean;
-  plugProvider: string;
-  plugMessage: string;
 };
 
 const DEFAULT_SETTINGS: ComposerSettings = {
   longForm: true,
   autoRetweet: false,
-  autoPlug: true,
-  autoPlugLikes: 3,
+  autoRetweetInterval: 6,
+  autoRetweetTimes: 1,
   autoDm: false,
+  autoDmThreshold: 5,
+  autoDmMessage: '',
+  autoDmTargetLikes: true,
+  autoDmTargetRetweets: false,
+  autoDmTargetReplies: false,
   threadDelay: false,
   linkedinPublish: false,
   generateBlog: false,
   paidPartnership: false,
-  plugProvider: 'discord',
-  plugMessage:
-    'join my FREE DISCORD for FREE PICKS:\nhttps://discord.gg/RHpSX4nwGv',
 };
 
 type IntegrationItem = {
@@ -376,6 +381,31 @@ export default function DashboardPage() {
                 who_can_reply_post: 'everyone',
                 made_with_ai: false,
                 paid_partnership: settings.paidPartnership,
+                // Auto-retweet per-post overrides for the autoRepostPost plug.
+                // The plug reads these via postSettings; missing fields fall
+                // back to plug-level defaults from the Plugs page.
+                ...(settings.autoRetweet
+                  ? {
+                      auto_retweet_enabled: true,
+                      auto_retweet_interval_hours: settings.autoRetweetInterval,
+                      auto_retweet_times: settings.autoRetweetTimes,
+                    }
+                  : { auto_retweet_enabled: false }),
+                // Auto-DM per-post overrides for the autoDmEngagers plug.
+                // The plug reads these via postSettings; missing fields fall
+                // back to plug-level defaults configured in the Plugs page.
+                ...(settings.autoDm
+                  ? {
+                      auto_dm_enabled: true,
+                      auto_dm_threshold: settings.autoDmThreshold,
+                      auto_dm_message: settings.autoDmMessage,
+                      auto_dm_targets: {
+                        likes: settings.autoDmTargetLikes,
+                        retweets: settings.autoDmTargetRetweets,
+                        replies: settings.autoDmTargetReplies,
+                      },
+                    }
+                  : { auto_dm_enabled: false }),
               },
               value: values,
             },
@@ -821,7 +851,6 @@ export default function DashboardPage() {
                   <span className="text-newTableText text-[11px]">
                     {t('enabled_label', 'enabled:')}{' '}
                     {[
-                      settings.autoPlug && 'auto-plug',
                       settings.autoDm && 'auto-dm',
                       settings.autoRetweet && 'auto-retweet',
                       settings.threadDelay && 'thread-delay',
@@ -856,55 +885,52 @@ export default function DashboardPage() {
                     onChange={(v) => updateSetting('autoRetweet', v)}
                   />
 
-                  <SettingRow
-                    icon="🔌"
-                    label={t('auto_plug', 'Auto plug')}
-                    enabled={settings.autoPlug}
-                    onChange={(v) => updateSetting('autoPlug', v)}
-                    trailing={
-                      <div className="flex items-center gap-1 mr-1">
-                        <input
-                          type="number"
-                          min={1}
-                          value={settings.autoPlugLikes}
+                  {settings.autoRetweet && (
+                    <div className="ml-7 mb-2 mt-1 flex flex-col gap-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-newTableText text-xs">
+                          {t('interval', 'Interval')}
+                        </span>
+                        <select
+                          value={settings.autoRetweetInterval}
                           onChange={(e) =>
                             updateSetting(
-                              'autoPlugLikes',
+                              'autoRetweetInterval',
+                              parseInt(e.target.value) || 6
+                            )
+                          }
+                          className="bg-newBgColor border border-newBorder rounded-lg px-2 py-1 text-xs text-newTextColor outline-none min-w-[120px]"
+                        >
+                          <option value={1}>1 hour</option>
+                          <option value={3}>3 hours</option>
+                          <option value={6}>6 hours</option>
+                          <option value={12}>12 hours</option>
+                          <option value={24}>24 hours</option>
+                          <option value={48}>2 days</option>
+                          <option value={168}>1 week</option>
+                        </select>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-newTableText text-xs">
+                          {t('number_of_times', '# of times')}
+                        </span>
+                        <select
+                          value={settings.autoRetweetTimes}
+                          onChange={(e) =>
+                            updateSetting(
+                              'autoRetweetTimes',
                               parseInt(e.target.value) || 1
                             )
                           }
-                          className="w-[44px] bg-newBgColor border border-newBorder rounded px-2 py-0.5 text-xs text-newTextColor text-center outline-none focus:border-newSep"
-                        />
-                        <span className="text-newTableText text-xs">
-                          {t('likes', 'likes')}
-                        </span>
-                      </div>
-                    }
-                  />
-
-                  {settings.autoPlug && (
-                    <div className="ml-7 mb-2 mt-1 flex flex-col gap-2">
-                      <div className="flex items-center gap-2">
-                        <select
-                          value={settings.plugProvider}
-                          onChange={(e) =>
-                            updateSetting('plugProvider', e.target.value)
-                          }
-                          className="bg-newBgColor border border-newBorder rounded-lg px-2 py-1 text-xs text-newTextColor outline-none"
+                          className="bg-newBgColor border border-newBorder rounded-lg px-2 py-1 text-xs text-newTextColor outline-none min-w-[120px]"
                         >
-                          <option value="discord">discord</option>
-                          <option value="telegram">telegram</option>
-                          <option value="newsletter">newsletter</option>
-                          <option value="link">link</option>
+                          <option value={1}>1 time</option>
+                          <option value={2}>2 times</option>
+                          <option value={3}>3 times</option>
+                          <option value={5}>5 times</option>
+                          <option value={10}>10 times</option>
                         </select>
                       </div>
-                      <textarea
-                        value={settings.plugMessage}
-                        onChange={(e) =>
-                          updateSetting('plugMessage', e.target.value)
-                        }
-                        className="w-full bg-newBgColor border border-newBorder rounded-lg px-3 py-2 text-xs text-newTextColor outline-none resize-none focus:border-newSep min-h-[70px]"
-                      />
                     </div>
                   )}
 
@@ -913,7 +939,60 @@ export default function DashboardPage() {
                     label={t('auto_dm', 'Auto DM')}
                     enabled={settings.autoDm}
                     onChange={(v) => updateSetting('autoDm', v)}
+                    trailing={
+                      <div className="flex items-center gap-1 mr-1">
+                        <input
+                          type="number"
+                          min={1}
+                          value={settings.autoDmThreshold}
+                          onChange={(e) =>
+                            updateSetting(
+                              'autoDmThreshold',
+                              parseInt(e.target.value) || 1
+                            )
+                          }
+                          className="w-[44px] bg-newBgColor border border-newBorder rounded px-2 py-0.5 text-xs text-newTextColor text-center outline-none focus:border-newSep"
+                        />
+                        <span className="text-newTableText text-xs">
+                          {t('engagements', 'engagements')}
+                        </span>
+                      </div>
+                    }
                   />
+
+                  {settings.autoDm && (
+                    <div className="ml-7 mb-2 mt-1 flex flex-col gap-1">
+                      <SettingRow
+                        icon="♥"
+                        label={t('dm_likers', 'DM users who liked')}
+                        enabled={settings.autoDmTargetLikes}
+                        onChange={(v) => updateSetting('autoDmTargetLikes', v)}
+                      />
+                      <SettingRow
+                        icon="↻"
+                        label={t('dm_retweeters', 'DM users who retweeted')}
+                        enabled={settings.autoDmTargetRetweets}
+                        onChange={(v) => updateSetting('autoDmTargetRetweets', v)}
+                      />
+                      <SettingRow
+                        icon="💬"
+                        label={t('dm_repliers', 'DM users who commented')}
+                        enabled={settings.autoDmTargetReplies}
+                        onChange={(v) => updateSetting('autoDmTargetReplies', v)}
+                      />
+                      <textarea
+                        placeholder={t(
+                          'dm_message_placeholder',
+                          'Custom DM message for this tweet (leave empty to use the default from Plugs)'
+                        )}
+                        value={settings.autoDmMessage}
+                        onChange={(e) =>
+                          updateSetting('autoDmMessage', e.target.value)
+                        }
+                        className="w-full bg-newBgColor border border-newBorder rounded-lg px-3 py-2 text-xs text-newTextColor outline-none resize-none focus:border-newSep min-h-[70px] mt-2"
+                      />
+                    </div>
+                  )}
 
                   <SettingRow
                     icon="⏱"

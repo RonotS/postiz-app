@@ -591,6 +591,24 @@ export class IntegrationRepository {
     });
   }
 
+  // Look up the Postiz post that was published as the given X (or other
+  // platform) tweet ID. Used by processPlugs to read per-post settings
+  // (auto-DM message override, target toggles, etc.) when invoking a plug.
+  // Returns null if no matching published post exists.
+  getPostByReleaseId(integrationId: string, releaseId: string) {
+    return this._posts.model.post.findFirst({
+      where: {
+        integrationId,
+        releaseId,
+      },
+      select: {
+        id: true,
+        settings: true,
+        integrationId: true,
+      },
+    });
+  }
+
   createOrUpdatePlug(org: string, integrationId: string, body: PlugDto) {
     return this._plugs.model.plugs.upsert({
       where: {
