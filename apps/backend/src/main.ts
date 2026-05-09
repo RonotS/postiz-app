@@ -51,7 +51,7 @@ async function start() {
   });
 
   await startMcp(app);
-  // app.setGlobalPrefix('api'); // Nginx handles prefix stripping
+  app.setGlobalPrefix('api'); // Nginx handles prefix stripping
 
   app.useGlobalPipes(
     new ValidationPipe({
