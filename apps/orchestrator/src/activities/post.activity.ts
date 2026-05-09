@@ -122,6 +122,13 @@ export class PostActivity {
     integration: Integration,
     posts: Post[]
   ) {
+    if (integration.providerIdentifier === 'x') {
+      console.log(
+        `[X DEBUG] postComment start: integrationId=${integration.id} postId=${postId} ` +
+        `xProxiesConfigured=${process.env.X_PROXIES?.trim() ? 'yes' : 'no'}`
+      );
+    }
+
     const getIntegration = this._integrationManager.getSocialIntegration(
       integration.providerIdentifier
     );
@@ -161,6 +168,13 @@ export class PostActivity {
 
   @ActivityMethod()
   async postSocial(integration: Integration, posts: Post[]) {
+    if (integration.providerIdentifier === 'x') {
+      console.log(
+        `[X DEBUG] postSocial start: integrationId=${integration.id} posts=${posts.length} ` +
+        `xProxiesConfigured=${process.env.X_PROXIES?.trim() ? 'yes' : 'no'}`
+      );
+    }
+
     const getIntegration = this._integrationManager.getSocialIntegration(
       integration.providerIdentifier
     );

@@ -12,6 +12,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import useSWR from 'swr';
@@ -182,6 +183,18 @@ export default function DashboardPage() {
   const [settings, setSettings] = useState<ComposerSettings>(DEFAULT_SETTINGS);
   const [composerText, setComposerText] = useState('');
   const [hydrated, setHydrated] = useState(false);
+  // Attached media (images/videos) for the current draft. Each entry has the
+  // server-relative `path` returned by /media/upload-simple. Submitted as
+  // `image: [...]` on the first tweet of the post.
+  const [attachedMedia, setAttachedMedia] = useState<
+    Array<{ path: string; name: string; isUploading?: boolean }>
+  >([]);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  // Queue spacing: minutes between consecutive queued posts (when "Add to
+  // Queue" is used). Falls back to /posts/find-slot when 0 or null.
+  const [queueSpacingMinutes, setQueueSpacingMinutes] = useState<number>(0);
 
   // Hydrate persisted settings + draft from localStorage on mount.
   useEffect(() => {
@@ -336,6 +349,21 @@ export default function DashboardPage() {
           date = newDayjs().utc().format('YYYY-MM-DDTHH:mm:ss');
         } else if (scheduledAt) {
           date = dayjs(scheduledAt).utc().format('YYYY-MM-DDTHH:mm:ss');
+        } else if (mode === 'queue' && queueSpacingMinutes > 0) {
+          // Queue spacing mode: place this post N minutes after the latest
+          // already-scheduled post (or +N min from now if the queue is empty).
+          // Lets users batch-add posts with a fixed cadence without manually
+          // picking each slot.
+          const lastScheduled = allPosts
+            .filter((p) => p.state === 'QUEUE')
+            .map((p) => dayjs.utc(p.publishDate))
+            .sort((a, b) => b.valueOf() - a.valueOf())[0];
+          const baseline = lastScheduled && lastScheduled.isAfter(dayjs())
+            ? lastScheduled
+            : dayjs.utc();
+          date = baseline
+            .add(queueSpacingMinutes, 'minute')
+            .format('YYYY-MM-DDTHH:mm:ss');
         } else if (nextSlotIso) {
           date = nextSlotIso;
         } else {
@@ -347,11 +375,16 @@ export default function DashboardPage() {
           .split(/\n\s*\n\s*\n+/)
           .map((s) => s.trim())
           .filter(Boolean);
+        // Attach images only to the FIRST tweet of a thread — that's the X
+        // convention. uploaded `path` values come back from /media/upload-simple.
+        const firstTweetImages = attachedMedia
+          .filter((m) => !m.isUploading)
+          .map((m) => ({ path: m.path }));
         const values = (threadParts.length ? threadParts : [composerText]).map(
           (content, idx) => ({
             content,
             delay: idx === 0 ? 0 : settings.threadDelay ? 60 : 0,
-            image: [],
+            image: idx === 0 ? firstTweetImages : [],
             // When editing, attach the existing post id so the backend
             // upserts in place instead of creating a new row.
             ...(isEditing && idx === 0 ? { id: editingPost!.id } : {}),
@@ -438,6 +471,7 @@ export default function DashboardPage() {
         setComposerText('');
         setEditingPost(null);
         setUserTouchedDate(false);
+        setAttachedMedia([]); // clear attached images after successful submit
         await Promise.all([mutatePosts(), mutateNextSlot()]);
       } catch (err: any) {
         toast.show(
@@ -461,8 +495,115 @@ export default function DashboardPage() {
       fetch,
       mutatePosts,
       mutateNextSlot,
+      attachedMedia,
+      allPosts,
+      queueSpacingMinutes,
     ]
   );
+
+  // Upload a single File via /media/upload-simple. Returns the server path
+  // that goes into the post's `image` array. The optimistic placeholder is
+  // tracked via attachedMedia[].isUploading so the UI shows progress.
+  const uploadFile = useCallback(
+    async (file: File): Promise<string | null> => {
+      const placeholder = {
+        path: '',
+        name: file.name || 'image',
+        isUploading: true,
+      };
+      setAttachedMedia((prev) => [...prev, placeholder]);
+      try {
+        const fd = new FormData();
+        fd.append('file', file, file.name || 'paste.png');
+        const res = await fetch('/media/upload-simple', {
+          method: 'POST',
+          body: fd,
+        });
+        if (!res.ok) {
+          throw new Error(await res.text().catch(() => 'upload failed'));
+        }
+        const data = await res.json();
+        const path: string | undefined = data?.path;
+        if (!path) throw new Error('no path in upload response');
+        setAttachedMedia((prev) =>
+          prev.map((m) =>
+            m === placeholder ? { path, name: placeholder.name } : m
+          )
+        );
+        return path;
+      } catch (err: any) {
+        toast.show(
+          err?.message || t('upload_failed', 'Image upload failed'),
+          'warning'
+        );
+        setAttachedMedia((prev) => prev.filter((m) => m !== placeholder));
+        return null;
+      }
+    },
+    [fetch, toast, t]
+  );
+
+  // Paste handler: when the user pastes content into the composer, look for
+  // image items in the clipboard and upload each one. Text pastes pass
+  // through to the textarea unchanged.
+  const handleComposerPaste = useCallback(
+    async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const images: File[] = [];
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) images.push(file);
+        }
+      }
+      if (images.length === 0) return; // text paste — let default behavior run
+      e.preventDefault();
+      // Upload sequentially so we don't slam the server
+      for (const file of images) {
+        await uploadFile(file);
+      }
+    },
+    [uploadFile]
+  );
+
+  // File picker handler: <input type="file"> change event uploads each file.
+  const handleFilePicker = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files || []);
+      // reset so the same file can be re-selected later
+      e.target.value = '';
+      for (const file of files) {
+        await uploadFile(file);
+      }
+    },
+    [uploadFile]
+  );
+
+  const removeAttachment = useCallback((index: number) => {
+    setAttachedMedia((prev) => prev.filter((_, i) => i !== index));
+  }, []);
+
+  // Insert a string at the current cursor position in the composer textarea.
+  // Used by the emoji popover.
+  const insertAtCursor = useCallback((text: string) => {
+    setComposerText((prev) => {
+      const ta = composerTextareaRef.current;
+      if (!ta) return prev + text;
+      const start = ta.selectionStart ?? prev.length;
+      const end = ta.selectionEnd ?? prev.length;
+      const next = prev.slice(0, start) + text + prev.slice(end);
+      // restore caret position after React re-renders
+      requestAnimationFrame(() => {
+        if (composerTextareaRef.current) {
+          composerTextareaRef.current.selectionStart = start + text.length;
+          composerTextareaRef.current.selectionEnd = start + text.length;
+          composerTextareaRef.current.focus();
+        }
+      });
+      return next;
+    });
+  }, []);
 
   const startEdit = useCallback((post: PostItem) => {
     setEditingPost(post);
@@ -661,6 +802,90 @@ export default function DashboardPage() {
             ))}
           </nav>
 
+          {/* When the active tab is not 'Compose', render a list of posts in
+              the matching state instead of the composer. The composer state
+              (text, attachments, settings) is preserved while the user
+              browses other tabs. */}
+          {activeTab !== 'Compose' ? (
+            <div className="p-4 flex flex-col gap-2">
+              {(() => {
+                const tabState =
+                  activeTab === 'Sent'
+                    ? 'PUBLISHED'
+                    : activeTab === 'Scheduled'
+                    ? 'QUEUE'
+                    : 'DRAFT';
+                const tabPosts = allPosts
+                  .filter((p) => p.state === tabState)
+                  .sort(
+                    (a, b) =>
+                      dayjs.utc(b.publishDate).valueOf() -
+                      dayjs.utc(a.publishDate).valueOf()
+                  );
+                if (tabPosts.length === 0) {
+                  return (
+                    <div className="text-newTableText text-xs py-8 text-center">
+                      {activeTab === 'Sent'
+                        ? t('no_sent_yet', 'No sent tweets yet')
+                        : activeTab === 'Scheduled'
+                        ? t('no_scheduled_yet', 'No scheduled tweets yet')
+                        : t('no_drafts_yet', 'No drafts yet')}
+                    </div>
+                  );
+                }
+                return tabPosts.map((p) => (
+                  <div
+                    key={p.id}
+                    className="bg-newBgColor border border-newBorder rounded-lg p-3 hover:bg-boxHover transition-colors"
+                  >
+                    <div className="text-newTextColor text-[13px] whitespace-pre-wrap line-clamp-4">
+                      {p.content.replace(/<\/?[^>]+(>|$)/g, '')}
+                    </div>
+                    <div className="flex items-center justify-between mt-2">
+                      <span className="text-newTableText text-[10px]">
+                        {dayjs
+                          .utc(p.publishDate)
+                          .local()
+                          .format('MMM D, YYYY · h:mm A')}
+                      </span>
+                      {activeTab === 'Sent' && (p as any).releaseURL && (
+                        <a
+                          href={(p as any).releaseURL}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-customColor26 text-[10px] hover:underline"
+                        >
+                          {t('view_on_x', 'View on X')} ↗
+                        </a>
+                      )}
+                      {activeTab === 'Scheduled' && (
+                        <button
+                          onClick={() => {
+                            setActiveTab('Compose');
+                            startEdit(p);
+                          }}
+                          className="text-customColor26 text-[10px] hover:underline"
+                        >
+                          {t('edit', 'Edit')}
+                        </button>
+                      )}
+                      {activeTab === 'Drafts' && (
+                        <button
+                          onClick={() => {
+                            setActiveTab('Compose');
+                            setComposerText(p.content);
+                          }}
+                          className="text-customColor26 text-[10px] hover:underline"
+                        >
+                          {t('open', 'Open')}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ));
+              })()}
+            </div>
+          ) : (
           <div className="p-4 flex flex-col gap-3">
             {editingPost && (
               <div className="bg-customColor26/10 border border-customColor26/30 rounded-lg px-3 py-2 flex items-center justify-between gap-2">
@@ -694,34 +919,107 @@ export default function DashboardPage() {
 
             <div className="bg-newBgColor border border-newBorder rounded-xl p-4 relative focus-within:border-newSep transition-all min-h-[180px]">
               <textarea
+                ref={composerTextareaRef}
                 value={composerText}
                 onChange={(e) => setComposerText(e.target.value)}
+                onPaste={handleComposerPaste}
                 className="w-full h-full min-h-[150px] bg-transparent border-none outline-none text-newTextColor resize-none placeholder:text-newTableText text-[15px]"
                 placeholder={t(
                   'write_here',
-                  'Write here.\n\nSkip 3 lines to start a thread.'
+                  'Write here.\n\nSkip 3 lines to start a thread.\nPaste an image directly to attach it.'
                 )}
               />
+
+              {/* Attached image previews */}
+              {attachedMedia.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-2 mt-1">
+                  {attachedMedia.map((m, i) => (
+                    <div
+                      key={i}
+                      className="relative w-20 h-20 rounded-lg overflow-hidden border border-newBorder bg-newBgColorInner"
+                    >
+                      {m.isUploading ? (
+                        <div className="w-full h-full flex items-center justify-center text-[10px] text-newTableText">
+                          {t('uploading', 'Uploading…')}
+                        </div>
+                      ) : (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={`/uploads/${m.path}`}
+                          alt={m.name}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            // Fallback: try the path as-is if it already includes /uploads/
+                            const target = e.currentTarget;
+                            if (!target.src.endsWith(m.path)) {
+                              target.src = m.path.startsWith('/') ? m.path : `/${m.path}`;
+                            }
+                          }}
+                        />
+                      )}
+                      {!m.isUploading && (
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(i)}
+                          className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-black/70 text-white text-xs flex items-center justify-center hover:bg-black"
+                          title={t('remove', 'Remove')}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div className="flex items-center justify-between mt-2 text-[11px] text-newTableText">
-                <div className="flex items-center gap-3">
-                  <button className="hover:text-newTextColor transition-colors">
-                    ↺
-                  </button>
-                  <button className="hover:text-newTextColor transition-colors">
-                    🔗
-                  </button>
-                  <button className="hover:text-newTextColor transition-colors">
-                    T
-                  </button>
-                  <button className="hover:text-newTextColor transition-colors">
+                <div className="flex items-center gap-3 relative">
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="hover:text-newTextColor transition-colors"
+                    title={t('attach_image', 'Attach image')}
+                  >
                     📎
                   </button>
-                  <button className="hover:text-newTextColor transition-colors">
+                  <button
+                    type="button"
+                    onClick={() => setEmojiOpen((v) => !v)}
+                    className="hover:text-newTextColor transition-colors"
+                    title={t('insert_emoji', 'Insert emoji')}
+                  >
                     😀
                   </button>
-                  <button className="hover:text-newTextColor transition-colors">
-                    🎤
-                  </button>
+                  {emojiOpen && (
+                    <div className="absolute bottom-6 left-0 z-10 bg-newBgColorInner border border-newBorder rounded-lg p-2 grid grid-cols-8 gap-1 shadow-lg w-[280px]">
+                      {[
+                        '😀','😂','🤣','😍','😎','🥳','🤔','😢',
+                        '👍','👎','❤️','🔥','💯','✨','🎉','🚀',
+                        '👏','🙏','💪','🤝','✅','❌','⭐','💡',
+                        '☕','🍕','🍔','🎯','📌','📊','📈','💰',
+                      ].map((e) => (
+                        <button
+                          key={e}
+                          type="button"
+                          onClick={() => {
+                            insertAtCursor(e);
+                            setEmojiOpen(false);
+                          }}
+                          className="text-lg hover:bg-boxHover rounded p-1"
+                        >
+                          {e}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*,video/*"
+                    multiple
+                    onChange={handleFilePicker}
+                    className="hidden"
+                  />
                 </div>
                 <span
                   className={
@@ -808,6 +1106,32 @@ export default function DashboardPage() {
                 </>
               )}
             </div>
+
+            {/* Queue spacing — when set, "Add to Queue" places this post N
+                minutes after the last queued post (or N min from now if the
+                queue is empty). Lets users batch-add posts at a fixed cadence
+                without manually picking each datetime. 0 = use the next
+                available slot from /posts/find-slot (default behavior). */}
+            {!editingPost && (
+              <div className="flex items-center justify-between gap-2 text-newTableText text-[11px] mt-1">
+                <span>{t('queue_spacing', 'Queue spacing')}</span>
+                <select
+                  value={queueSpacingMinutes}
+                  onChange={(e) =>
+                    setQueueSpacingMinutes(parseInt(e.target.value) || 0)
+                  }
+                  className="bg-newBgColor border border-newBorder rounded-lg px-2 py-1 text-[11px] text-newTextColor outline-none"
+                >
+                  <option value={0}>{t('next_slot', 'Next available slot')}</option>
+                  <option value={5}>+5 min</option>
+                  <option value={10}>+10 min</option>
+                  <option value={15}>+15 min</option>
+                  <option value={20}>+20 min</option>
+                  <option value={30}>+30 min</option>
+                  <option value={60}>+1 hour</option>
+                </select>
+              </div>
+            )}
 
             <div className="text-right">
               <button
@@ -1015,6 +1339,7 @@ export default function DashboardPage() {
               )}
             </div>
           </div>
+          )}
         </div>
       </div>
     </div>
