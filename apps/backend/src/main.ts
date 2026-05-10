@@ -70,9 +70,16 @@ async function start() {
 
   loadSwagger(app);
 
-  // In production Docker, Nginx expects the backend on 3000. 
-  // We ignore the Railway PORT here because Nginx is already using it.
-  const port = process.env.IS_DOCKER ? 3000 : (process.env.PORT || 3000);
+  // Monolith Docker: Nginx listens on PORT; backend stays on 3000 when
+  // IS_DOCKER is set. Split backend service: set BACKEND_LISTEN_PORT to the
+  // same value as Railway PORT (or unset IS_DOCKER in env) so healthchecks
+  // hit the Nest listener instead of nothing on PORT.
+  const explicitListen = process.env.BACKEND_LISTEN_PORT?.trim();
+  const port = explicitListen
+    ? Number(explicitListen)
+    : process.env.IS_DOCKER
+      ? 3000
+      : Number(process.env.PORT || 3000);
 
   try {
     await app.listen(port);
