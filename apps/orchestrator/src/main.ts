@@ -97,7 +97,20 @@ async function bootstrap() {
   const startedAt = Date.now();
   const app = await NestFactory.create(AppModule);
   app.enableShutdownHooks();
-  const port = process.env.ORCHESTRATOR_PORT || 3002;
+  // Monolith Docker: Nginx owns PORT; orchestrator listens on ORCHESTRATOR_PORT
+  // (default 3002). Split Railway service: set ORCHESTRATOR_ONLY=true or unset
+  // IS_DOCKER so we bind Railway PORT (required for healthchecks).
+  const orchestratorOnly =
+    process.env.ORCHESTRATOR_ONLY === 'true' ||
+    process.env.ORCHESTRATOR_ONLY === '1';
+  const explicitListen = process.env.ORCHESTRATOR_LISTEN_PORT?.trim();
+  const inDockerMonolith =
+    process.env.IS_DOCKER === 'true' && !orchestratorOnly;
+  const port = explicitListen
+    ? Number(explicitListen)
+    : inDockerMonolith
+      ? Number(process.env.ORCHESTRATOR_PORT || 3002)
+      : Number(process.env.PORT || process.env.ORCHESTRATOR_PORT || 3002);
   await app.listen(port);
   console.log(`Orchestrator health check listening on port ${port}`);
 

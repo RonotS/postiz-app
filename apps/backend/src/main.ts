@@ -10,7 +10,7 @@ Runtime.install({ shutdownSignals: [] });
 process.env.TZ = 'UTC';
 
 import cookieParser from 'cookie-parser';
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { Logger, RequestMethod, ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 
@@ -51,7 +51,12 @@ async function start() {
   });
 
   await startMcp(app);
-  app.setGlobalPrefix('api'); // Nginx handles prefix stripping
+  // Split-backend / Railway: healthchecks often probe `GET /`. Exclude the
+  // root probe from the `api` prefix so `RootController` answers at `/`.
+  // Monolith behind Nginx still uses `/api/*` for API routes.
+  app.setGlobalPrefix('api', {
+    exclude: [{ path: '/', method: RequestMethod.GET }],
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -70,14 +75,17 @@ async function start() {
 
   loadSwagger(app);
 
-  // Monolith Docker: Nginx listens on PORT; backend stays on 3000 when
-  // IS_DOCKER is set. Split backend service: set BACKEND_LISTEN_PORT to the
-  // same value as Railway PORT (or unset IS_DOCKER in env) so healthchecks
-  // hit the Nest listener instead of nothing on PORT.
+  // Monolith Docker: Nginx owns PORT; Nest listens on 3000 when IS_DOCKER is
+  // set. Split Railway backend: set BACKEND_ONLY=true (or BACKEND_LISTEN_PORT,
+  // or IS_DOCKER=false) so Nest binds Railway PORT and healthchecks succeed.
+  const backendOnly =
+    process.env.BACKEND_ONLY === 'true' || process.env.BACKEND_ONLY === '1';
   const explicitListen = process.env.BACKEND_LISTEN_PORT?.trim();
+  const monolithBehindNginx =
+    process.env.IS_DOCKER === 'true' && !backendOnly;
   const port = explicitListen
     ? Number(explicitListen)
-    : process.env.IS_DOCKER
+    : monolithBehindNginx
       ? 3000
       : Number(process.env.PORT || 3000);
 
