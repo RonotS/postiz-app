@@ -28,11 +28,10 @@ export class OauthProvider extends AuthProviderAbstract {
       appSecret,
     });
 
+    // Do not pass authAccessType — same as X integration (see x.provider.ts).
+    // Passing `write` can cap OAuth scope and trigger X 403 oauth1-permissions.
     const { url, oauth_token, oauth_token_secret } = await client.generateAuthLink(
-      `${frontendUrl}/auth/login?provider=X`,
-      {
-        authAccessType: 'write',
-      }
+      `${frontendUrl}/auth/login?provider=X`
     );
 
     await ioRedis.set(`x-login:${oauth_token}`, oauth_token_secret, 'EX', 600);
