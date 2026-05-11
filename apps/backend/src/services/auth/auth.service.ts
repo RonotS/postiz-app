@@ -20,7 +20,7 @@ export class AuthService {
     private _notificationService: NotificationService,
     private _emailService: EmailService,
     private _providerManager: AuthProviderManager
-  ) {}
+  ) { }
   async canRegister(provider: string) {
     if (
       process.env.DISABLE_REGISTRATION !== 'true' ||
@@ -62,11 +62,11 @@ export class AuthService {
         const addedOrg =
           addToOrg && typeof addToOrg !== 'boolean'
             ? await this._organizationService.addUserToOrg(
-                create.users[0].user.id,
-                addToOrg.id,
-                addToOrg.orgId,
-                addToOrg.role
-              )
+              create.users[0].user.id,
+              addToOrg.id,
+              addToOrg.orgId,
+              addToOrg.role
+            )
             : false;
 
         const obj = { addedOrg, jwt: await this.jwt(create.users[0].user) };
@@ -100,11 +100,11 @@ export class AuthService {
     const addedOrg =
       addToOrg && typeof addToOrg !== 'boolean'
         ? await this._organizationService.addUserToOrg(
-            user.id,
-            addToOrg.id,
-            addToOrg.orgId,
-            addToOrg.role
-          )
+          user.id,
+          addToOrg.id,
+          addToOrg.orgId,
+          addToOrg.role
+        )
         : false;
     return { addedOrg, jwt: await this.jwt(user) };
   }
@@ -131,13 +131,29 @@ export class AuthService {
     }
   }
 
+  /**
+   * Public `postiz` images may call `/auth/oauth/GENERIC` for the self-hosted
+   * X login button; Twitter OAuth is implemented as provider `X` only.
+   */
+  private normalizeTwitterAuthProviderKey(provider: string | Provider): string {
+    const key = String(provider).toUpperCase();
+    return key === 'GENERIC' ? 'X' : key;
+  }
+
+  /** Twitter accounts are stored under `Provider.X`, not `GENERIC`. */
+  private storageProviderForTwitterFlow(provider: Provider): Provider {
+    return String(provider).toUpperCase() === 'GENERIC' ? Provider.X : provider;
+  }
+
   private async loginOrRegisterProvider(
     provider: Provider,
     body: CreateOrgUserDto,
     ip: string,
     userAgent: string
   ) {
-    const providerInstance = this._providerManager.getProvider(provider);
+    const providerKey = this.normalizeTwitterAuthProviderKey(provider);
+    const storageProvider = this.storageProviderForTwitterFlow(provider);
+    const providerInstance = this._providerManager.getProvider(providerKey);
     const providerUser = await providerInstance.getUser(body.providerToken);
 
     if (!providerUser) {
@@ -146,7 +162,7 @@ export class AuthService {
 
     const user = await this._userService.getUserByProvider(
       providerUser.id,
-      provider
+      storageProvider
     );
     if (user) {
       return user;
@@ -161,7 +177,7 @@ export class AuthService {
         company: body.company,
         email: providerUser.email,
         password: '',
-        provider,
+        provider: storageProvider,
         providerId: providerUser.id,
         datafast_visitor_id: body.datafast_visitor_id,
       },
@@ -170,7 +186,7 @@ export class AuthService {
     );
 
     this._track('register', providerUser.email, body.datafast_visitor_id).catch(
-      (err) => {}
+      (err) => { }
     );
 
     await NewsletterService.register(providerUser.email);
@@ -207,7 +223,7 @@ export class AuthService {
             },
           }),
         });
-      } catch (err) {}
+      } catch (err) { }
     }
   }
 
@@ -254,7 +270,7 @@ export class AuthService {
       }
       await this._userService.activateUser(user.id);
       user.activated = true;
-      this._track('register', user.email, tracking).catch((err) => {});
+      this._track('register', user.email, tracking).catch((err) => { });
       await NewsletterService.register(user.email);
       return this.jwt(user as any);
     }
@@ -286,7 +302,9 @@ export class AuthService {
   }
 
   oauthLink(provider: string, query?: any) {
-    const providerInstance = this._providerManager.getProvider(provider);
+    const providerInstance = this._providerManager.getProvider(
+      this.normalizeTwitterAuthProviderKey(provider)
+    );
     return providerInstance.generateLink(query);
   }
 
@@ -296,7 +314,11 @@ export class AuthService {
     redirectUri?: string,
     state?: string
   ) {
-    const providerInstance = this._providerManager.getProvider(provider);
+    const providerKey = this.normalizeTwitterAuthProviderKey(provider);
+    const storageProvider = this.storageProviderForTwitterFlow(
+      provider as Provider
+    );
+    const providerInstance = this._providerManager.getProvider(providerKey);
     const token = await providerInstance.getToken(code, redirectUri, state);
     const user = await providerInstance.getUser(token);
     if (!user) {
@@ -304,7 +326,7 @@ export class AuthService {
     }
     const checkExists = await this._userService.getUserByProvider(
       user.id,
-      provider as Provider
+      storageProvider
     );
     if (checkExists) {
       return { jwt: await this.jwt(checkExists) };
