@@ -245,7 +245,7 @@ export const PickPlatforms: FC<{
                         )}
                       >
                         <SafeImage
-                          src={integration.picture || '/no-picture.jpg'}
+                          src={integration.picture || '/no-picture.svg'}
                           className="rounded-full"
                           alt={integration.identifier}
                           width={32}
@@ -284,7 +284,7 @@ export const PickPlatforms: FC<{
                         <div className="flex items-center justify-center gap-[10px]">
                           <div className="relative">
                             <img
-                              src={integration.picture || '/no-picture.jpg'}
+                              src={integration.picture || '/no-picture.svg'}
                               className="rounded-full"
                               alt={integration.identifier}
                               width={24}

@@ -539,6 +539,18 @@ export class IntegrationService {
           integrationId,
           values
         );
+        await this._integrationRepository
+          .incrementAutoDmSentCountForPost(
+            integrationId,
+            data.postId,
+            userIds.length
+          )
+          .catch((err) =>
+            console.warn(
+              'processPlugs: failed to bump auto_dm_sent_count on post:',
+              err
+            )
+          );
       },
     };
 
@@ -563,6 +575,75 @@ export class IntegrationService {
     }
 
     return false;
+  }
+
+  /**
+   * Dashboard homepage enables Auto DM / Auto retweet without the Plugs UI.
+   * Global workflows only schedule plugs that exist in DB with activated=true
+   * (see PostsService.checkPlugs). Upsert the matching X plug rows here.
+   */
+  async ensureXHomepageAutomaticPlugs(
+    organizationId: string,
+    integrationId: string,
+    settings: Record<string, unknown> | null | undefined
+  ): Promise<void> {
+    if (!settings || (settings as { __type?: string }).__type !== 'x') {
+      return;
+    }
+    const s = settings as Record<string, unknown>;
+
+    if (s.auto_dm_enabled === true) {
+      const rawMsg =
+        typeof s.auto_dm_message === 'string'
+          ? (s.auto_dm_message as string).trim()
+          : '';
+      const message =
+        rawMsg.length >= 3 ? rawMsg : 'Thanks for your support!';
+      const threshold = String(
+        Math.max(1, Number(s.auto_dm_threshold ?? 1) || 1)
+      );
+      const targets = (s.auto_dm_targets || {}) as Record<string, unknown>;
+      const boolStr = (v: unknown) =>
+        v === true || v === 'true' || v === 1 || v === '1' ? 'true' : 'false';
+
+      const fields: { name: string; value: string }[] = [
+        { name: 'likesAmount', value: threshold },
+        { name: 'message', value: message },
+        { name: 'targetLikes', value: boolStr(targets.likes) },
+        { name: 'targetRetweets', value: boolStr(targets.retweets) },
+        { name: 'targetReplies', value: boolStr(targets.replies) },
+      ];
+
+      await this.createOrUpdatePlug(organizationId, integrationId, {
+        func: 'autoDmEngagers',
+        fields,
+      });
+    } else if (s.auto_dm_enabled === false) {
+      await this._integrationRepository.deactivatePlugByFunction(
+        organizationId,
+        integrationId,
+        'autoDmEngagers'
+      );
+    }
+
+    if (s.auto_retweet_enabled === true) {
+      // autoRepostPost only uses likesAmount today. Homepage interval / #times are
+      // stored on the post but not yet read by the plug (fixed poll interval in
+      // @Plug metadata). Optional post setting auto_retweet_like_threshold if added later.
+      const likesTrigger = String(
+        Math.max(1, Number(s.auto_retweet_like_threshold ?? 1) || 1)
+      );
+      await this.createOrUpdatePlug(organizationId, integrationId, {
+        func: 'autoRepostPost',
+        fields: [{ name: 'likesAmount', value: likesTrigger }],
+      });
+    } else if (s.auto_retweet_enabled === false) {
+      await this._integrationRepository.deactivatePlugByFunction(
+        organizationId,
+        integrationId,
+        'autoRepostPost'
+      );
+    }
   }
 
   async createOrUpdatePlug(

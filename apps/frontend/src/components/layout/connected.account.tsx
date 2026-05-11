@@ -94,7 +94,7 @@ export const ConnectedAccount = () => {
     >
       <div className="relative w-8 h-8 flex-shrink-0">
         <img
-          src={xIntegration.picture || '/no-picture.jpg'}
+          src={xIntegration.picture || '/no-picture.svg'}
           alt={xIntegration.name}
           className="w-8 h-8 rounded-full object-cover bg-newBgColor"
         />

@@ -52,7 +52,7 @@ export const InstagramPreview: FC<{
       <div className="flex gap-[10px] items-center">
         <div className="w-[36px] h-[36px]">
           <img
-            src={integration?.picture || '/no-picture.jpg'}
+            src={integration?.picture || '/no-picture.svg'}
             alt="social"
             className="rounded-full relative z-[2] w-[36px] h-[36px]"
           />
@@ -173,7 +173,7 @@ export const InstagramPreview: FC<{
               <div className="flex gap-[10px] leading-[17px]">
                 <div className="h-[34px]">
                   <img
-                    src={integration?.picture || '/no-picture.jpg'}
+                    src={integration?.picture || '/no-picture.svg'}
                     alt="social"
                     className="rounded-full relative z-[2] h-[34px] w-[34px]"
                   />

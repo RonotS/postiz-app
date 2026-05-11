@@ -101,7 +101,7 @@ const MentionList: FC = (props: any) => {
               onClick={() => selectItem(index)}
             >
               <img
-                src={item.image || '/no-picture.jpg'}
+                src={item.image || '/no-picture.svg'}
                 alt={item.label}
                 className="w-[30px] h-[30px] rounded-full object-cover"
               />

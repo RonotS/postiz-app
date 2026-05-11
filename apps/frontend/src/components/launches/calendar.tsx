@@ -935,7 +935,7 @@ export const CalendarColumn: FC<{
                       >
                         <SafeImage
                           src={
-                            selectedIntegrations.picture || '/no-picture.jpg'
+                            selectedIntegrations.picture || '/no-picture.svg'
                           }
                           className="rounded-[8px]"
                           alt={selectedIntegrations.identifier}
@@ -1135,7 +1135,7 @@ const CalendarItem: FC<{
         <div className={clsx('relative min-w-[20px]')}>
           <img
             className="w-[20px] h-[20px] rounded-[8px]"
-            src={post.integration.picture! || '/no-picture.jpg'}
+            src={post.integration.picture! || '/no-picture.svg'}
           />
           <img
             className="w-[12px] h-[12px] rounded-[8px] absolute z-10 top-[10px] end-0 border border-fifth"

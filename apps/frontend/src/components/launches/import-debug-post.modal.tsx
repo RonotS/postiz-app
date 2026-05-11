@@ -222,7 +222,7 @@ export const ImportDebugPostModal: FC<{ close: () => void }> = ({ close }) => {
                     onClick={() => setSelectedIntegrationId(integration.id)}
                   >
                     <img
-                      src={integration.picture || '/no-picture.jpg'}
+                      src={integration.picture || '/no-picture.svg'}
                       className="w-[24px] h-[24px] rounded-[6px]"
                       alt={integration.name}
                     />

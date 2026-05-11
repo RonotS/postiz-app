@@ -2,6 +2,7 @@
 
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
+import { useVariables } from '@gitroom/react/helpers/variable.context';
 import { useToaster } from '@gitroom/react/toaster/toaster';
 import { newDayjs } from '@gitroom/frontend/components/layout/set.timezone';
 import { expandPosts } from '@gitroom/helpers/utils/posts.list.minify';
@@ -68,8 +69,20 @@ type PostItem = {
   publishDate: string;
   state: string;
   group?: string;
+  dmsSent?: number;
   integration?: { providerIdentifier?: string; name?: string };
 };
+
+/** Browser URL for uploaded media paths (full CDN URL, absolute /uploads, or filename). */
+function mediaPreviewUrl(path: string, publicOrigin: string): string {
+  const p = (path || '').trim();
+  if (!p) return '';
+  if (p.startsWith('http://') || p.startsWith('https://')) return p;
+  const base = (publicOrigin || '').replace(/\/$/, '');
+  if (p.startsWith('/uploads/')) return base ? `${base}${p}` : p;
+  if (p.startsWith('/')) return base ? `${base}${p}` : p;
+  return base ? `${base}/uploads/${p}` : `/uploads/${p}`;
+}
 
 const Toggle: FC<{
   enabled: boolean;
@@ -172,6 +185,11 @@ const useIntegrations = () => {
 export default function DashboardPage() {
   const t = useT();
   const toast = useToaster();
+  const { frontEndUrl, mainUrl } = useVariables();
+  const mediaOrigin = useMemo(
+    () => (frontEndUrl || mainUrl || '').replace(/\/$/, ''),
+    [frontEndUrl, mainUrl]
+  );
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<
     'Compose' | 'Drafts' | 'Scheduled' | 'Sent'
@@ -723,7 +741,7 @@ export default function DashboardPage() {
                           .utc(post.publishDate)
                           .local()
                           .format('hh:mm a');
-                        const dmsSent = (post as any).dmsSent ?? 0;
+                        const dmsSent = post.dmsSent ?? 0;
                         const isBeingEdited = editingPost?.id === post.id;
                         return (
                           <div
@@ -945,15 +963,18 @@ export default function DashboardPage() {
                       ) : (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={`/uploads/${m.path}`}
+                          src={mediaPreviewUrl(m.path, mediaOrigin)}
                           alt={m.name}
                           className="w-full h-full object-cover"
                           onError={(e) => {
-                            // Fallback: try the path as-is if it already includes /uploads/
                             const target = e.currentTarget;
-                            if (!target.src.endsWith(m.path)) {
-                              target.src = m.path.startsWith('/') ? m.path : `/${m.path}`;
-                            }
+                            if (target.dataset.fallback === '1') return;
+                            target.dataset.fallback = '1';
+                            target.src = m.path.startsWith('http')
+                              ? m.path
+                              : m.path.startsWith('/')
+                              ? m.path
+                              : `/uploads/${m.path}`;
                           }}
                         />
                       )}
@@ -1287,7 +1308,7 @@ export default function DashboardPage() {
                       <textarea
                         placeholder={t(
                           'dm_message_placeholder',
-                          'Custom DM message for this tweet (leave empty to use the default from Plugs)'
+                          'Custom DM message for this tweet (leave empty for a short default)'
                         )}
                         value={settings.autoDmMessage}
                         onChange={(e) =>

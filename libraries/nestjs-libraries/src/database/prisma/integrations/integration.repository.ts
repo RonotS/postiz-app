@@ -609,6 +609,35 @@ export class IntegrationRepository {
     });
   }
 
+  /** Bump per-post auto-DM counter stored in Post.settings JSON (dashboard queue). */
+  async incrementAutoDmSentCountForPost(
+    integrationId: string,
+    releaseId: string,
+    addedCount: number
+  ) {
+    if (!addedCount) return;
+    const post = await this._posts.model.post.findFirst({
+      where: { integrationId, releaseId },
+      select: { id: true, settings: true },
+    });
+    if (!post) return;
+    let parsed: Record<string, unknown> = {};
+    if (post.settings) {
+      try {
+        parsed = JSON.parse(post.settings) as Record<string, unknown>;
+      } catch {
+        parsed = {};
+      }
+    }
+    const prev = Number(parsed.auto_dm_sent_count);
+    const safePrev = Number.isFinite(prev) ? Math.max(0, Math.floor(prev)) : 0;
+    parsed.auto_dm_sent_count = safePrev + addedCount;
+    await this._posts.model.post.update({
+      where: { id: post.id },
+      data: { settings: JSON.stringify(parsed) },
+    });
+  }
+
   createOrUpdatePlug(org: string, integrationId: string, body: PlugDto) {
     return this._plugs.model.plugs.upsert({
       where: {
@@ -627,10 +656,26 @@ export class IntegrationRepository {
       },
       update: {
         data: JSON.stringify(body.fields),
+        activated: true,
       },
       select: {
         activated: true,
       },
+    });
+  }
+
+  deactivatePlugByFunction(
+    organizationId: string,
+    integrationId: string,
+    plugFunction: string
+  ) {
+    return this._plugs.model.plugs.updateMany({
+      where: {
+        organizationId,
+        integrationId,
+        plugFunction,
+      },
+      data: { activated: false },
     });
   }
 

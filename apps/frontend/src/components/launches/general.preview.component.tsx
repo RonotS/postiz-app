@@ -65,8 +65,8 @@ export const GeneralPreviewComponent: FC<{
                 <img
                   src={
                     current === 'global'
-                      ? '/no-picture.jpg'
-                      : integration?.picture || '/no-picture.jpg'
+                      ? '/no-picture.svg'
+                      : integration?.picture || '/no-picture.svg'
                   }
                   alt="x"
                   className="rounded-full relative z-[2]"

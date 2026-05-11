@@ -33,6 +33,22 @@ import {
 import { uniqBy } from 'lodash';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 
+function integrationPictureForClient(
+  stored: string | null | undefined
+): string {
+  const base = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+  const fallback = base ? `${base}/no-picture.svg` : '/no-picture.svg';
+  const raw = stored?.trim();
+  if (!raw) return fallback;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    return raw;
+  }
+  if (!base) {
+    return raw.startsWith('/') ? raw : `/${raw}`;
+  }
+  return `${base}${raw.startsWith('/') ? '' : '/'}${raw}`;
+}
+
 @ApiTags('Integrations')
 @Controller('/integrations')
 export class IntegrationsController {
@@ -101,7 +117,7 @@ export class IntegrationsController {
             internalId: p.internalId,
             disabled: p.disabled,
             editor: findIntegration.editor,
-            picture: p.picture || '/no-picture.jpg',
+            picture: integrationPictureForClient(p.picture),
             identifier: p.providerIdentifier,
             inBetweenSteps: p.inBetweenSteps,
             refreshNeeded: p.refreshNeeded,

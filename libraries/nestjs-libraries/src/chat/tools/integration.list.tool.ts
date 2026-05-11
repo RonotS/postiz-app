@@ -49,7 +49,7 @@ export class IntegrationListTool implements AgentToolInterface {
             name: p.name,
             id: p.id,
             disabled: p.disabled,
-            picture: p.picture || '/no-picture.jpg',
+            picture: p.picture || '/no-picture.svg',
             platform: p.providerIdentifier,
             display: p.profile,
             type: p.type,

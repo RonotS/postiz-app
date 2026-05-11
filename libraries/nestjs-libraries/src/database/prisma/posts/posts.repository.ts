@@ -17,6 +17,51 @@ dayjs.extend(weekOfYear);
 dayjs.extend(isSameOrAfter);
 dayjs.extend(utc);
 
+function dmsSentFromSettings(settings: string | null | undefined): number {
+  if (!settings) return 0;
+  try {
+    const o = JSON.parse(settings) as { auto_dm_sent_count?: unknown };
+    const n = Number(o.auto_dm_sent_count);
+    return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function withDmsSent<T extends { settings?: string | null }>(
+  post: T
+): Omit<T, 'settings'> & { dmsSent: number } {
+  const { settings, ...rest } = post;
+  return { ...(rest as Omit<T, 'settings'>), dmsSent: dmsSentFromSettings(settings) };
+}
+
+/** Same-origin or absolute URL for stored integration avatars (e.g. `/uploads/...`). */
+function absolutizePublicUrl(url: string | null | undefined): string | undefined {
+  const raw = url?.trim();
+  if (!raw) return undefined;
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+  const base = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+  if (!base) return raw.startsWith('/') ? raw : `/${raw}`;
+  return `${base}${raw.startsWith('/') ? '' : '/'}${raw}`;
+}
+
+function withDmsSentAndPictures<T extends { settings?: string | null; integration?: { picture?: string | null } }>(
+  post: T
+): Omit<T, 'settings'> & { dmsSent: number } {
+  const base = withDmsSent(post);
+  const pic = base.integration?.picture;
+  if (!base.integration || !pic?.trim()) return base;
+  const normalized = absolutizePublicUrl(pic);
+  if (!normalized) return base;
+  return {
+    ...base,
+    integration: {
+      ...base.integration,
+      picture: normalized,
+    },
+  };
+}
+
 @Injectable()
 export class PostsRepository {
   constructor(
@@ -178,6 +223,7 @@ export class PostsRepository {
             tag: true,
           },
         },
+        settings: true,
         integration: {
           select: {
             id: true,
@@ -189,7 +235,7 @@ export class PostsRepository {
       },
     });
 
-    return list.reduce((all, post) => {
+    const mapped = list.reduce((all, post) => {
       if (!post.intervalInDays) {
         return [...all, post];
       }
@@ -210,6 +256,8 @@ export class PostsRepository {
 
       return [...all, ...addMorePosts];
     }, [] as any[]);
+
+    return mapped.map((post) => withDmsSentAndPictures(post));
   }
 
   async getPostsList(orgId: string, query: GetPostsListDto) {

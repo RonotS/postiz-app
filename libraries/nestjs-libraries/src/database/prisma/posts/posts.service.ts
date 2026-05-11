@@ -757,6 +757,14 @@ export class PostsService {
         return [] as any[];
       }
 
+      await this._integrationService
+        .ensureXHomepageAutomaticPlugs(
+          orgId,
+          post.integration.id,
+          post.settings as Record<string, unknown>
+        )
+        .catch(() => {});
+
       if (body.type !== 'update') {
         this.startWorkflow(
           post.settings.__type.split('-')[0].toLowerCase(),

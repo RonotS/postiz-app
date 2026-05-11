@@ -149,14 +149,14 @@ export const SelectCurrent: FC = () => {
                 )}
               >
                 <SafeImage
-                  src={integration.picture || '/no-picture.jpg'}
+                  src={integration.picture || '/no-picture.svg'}
                   className="rounded-full min-w-[26px]"
                   alt={integration.identifier}
                   width={26}
                   height={26}
                   onError={(e) => {
-                    e.currentTarget.src = '/no-picture.jpg';
-                    e.currentTarget.srcset = '/no-picture.jpg';
+                    e.currentTarget.src = '/no-picture.svg';
+                    e.currentTarget.srcset = '/no-picture.svg';
                   }}
                 />
                 {integration.identifier === 'youtube' ? (

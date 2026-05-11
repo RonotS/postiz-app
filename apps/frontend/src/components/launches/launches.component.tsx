@@ -289,8 +289,8 @@ export const MenuComponent: FC<
           </div>
         )}
         <ImageWithFallback
-          fallbackSrc={'/no-picture.jpg'}
-          src={integration.picture || '/no-picture.jpg'}
+          fallbackSrc={'/no-picture.svg'}
+          src={integration.picture || '/no-picture.svg'}
           className="rounded-[8px] min-w-[36px] min-h-[36px]"
           alt={integration.identifier}
           width={36}

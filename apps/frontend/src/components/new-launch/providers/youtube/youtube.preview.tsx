@@ -65,7 +65,7 @@ export const YoutubePreview: FC<{
         <div className="flex flex-1 gap-[17px] items-center">
           <div>
             <img
-              src={integration?.picture || '/no-picture.jpg'}
+              src={integration?.picture || '/no-picture.svg'}
               alt="social"
               className="rounded-full z-[2] w-[40px] h-[40px]"
             />
