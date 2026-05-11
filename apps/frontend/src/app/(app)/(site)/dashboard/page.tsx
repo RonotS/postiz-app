@@ -84,6 +84,14 @@ function mediaPreviewUrl(path: string, publicOrigin: string): string {
   return base ? `${base}/uploads/${p}` : `/uploads/${p}`;
 }
 
+function revokeAttachmentPreviewUrls(
+  items: ReadonlyArray<{ previewObjectUrl?: string }>
+) {
+  for (const m of items) {
+    if (m.previewObjectUrl) URL.revokeObjectURL(m.previewObjectUrl);
+  }
+}
+
 const Toggle: FC<{
   enabled: boolean;
   onChange: (v: boolean) => void;
@@ -202,10 +210,16 @@ export default function DashboardPage() {
   const [composerText, setComposerText] = useState('');
   const [hydrated, setHydrated] = useState(false);
   // Attached media (images/videos) for the current draft. Each entry has the
-  // server-relative `path` returned by /media/upload-simple. Submitted as
-  // `image: [...]` on the first tweet of the post.
+  // server `path` returned by /media/upload-simple. Submitted as `image: [...]`
+  // on the first tweet. `previewObjectUrl` is a blob: URL for the same File so
+  // the thumbnail works when API files live only on the backend (split Railway).
   const [attachedMedia, setAttachedMedia] = useState<
-    Array<{ path: string; name: string; isUploading?: boolean }>
+    Array<{
+      path: string;
+      name: string;
+      isUploading?: boolean;
+      previewObjectUrl?: string;
+    }>
   >([]);
   const [emojiOpen, setEmojiOpen] = useState(false);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -489,7 +503,10 @@ export default function DashboardPage() {
         setComposerText('');
         setEditingPost(null);
         setUserTouchedDate(false);
-        setAttachedMedia([]); // clear attached images after successful submit
+        setAttachedMedia((prev) => {
+          revokeAttachmentPreviewUrls(prev);
+          return [];
+        });
         await Promise.all([mutatePosts(), mutateNextSlot()]);
       } catch (err: any) {
         toast.show(
@@ -543,9 +560,14 @@ export default function DashboardPage() {
         const data = await res.json();
         const path: string | undefined = data?.path;
         if (!path) throw new Error('no path in upload response');
+        // Always keep a blob preview for this session: API may return a
+        // frontend-origin /uploads URL while the bytes only exist on the backend.
+        const previewObjectUrl = URL.createObjectURL(file);
         setAttachedMedia((prev) =>
           prev.map((m) =>
-            m === placeholder ? { path, name: placeholder.name } : m
+            m === placeholder
+              ? { path, name: placeholder.name, previewObjectUrl }
+              : m
           )
         );
         return path;
@@ -599,7 +621,14 @@ export default function DashboardPage() {
   );
 
   const removeAttachment = useCallback((index: number) => {
-    setAttachedMedia((prev) => prev.filter((_, i) => i !== index));
+    setAttachedMedia((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+      const removed = prev[index];
+      if (removed?.previewObjectUrl) {
+        URL.revokeObjectURL(removed.previewObjectUrl);
+      }
+      return next;
+    });
   }, []);
 
   // Insert a string at the current cursor position in the composer textarea.
@@ -963,10 +992,14 @@ export default function DashboardPage() {
                       ) : (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img
-                          src={mediaPreviewUrl(m.path, mediaOrigin)}
+                          src={
+                            m.previewObjectUrl ||
+                            mediaPreviewUrl(m.path, mediaOrigin)
+                          }
                           alt={m.name}
                           className="w-full h-full object-cover"
                           onError={(e) => {
+                            if (m.previewObjectUrl) return;
                             const target = e.currentTarget;
                             if (target.dataset.fallback === '1') return;
                             target.dataset.fallback = '1';
