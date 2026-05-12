@@ -310,6 +310,11 @@ export class PostActivity {
   }
 
   @ActivityMethod()
+  async isFollowerDmPlugActive(plugId: string): Promise<boolean> {
+    return this._integrationService.isFollowerDmPlugActive(plugId);
+  }
+
+  @ActivityMethod()
   async processInternalPlug(data: {
     post: string;
     originalIntegration: string;

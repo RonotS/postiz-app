@@ -300,6 +300,127 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     return false;
   }
 
+  @Plug({
+    identifier: 'x-autoThreadReply',
+    title: 'Auto plug',
+    disabled: !!process.env.DISABLE_X_ANALYTICS,
+    description:
+      'When a post reaches a certain number of likes, automatically reply with a full thread (multiple chained tweets). Separate each tweet in the thread with three blank lines — same convention as the composer. The first reply is to the original tweet, each subsequent tweet replies to the previous one.',
+    runEveryMilliseconds: 120000,
+    totalRuns: 10,
+    fields: [
+      {
+        name: 'likesAmount',
+        type: 'number',
+        placeholder: 'Amount of likes',
+        description: 'The amount of likes required to trigger the thread reply',
+        validation: /^\d+$/,
+      },
+      {
+        name: 'thread',
+        type: 'richtext',
+        placeholder:
+          'Thread content (separate each tweet with three blank lines)',
+        description:
+          'The thread to reply with. Use three blank lines between tweets to split them; tweets are posted in order, each as a reply to the previous.',
+        validation: /^[\s\S]{3,}$/g,
+      },
+    ],
+  })
+  async autoThreadReply(
+    integration: Integration,
+    id: string,
+    fields: { likesAmount: string; thread: string },
+    postSettings?: any,
+    plugContext?: {
+      loadDmdUserIds: (keys: string[]) => Promise<Set<string>>;
+      saveDmdUserIds: (keys: string[]) => Promise<void>;
+    }
+  ) {
+    // Per-post opt-out — composer can disable the thread reply for a specific
+    // tweet even when the plug itself is active. Return true so the workflow
+    // doesn't keep retrying this run on a disabled tweet.
+    if (postSettings?.auto_thread_reply_enabled === false) {
+      return true;
+    }
+
+    const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+    const client = this.buildTwitterApi({
+      appKey: process.env.X_API_KEY!,
+      appSecret: process.env.X_API_SECRET!,
+      accessToken: accessTokenSplit,
+      accessSecret: accessSecretSplit,
+    });
+
+    // Resolve likes threshold: per-post override > plug-level default.
+    const threshold = Number(
+      postSettings?.auto_thread_reply_likes ?? fields.likesAmount ?? 0
+    );
+
+    // Resolve the thread text: per-post override > plug-level default.
+    const rawThreadInput =
+      typeof postSettings?.auto_thread_reply_text === 'string' &&
+      postSettings.auto_thread_reply_text.trim() !== ''
+        ? postSettings.auto_thread_reply_text
+        : fields.thread || '';
+
+    try {
+      const likes = await client.v2.tweetLikedBy(id);
+      if ((likes?.meta?.result_count || 0) < threshold) {
+        return false;
+      }
+
+      // Idempotency marker — if a previous run already posted the thread,
+      // skip without re-posting. Stored via the generic engagement plug
+      // context (key is namespaced by methodName + postId already).
+      const doneMarker = 'thread_posted_v1';
+      if (plugContext?.loadDmdUserIds) {
+        const existing = await plugContext.loadDmdUserIds([doneMarker]);
+        if (existing.has(doneMarker)) {
+          return true;
+        }
+      }
+
+      const rawText = stripHtmlValidation('normal', rawThreadInput, true);
+      const parts = rawText
+        .split(/\n\s*\n\s*\n+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      if (parts.length === 0) {
+        return true;
+      }
+
+      // Post each part as a reply chained to the previous one — true X thread.
+      let parentTweetId = id;
+      for (const part of parts) {
+        await timer(2000); // small delay so X doesn't 429
+        const created = await client.v2.tweet({
+          text: part,
+          reply: { in_reply_to_tweet_id: parentTweetId },
+        });
+        parentTweetId = created?.data?.id || parentTweetId;
+      }
+
+      if (plugContext?.saveDmdUserIds) {
+        try {
+          await plugContext.saveDmdUserIds([doneMarker]);
+        } catch (err) {
+          console.warn(
+            'X AUTO THREAD REPLY: failed to persist done marker (may re-post on retry):',
+            err
+          );
+        }
+      }
+
+      return true;
+    } catch (err) {
+      console.error('X AUTO THREAD REPLY ERROR:', err);
+    }
+
+    return false;
+  }
+
   // Fetch user IDs of accounts that LIKED a tweet.
   // Returns up to 100 user IDs (X V2 API page size).
   private async fetchLikers(client: TwitterApi, tweetId: string): Promise<string[]> {
@@ -355,19 +476,11 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     title: 'Direct Message Engagers',
     disabled: !!process.env.DISABLE_X_ANALYTICS,
     description:
-      'When a post reaches the engagement threshold, send a Direct Message to people who engaged with it. Each post in the composer chooses its own targets (likes / retweets / replies) and can override the message below. Recipients must follow you or have open DMs, and X API rate limits apply.',
+      'Send a Direct Message to anyone who engages with a post — every liker / retweeter / replier (based on the targets you enable) gets a DM the next time the plug runs. There is no minimum engagement count: a single engagement is enough. Each post in the composer chooses its own targets and can override the message below. Recipients must follow you or have open DMs, and X API rate limits apply.',
     // runEveryMilliseconds: 18000000, // 5 hours
     runEveryMilliseconds: 120000,
     totalRuns: 3,
     fields: [
-      {
-        name: 'likesAmount',
-        type: 'number',
-        placeholder: 'Default engagement threshold (e.g. 10)',
-        description:
-          'Default minimum engagement count to trigger DMs when a post does not specify its own threshold',
-        validation: /^\d+$/,
-      },
       {
         name: 'message',
         type: 'richtext',
@@ -382,7 +495,9 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     integration: Integration,
     id: string,
     fields: {
-      likesAmount: string;
+      // `likesAmount` is kept optional for backward-compat with old DB rows;
+      // we no longer enforce any minimum engagement count.
+      likesAmount?: string;
       message: string;
       targetLikes?: boolean | string;
       targetRetweets?: boolean | string;
@@ -440,35 +555,23 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       return false;
     }
 
-    // Resolve threshold: per-post override > plug-level default.
-    const threshold = Number(
-      postSettings?.auto_dm_threshold ?? fields.likesAmount ?? 0
-    );
-
     try {
       // Collect user IDs from each enabled target. Deduplicate so a user who
-      // both liked and retweeted only gets DM'd once.
+      // both liked and retweeted only gets DM'd once. No minimum engagement
+      // count — even a single engager is enough to trigger a DM.
       const userIdSet = new Set<string>();
-      let totalEngagements = 0;
 
       if (effectiveTargetLikes) {
         const ids = await this.fetchLikers(client, id);
-        totalEngagements += ids.length;
         ids.forEach((uid) => userIdSet.add(uid));
       }
       if (effectiveTargetRetweets) {
         const ids = await this.fetchRetweeters(client, id);
-        totalEngagements += ids.length;
         ids.forEach((uid) => userIdSet.add(uid));
       }
       if (effectiveTargetReplies) {
         const ids = await this.fetchRepliers(client, id);
-        totalEngagements += ids.length;
         ids.forEach((uid) => userIdSet.add(uid));
-      }
-
-      if (totalEngagements < threshold) {
-        return false;
       }
 
       const allUserIds = Array.from(userIdSet);
@@ -494,17 +597,17 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       const userIds = allUserIds.filter((uid) => !alreadyDmd.has(uid));
       if (userIds.length === 0) {
         // Everyone who currently engages was already DM'd in a prior run.
-        return alreadyDmd.size > 0;
+        // Return false so the workflow keeps the remaining scheduled runs;
+        // a later run may catch users who engage *after* this one.
+        return false;
       }
 
-      let dmSent = false;
       const successfullyDmd: string[] = [];
       for (const userId of userIds) {
         try {
           await timer(2000); // 2s delay to avoid aggressive rate limits
           await client.v2.sendDmToParticipant(userId, { text: dmText });
           successfullyDmd.push(userId);
-          dmSent = true;
         } catch (dmErr: any) {
           console.error(
             `X AUTO DM ERROR for user ${userId}:`,
@@ -527,9 +630,186 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         }
       }
 
-      return dmSent;
+      // IMPORTANT: always return false (never `true`) so the post workflow
+      // does NOT cancel the remaining scheduled runs. We want every one of
+      // the `totalRuns` ticks to execute so engagers who arrive AFTER an
+      // earlier successful run can still be DM'd. Cross-run dedup above
+      // guarantees no one ever gets a duplicate DM.
+      return false;
     } catch (err) {
       console.error('X AUTO DM FATAL ERROR:', err);
+    }
+
+    return false;
+  }
+
+  /** Paginated GET /2/users/:id/followers — newest followers tend to appear first. */
+  private async fetchFollowerUserIds(
+    client: TwitterApi,
+    userId: string,
+    options: { maxPages: number; pageSize: number }
+  ): Promise<string[]> {
+    const ids: string[] = [];
+    const pageSize = Math.min(Math.max(options.pageSize, 10), 1000);
+    let pagination_token: string | undefined;
+    for (let p = 0; p < options.maxPages; p++) {
+      const res: any = await client.v2.followers(userId, {
+        max_results: pageSize,
+        ...(pagination_token ? { pagination_token } : {}),
+      });
+      const users = res?.data || [];
+      for (const u of users) {
+        if (u?.id) ids.push(String(u.id));
+      }
+      pagination_token = res?.meta?.next_token;
+      if (!pagination_token) break;
+    }
+    return ids;
+  }
+
+  @Plug({
+    identifier: 'x-autoDmFollowers',
+    title: 'Auto DM New Followers',
+    disabled: !!process.env.DISABLE_X_ANALYTICS,
+    description:
+      'Runs on its own schedule (no posting required): polls your X followers and sends a welcome DM to new ones. The first run only records your current followers (no DMs) so existing fans are not messaged. Requires DM API access on your X app. Large accounts only scan recent follower pages per run.',
+    // Metadata for Plugs UI; the live poller interval is `pollIntervalMs` on
+    // `xFollowerDmPollerWorkflow` (default 2m, override with X_FOLLOWER_DM_POLL_INTERVAL_MS).
+    runEveryMilliseconds: 120000,
+    totalRuns: 3,
+    fields: [
+      {
+        name: 'message',
+        type: 'richtext',
+        placeholder: 'Welcome DM for new followers',
+        description:
+          'Default message when a post does not set its own new-follower DM text.',
+        validation: /^[\s\S]{3,}$/g,
+      },
+    ],
+  })
+  async autoDmFollowers(
+    integration: Integration,
+    _tweetReleaseId: string,
+    fields: { message: string },
+    postSettings?: {
+      auto_dm_followers_enabled?: boolean;
+      auto_dm_followers_message?: string;
+    },
+    plugContext?: {
+      loadDmdUserIds: (userIds: string[]) => Promise<Set<string>>;
+      saveDmdUserIds: (userIds: string[]) => Promise<void>;
+      hasFollowerBaselineMarker: () => Promise<boolean>;
+      setFollowerBaselineMarker: () => Promise<void>;
+      loadFollowerSnapshotContains: (
+        userIds: string[]
+      ) => Promise<Set<string>>;
+      saveFollowerSnapshotIds: (userIds: string[]) => Promise<void>;
+    }
+  ) {
+    if (postSettings?.auto_dm_followers_enabled === false) {
+      return true;
+    }
+
+    const rawMessage =
+      (typeof postSettings?.auto_dm_followers_message === 'string' &&
+      postSettings.auto_dm_followers_message.trim() !== ''
+        ? postSettings.auto_dm_followers_message
+        : fields.message) || '';
+    const dmText = stripHtmlValidation('normal', rawMessage, true);
+    if (!dmText || dmText.trim() === '') {
+      console.warn('X AUTO DM FOLLOWERS: no message configured; skipping');
+      return false;
+    }
+
+    const ownerId = integration.internalId;
+    if (!ownerId) {
+      console.warn('X AUTO DM FOLLOWERS: missing integration.internalId');
+      return false;
+    }
+
+    const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+    const client = this.buildTwitterApi({
+      appKey: process.env.X_API_KEY!,
+      appSecret: process.env.X_API_SECRET!,
+      accessToken: accessTokenSplit,
+      accessSecret: accessSecretSplit,
+    });
+
+    if (
+      !plugContext?.loadDmdUserIds ||
+      !plugContext?.saveDmdUserIds ||
+      !plugContext?.hasFollowerBaselineMarker ||
+      !plugContext?.setFollowerBaselineMarker ||
+      !plugContext?.loadFollowerSnapshotContains ||
+      !plugContext?.saveFollowerSnapshotIds
+    ) {
+      console.warn('X AUTO DM FOLLOWERS: missing plug context');
+      return false;
+    }
+
+    try {
+      const baselineDone = await plugContext.hasFollowerBaselineMarker();
+
+      if (!baselineDone) {
+        const snapshotIds = await this.fetchFollowerUserIds(client, ownerId, {
+          maxPages: 3,
+          pageSize: 1000,
+        });
+        if (snapshotIds.length > 0) {
+          await plugContext.saveFollowerSnapshotIds(snapshotIds);
+        }
+        await plugContext.setFollowerBaselineMarker();
+        return false;
+      }
+
+      const recentIds = await this.fetchFollowerUserIds(client, ownerId, {
+        maxPages: 1,
+        pageSize: 500,
+      });
+      if (recentIds.length === 0) {
+        return false;
+      }
+
+      const alreadyDmd = await plugContext.loadDmdUserIds(recentIds);
+      const inSnapshot = await plugContext.loadFollowerSnapshotContains(
+        recentIds
+      );
+
+      const toWelcome = recentIds.filter(
+        (uid) => uid !== ownerId && !alreadyDmd.has(uid) && !inSnapshot.has(uid)
+      );
+      if (toWelcome.length === 0) {
+        return false;
+      }
+
+      let dmSent = false;
+      const successfullyDmd: string[] = [];
+      const snapshotAdds: string[] = [];
+
+      for (const userId of toWelcome) {
+        try {
+          await timer(2000);
+          await client.v2.sendDmToParticipant(userId, { text: dmText });
+          successfullyDmd.push(userId);
+          snapshotAdds.push(userId);
+          dmSent = true;
+        } catch (dmErr: any) {
+          console.error(
+            `X AUTO DM FOLLOWERS ERROR for user ${userId}:`,
+            dmErr?.data || dmErr
+          );
+        }
+      }
+
+      if (successfullyDmd.length > 0) {
+        await plugContext.saveDmdUserIds(successfullyDmd);
+        await plugContext.saveFollowerSnapshotIds(snapshotAdds);
+      }
+
+      return dmSent;
+    } catch (err) {
+      console.error('X AUTO DM FOLLOWERS FATAL ERROR:', err);
     }
 
     return false;

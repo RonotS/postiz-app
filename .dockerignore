@@ -1,6 +1,11 @@
 # We want the docker builds to be clean, and as fast as possible. Don't send
 # any half-built stuff in the build context as a pre-caution (also saves copying
 # 180k files in node_modules that isn't used!).
+#
+# Never bake local .env into the image (localhost URLs → CORS in production).
+.env
+.env.*
+!.env.example
 **/node_modules
 node_modules/*
 node_modules

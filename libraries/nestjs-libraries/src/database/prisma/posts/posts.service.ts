@@ -614,6 +614,7 @@ export class PostsService {
     const currentPlug = loadAllPlugs.find((p) => p.identifier === providerName);
 
     return getPlugs
+      .filter((plug) => plug.plugFunction !== 'autoDmFollowers')
       .filter((plug) => {
         return currentPlug?.plugs?.some(
           (p: any) => p.methodName === plug.plugFunction

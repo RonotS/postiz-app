@@ -660,6 +660,10 @@ export class IntegrationRepository {
       },
       select: {
         activated: true,
+        id: true,
+        integrationId: true,
+        organizationId: true,
+        plugFunction: true,
       },
     });
   }
@@ -718,6 +722,7 @@ export class IntegrationRepository {
         methodName,
         value: p,
       })),
+      skipDuplicates: true,
     });
   }
 

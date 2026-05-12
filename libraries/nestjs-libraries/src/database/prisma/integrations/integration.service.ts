@@ -25,6 +25,10 @@ import utc from 'dayjs/plugin/utc';
 import { AutopostRepository } from '@gitroom/nestjs-libraries/database/prisma/autopost/autopost.repository';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { TemporalService } from 'nestjs-temporal-core';
+import {
+  xFollowerDmPollerWorkflowId,
+  X_FOLLOWER_DM_DEFAULT_POLL_INTERVAL_MS,
+} from '@gitroom/nestjs-libraries/temporal/x.follower.dm.constants';
 
 dayjs.extend(utc);
 
@@ -39,7 +43,7 @@ export class IntegrationService {
     @Inject(forwardRef(() => RefreshIntegrationService))
     private _refreshIntegrationService: RefreshIntegrationService,
     private _temporalService: TemporalService
-  ) {}
+  ) { }
 
   async changeActiveCron(orgId: string) {
     const data = await this._autopostsRepository.getAutoposts(orgId);
@@ -47,7 +51,7 @@ export class IntegrationService {
     for (const item of data.filter((f) => f.active)) {
       try {
         await this._temporalService.terminateWorkflow(`autopost-${item.id}`);
-      } catch (err) {}
+      } catch (err) { }
     }
 
     return true;
@@ -87,12 +91,12 @@ export class IntegrationService {
   async createOrUpdateIntegration(
     additionalSettings:
       | {
-          title: string;
-          description: string;
-          type: 'checkbox' | 'text' | 'textarea';
-          value: any;
-          regex?: string;
-        }[]
+        title: string;
+        description: string;
+        type: 'checkbox' | 'text' | 'textarea';
+        value: any;
+        regex?: string;
+      }[]
       | undefined,
     oneTimeToken: boolean,
     org: string,
@@ -511,8 +515,12 @@ export class IntegrationService {
     // Stored values are scoped to (methodName, integrationId, value) where
     // value is "<postReleaseId>:<userId>" — prefixing with the post ID makes
     // dedup per-post, not global. Different posts can DM the same user.
+    //
+    // autoDmFollowers uses integration-wide keys (fdm:/fds:) instead of tweet id.
     const integrationId = getPlugById.integration.id;
-    const plugContext = {
+    const followerBaselineKey = '__fdm_baseline_v1__';
+
+    const engagementPlugContext = {
       // Returns the subset of `userIds` that have ALREADY been recorded for
       // this post (i.e., already DM'd in a prior run). Caller filters them out
       // before sending DMs.
@@ -553,6 +561,75 @@ export class IntegrationService {
           );
       },
     };
+
+    const followerPlugContext = {
+      loadDmdUserIds: async (userIds: string[]): Promise<Set<string>> => {
+        if (userIds.length === 0) return new Set();
+        const candidates = userIds.map((uid) => `fdm:${uid}`);
+        const existing = await this._integrationRepository.loadExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          candidates
+        );
+        const existingValues = new Set(existing.map((e: any) => e.value));
+        return new Set(
+          userIds.filter((uid) => existingValues.has(`fdm:${uid}`))
+        );
+      },
+      saveDmdUserIds: async (userIds: string[]) => {
+        if (userIds.length === 0) return;
+        const values = userIds.map((uid) => `fdm:${uid}`);
+        await this._integrationRepository.saveExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          values
+        );
+      },
+      hasFollowerBaselineMarker: async () => {
+        const rows = await this._integrationRepository.loadExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          [followerBaselineKey]
+        );
+        return rows.length > 0;
+      },
+      setFollowerBaselineMarker: async () => {
+        await this._integrationRepository.saveExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          [followerBaselineKey]
+        );
+      },
+      loadFollowerSnapshotContains: async (
+        userIds: string[]
+      ): Promise<Set<string>> => {
+        if (userIds.length === 0) return new Set();
+        const candidates = userIds.map((uid) => `fds:${uid}`);
+        const existing = await this._integrationRepository.loadExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          candidates
+        );
+        const existingValues = new Set(existing.map((e: any) => e.value));
+        return new Set(
+          userIds.filter((uid) => existingValues.has(`fds:${uid}`))
+        );
+      },
+      saveFollowerSnapshotIds: async (userIds: string[]) => {
+        if (userIds.length === 0) return;
+        const values = userIds.map((uid) => `fds:${uid}`);
+        await this._integrationRepository.saveExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          values
+        );
+      },
+    };
+
+    const plugContext =
+      getPlugById.plugFunction === 'autoDmFollowers'
+        ? followerPlugContext
+        : engagementPlugContext;
 
     // @ts-ignore
     const process = await integration[getPlugById.plugFunction](
@@ -599,15 +676,11 @@ export class IntegrationService {
           : '';
       const message =
         rawMsg.length >= 3 ? rawMsg : 'Thanks for your support!';
-      const threshold = String(
-        Math.max(1, Number(s.auto_dm_threshold ?? 1) || 1)
-      );
       const targets = (s.auto_dm_targets || {}) as Record<string, unknown>;
       const boolStr = (v: unknown) =>
         v === true || v === 'true' || v === 1 || v === '1' ? 'true' : 'false';
 
       const fields: { name: string; value: string }[] = [
-        { name: 'likesAmount', value: threshold },
         { name: 'message', value: message },
         { name: 'targetLikes', value: boolStr(targets.likes) },
         { name: 'targetRetweets', value: boolStr(targets.retweets) },
@@ -644,6 +717,85 @@ export class IntegrationService {
         'autoRepostPost'
       );
     }
+
+    if (s.auto_thread_reply_enabled === true) {
+      const rawText =
+        typeof s.auto_thread_reply_text === 'string'
+          ? (s.auto_thread_reply_text as string).trim()
+          : '';
+      if (rawText.length >= 3) {
+        const likesTrigger = String(
+          Math.max(1, Number(s.auto_thread_reply_likes ?? 1) || 1)
+        );
+        await this.createOrUpdatePlug(organizationId, integrationId, {
+          func: 'autoThreadReply',
+          fields: [
+            { name: 'likesAmount', value: likesTrigger },
+            { name: 'thread', value: rawText },
+          ],
+        });
+      }
+    } else if (s.auto_thread_reply_enabled === false) {
+      await this._integrationRepository.deactivatePlugByFunction(
+        organizationId,
+        integrationId,
+        'autoThreadReply'
+      );
+    }
+  }
+
+  private async startXFollowerDmPollerWorkflow(
+    organizationId: string,
+    integrationId: string,
+    plugId: string
+  ): Promise<void> {
+    const raw = this._temporalService.client?.getRawClient();
+    if (!raw) return;
+    const workflowId = xFollowerDmPollerWorkflowId(integrationId);
+    const fromEnv = Number(process.env.X_FOLLOWER_DM_POLL_INTERVAL_MS);
+    const pollIntervalMs = Math.max(
+      60_000,
+      Math.min(
+        3_600_000,
+        Number.isFinite(fromEnv) && fromEnv > 0
+          ? fromEnv
+          : X_FOLLOWER_DM_DEFAULT_POLL_INTERVAL_MS
+      )
+    );
+    try {
+      await raw.workflow.start('xFollowerDmPollerWorkflow', {
+        taskQueue: 'main',
+        workflowId,
+        workflowIdConflictPolicy: 'TERMINATE_EXISTING',
+        args: [{ organizationId, integrationId, plugId, pollIntervalMs }],
+      });
+    } catch (err) {
+      console.error('startXFollowerDmPollerWorkflow:', err);
+    }
+  }
+
+  private async stopXFollowerDmPollerWorkflow(
+    integrationId: string
+  ): Promise<void> {
+    try {
+      await this._temporalService.terminateWorkflow(
+        xFollowerDmPollerWorkflowId(integrationId)
+      );
+    } catch {
+      /* workflow may not exist */
+    }
+  }
+
+  /**
+   * Follower-DM poller workflow calls this each tick to self-terminate when the
+   * plug is disabled or removed.
+   */
+  async isFollowerDmPlugActive(plugId: string): Promise<boolean> {
+    const plug = await this._integrationRepository.getPlug(plugId);
+    if (!plug) return false;
+    return (
+      plug.activated === true && plug.plugFunction === 'autoDmFollowers'
+    );
   }
 
   async createOrUpdatePlug(
@@ -651,26 +803,42 @@ export class IntegrationService {
     integrationId: string,
     body: PlugDto
   ) {
-    const { activated } = await this._integrationRepository.createOrUpdatePlug(
+    const row = await this._integrationRepository.createOrUpdatePlug(
       orgId,
       integrationId,
       body
     );
 
+    if (body.func === 'autoDmFollowers' && row.activated) {
+      await this.startXFollowerDmPollerWorkflow(orgId, integrationId, row.id);
+    }
+
     return {
-      activated,
+      activated: row.activated,
+      id: row.id,
     };
   }
 
   async changePlugActivation(orgId: string, plugId: string, status: boolean) {
-    const { id, integrationId, plugFunction } =
-      await this._integrationRepository.changePlugActivation(
-        orgId,
-        plugId,
-        status
-      );
+    const updated = await this._integrationRepository.changePlugActivation(
+      orgId,
+      plugId,
+      status
+    );
 
-    return { id };
+    if (updated.plugFunction === 'autoDmFollowers') {
+      if (status) {
+        await this.startXFollowerDmPollerWorkflow(
+          orgId,
+          updated.integrationId,
+          plugId
+        );
+      } else {
+        await this.stopXFollowerDmPollerWorkflow(updated.integrationId);
+      }
+    }
+
+    return { id: updated.id };
   }
 
   async getPlugs(orgId: string, integrationId: string) {

@@ -23,7 +23,23 @@ WORKDIR /app
 COPY . /app
 COPY var/docker/nginx.conf /etc/nginx/nginx.conf.template
 
+# Prisma generate (postinstall) does not need a real DB, but the URL must parse.
+ENV DATABASE_URL="postgresql://build:build@127.0.0.1:5432/build"
+
 RUN pnpm install
+
+# Next.js inlines NEXT_PUBLIC_* at build time — must match the public site or the
+# browser will call localhost and hit CORS. Pass these on `docker build`:
+#   --build-arg NEXT_PUBLIC_BACKEND_URL=https://YOUR_DOMAIN/api
+#   --build-arg FRONTEND_URL=https://YOUR_DOMAIN
+#   --build-arg MAIN_URL=https://YOUR_DOMAIN
+ARG NEXT_PUBLIC_BACKEND_URL
+ARG FRONTEND_URL
+ARG MAIN_URL
+ENV NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL}
+ENV FRONTEND_URL=${FRONTEND_URL}
+ENV MAIN_URL=${MAIN_URL}
+
 RUN NODE_OPTIONS="--max-old-space-size=4096" pnpm run build
 
 # Use envsubst to replace $PORT in nginx.conf at runtime (Railway sets PORT dynamically)
