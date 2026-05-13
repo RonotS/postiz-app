@@ -11,7 +11,12 @@ export const MenuItem: FC<{ label: string; icon: ReactNode; path: string; onClic
   onClick,
 }) => {
   const currentPath = usePathname();
-  const isActive = currentPath === path || (path !== '/' && currentPath.startsWith(path));
+  // Home is exactly `/dashboard` so `/dashboard/followers` does not stay highlighted on Home.
+  const isActive =
+    path === '/dashboard'
+      ? currentPath === '/dashboard'
+      : currentPath === path ||
+        (path.length > 1 && currentPath.startsWith(path.endsWith('/') ? path : `${path}/`));
 
   const className = clsx(
     'w-full min-h-[44px] py-[8px] px-[12px] gap-[12px] flex flex-row items-center justify-start rounded-[12px] hover:text-textItemFocused hover:bg-boxFocused transition-all duration-200',

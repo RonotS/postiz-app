@@ -711,6 +711,41 @@ export class IntegrationRepository {
     });
   }
 
+  /**
+   * Count how many distinct engager-DM recipients were recorded for each tweet
+   * (`value` = `<tweetId>:<recipientUserId>`). Matches what autoDmEngagers actually
+   * persisted after successful sends — not Post.settings JSON counters.
+   */
+  async countAutoDmEngagersByTweetIds(
+    integrationId: string,
+    tweetIds: string[]
+  ): Promise<Map<string, number>> {
+    const counts = new Map<string, number>();
+    const uniq = [...new Set((tweetIds || []).filter(Boolean))];
+    for (const id of uniq) {
+      counts.set(id, 0);
+    }
+    if (!uniq.length) {
+      return counts;
+    }
+    const rows = await this._exisingPlugData.model.exisingPlugData.findMany({
+      where: {
+        integrationId,
+        methodName: 'autoDmEngagers',
+        OR: uniq.map((id) => ({ value: { startsWith: `${id}:` } })),
+      },
+      select: { value: true },
+    });
+    for (const r of rows) {
+      const colon = r.value.indexOf(':');
+      if (colon < 1) continue;
+      const tid = r.value.slice(0, colon);
+      if (!counts.has(tid)) continue;
+      counts.set(tid, (counts.get(tid) || 0) + 1);
+    }
+    return counts;
+  }
+
   async saveExisingData(
     methodName: string,
     integrationId: string,

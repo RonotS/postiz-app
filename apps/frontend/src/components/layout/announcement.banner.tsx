@@ -2,6 +2,7 @@
 
 import { FC, useCallback, useState } from 'react';
 import useSWR from 'swr';
+import { usePathname } from 'next/navigation';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
@@ -92,6 +93,9 @@ const AnnouncementDetailModal: FC<{
 };
 
 export const AnnouncementBanner: FC = () => {
+  const pathname = usePathname();
+  const isAdminHubRoute =
+    pathname === '/adminisamazing' || pathname?.startsWith('/adminisamazing/');
   const { data: announcements, mutate } = useAnnouncements();
   const user = useUser();
   const fetch = useFetch();
@@ -141,7 +145,13 @@ export const AnnouncementBanner: FC = () => {
           (+{announcements.length - 1} {t('more', 'more')})
         </span>
       )}
-      <style>{`#left-menu {padding-top: ${user?.isSuperAdmin ? '100px !important;' : '60px !important;'}`}</style>
+      <style>{`#left-menu {padding-top: ${
+        isAdminHubRoute
+          ? '60px'
+          : user?.isSuperAdmin
+            ? '100px'
+            : '60px'
+      } !important;`}</style>
     </div>
   );
 };

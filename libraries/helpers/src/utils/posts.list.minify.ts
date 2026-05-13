@@ -26,6 +26,9 @@ const POST_ITEM_KEYS: Record<string, string> = {
   intervalInDays: 'iv',
   actualDate: 'ad',
   dmsSent: 'ds',
+  likeCount: 'lk',
+  retweetCount: 'rk',
+  replyCount: 'rp',
 };
 
 const INTEGRATION_KEYS: Record<string, string> = {

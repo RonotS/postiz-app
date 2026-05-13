@@ -1661,6 +1661,51 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     return [];
   }
 
+  /**
+   * Batch-fetch public_metrics for tweet IDs (dashboard queue). Up to 100 ids
+   * per X API request. OAuth user context; each connected account has its own limits.
+   */
+  async batchTweetPublicMetrics(
+    accessToken: string,
+    tweetIds: string[]
+  ): Promise<
+    Map<string, { likeCount: number; retweetCount: number; replyCount: number }>
+  > {
+    const out = new Map<
+      string,
+      { likeCount: number; retweetCount: number; replyCount: number }
+    >();
+    if (process.env.DISABLE_X_ANALYTICS) {
+      return out;
+    }
+    const uniq = [...new Set((tweetIds || []).filter(Boolean))];
+    if (!uniq.length) {
+      return out;
+    }
+    const client = await this.getClient(accessToken);
+    const CHUNK = 100;
+    try {
+      for (let i = 0; i < uniq.length; i += CHUNK) {
+        const slice = uniq.slice(i, i + CHUNK);
+        const res = await client.v2.tweets(slice, {
+          'tweet.fields': ['public_metrics'],
+        });
+        for (const tw of res.data || []) {
+          const pm = (tw as TweetV2).public_metrics;
+          if (!pm) continue;
+          out.set(tw.id, {
+            likeCount: Math.max(0, Number(pm.like_count) || 0),
+            retweetCount: Math.max(0, Number(pm.retweet_count) || 0),
+            replyCount: Math.max(0, Number(pm.reply_count) || 0),
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('batchTweetPublicMetrics:', err);
+    }
+    return out;
+  }
+
   override async mention(token: string, d: { query: string }) {
     const [accessTokenSplit, accessSecretSplit] = token.split(':');
     const client = this.buildTwitterApi({

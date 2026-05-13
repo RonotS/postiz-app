@@ -407,6 +407,9 @@ export const useDecisionModal = () => {
           title,
           askClose: false,
           onClose: () => res(false),
+          /** With both size + height set, modal shell uses flex centering (see Component). */
+          size: 520,
+          height: 'auto',
           children: (
             <DecisionModal
               onlyApprove={onlyApprove}

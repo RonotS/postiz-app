@@ -51,4 +51,23 @@ export class UsersService {
   updateEmailNotifications(userId: string, body: EmailNotificationsDto) {
     return this._usersRepository.updateEmailNotifications(userId, body);
   }
+
+  async listUsersForPlatformAdmin(take = 200) {
+    const rows = await this._usersRepository.listUsersForPlatformAdmin(take);
+    return rows.map((u) => ({
+      id: u.id,
+      email: u.email,
+      name: u.name,
+      providerName: u.providerName,
+      activated: u.activated,
+      isSuperAdmin: u.isSuperAdmin,
+      createdAt:
+        u.createdAt instanceof Date ? u.createdAt.toISOString() : String(u.createdAt),
+      organizations: u.organizations.map((m) => ({
+        role: m.role,
+        organizationId: m.organization.id,
+        organizationName: m.organization.name,
+      })),
+    }));
+  }
 }

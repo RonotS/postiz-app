@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { useMenuItem } from '@gitroom/frontend/components/layout/top.menu';
 import { MenuItem } from '@gitroom/frontend/components/new-layout/menu-item';
 import { Logo } from '@gitroom/frontend/components/new-layout/logo';
@@ -8,11 +9,15 @@ import { useUser } from '@gitroom/frontend/components/layout/user.context';
 import clsx from 'clsx';
 
 export const MobileDrawer = () => {
+  const pathname = usePathname();
+  const isAdminHubRoute =
+    pathname === '/adminisamazing' || pathname?.startsWith('/adminisamazing/');
   const [isOpen, setIsOpen] = useState(false);
   const { all } = useMenuItem();
   const user = useUser();
 
   if (!user) return null;
+  if (isAdminHubRoute) return null;
 
   return (
     <>

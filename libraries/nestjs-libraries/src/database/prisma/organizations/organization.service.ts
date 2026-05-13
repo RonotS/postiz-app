@@ -32,6 +32,38 @@ export class OrganizationService {
     return this._organizationRepository.getCount();
   }
 
+  getAdminHubSummary() {
+    return this._organizationRepository.getAdminHubSummary();
+  }
+
+  getAdminPlatformAnalytics() {
+    return this._organizationRepository.getAdminPlatformAnalytics();
+  }
+
+  listAdminPostNotifications(
+    page: number,
+    limit: number,
+    scope: 'post' | 'all'
+  ) {
+    return this._organizationRepository.listAdminPostNotifications(
+      page,
+      limit,
+      scope
+    );
+  }
+
+  listAdminPostErrors(page: number, limit: number) {
+    return this._organizationRepository.listAdminPostErrors(page, limit);
+  }
+
+  listAdminPosts(page: number, limit: number, search?: string) {
+    return this._organizationRepository.listAdminPosts(page, limit, search);
+  }
+
+  getAdminPostDetail(postId: string) {
+    return this._organizationRepository.getAdminPostDetail(postId);
+  }
+
   async createMaxUser(id: string, name: string, saasName: string, email: string) {
     return this._organizationRepository.createMaxUser(id, name, saasName, email);
   }

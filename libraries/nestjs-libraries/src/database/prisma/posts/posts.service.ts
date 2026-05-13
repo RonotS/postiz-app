@@ -310,9 +310,140 @@ export class PostsService {
   }
 
   async getPostsMinified(orgId: string, query: GetPostsDto) {
+    const posts = await this._postRepository.getPosts(orgId, query);
+    await this.attachEngagerDmCountsToPosts(orgId, posts);
+    await this.attachXPublicMetricsToPosts(orgId, posts);
     return minifyPosts({
-      posts: await this._postRepository.getPosts(orgId, query),
+      posts,
     });
+  }
+
+  /**
+   * Replace `dmsSent` with counts from ExisingPlugData (autoDmEngagers rows:
+   * `<tweetId>:<userId>`). Aligns the dashboard with recipients Postiz actually
+   * recorded after successful sends — not Post.settings JSON, which could drift.
+   */
+  private async attachEngagerDmCountsToPosts(orgId: string, posts: any[]) {
+    const eligible = posts.filter(
+      (p) =>
+        p.releaseId &&
+        p.releaseId !== 'missing' &&
+        p.integration?.providerIdentifier &&
+        ['x', 'twitter'].includes(
+          String(p.integration.providerIdentifier).toLowerCase()
+        )
+    );
+    if (eligible.length === 0) {
+      return;
+    }
+
+    const byIntegration = new Map<string, typeof eligible>();
+    for (const p of eligible) {
+      const id = p.integration.id;
+      if (!byIntegration.has(id)) {
+        byIntegration.set(id, []);
+      }
+      byIntegration.get(id)!.push(p);
+    }
+
+    for (const [integrationId, group] of byIntegration) {
+      try {
+        const integration = await this._integrationService.getIntegrationById(
+          orgId,
+          integrationId
+        );
+        if (!integration || integration.disabled || integration.deletedAt) {
+          continue;
+        }
+        const tweetIds = [
+          ...new Set(group.map((p) => p.releaseId).filter(Boolean)),
+        ] as string[];
+        const counts =
+          await this._integrationService.countAutoDmEngagersByTweetIds(
+            integrationId,
+            tweetIds
+          );
+        for (const p of group) {
+          p.dmsSent = counts.get(p.releaseId) ?? 0;
+        }
+      } catch (err) {
+        console.warn('attachEngagerDmCountsToPosts:', integrationId, err);
+      }
+    }
+  }
+
+  /**
+   * For published X posts with a tweet id, attach like/repost/reply counts from
+   * X public_metrics (live at list time). Skipped when DISABLE_X_ANALYTICS is set.
+   */
+  private async attachXPublicMetricsToPosts(orgId: string, posts: any[]) {
+    if (process.env.DISABLE_X_ANALYTICS) {
+      return;
+    }
+    const xProvider = this._integrationManager.getSocialIntegration(
+      'x'
+    ) as any;
+    if (typeof xProvider?.batchTweetPublicMetrics !== 'function') {
+      return;
+    }
+
+    const eligible = posts.filter(
+      (p) =>
+        p.state === 'PUBLISHED' &&
+        p.releaseId &&
+        p.releaseId !== 'missing' &&
+        p.integration?.providerIdentifier &&
+        ['x', 'twitter'].includes(
+          String(p.integration.providerIdentifier).toLowerCase()
+        )
+    );
+    if (eligible.length === 0) {
+      return;
+    }
+
+    const byIntegration = new Map<string, typeof eligible>();
+    for (const p of eligible) {
+      const id = p.integration.id;
+      if (!byIntegration.has(id)) {
+        byIntegration.set(id, []);
+      }
+      byIntegration.get(id)!.push(p);
+    }
+
+    for (const [integrationId, group] of byIntegration) {
+      try {
+        const integration = await this._integrationService.getIntegrationById(
+          orgId,
+          integrationId
+        );
+        if (
+          !integration?.token ||
+          integration.disabled ||
+          integration.deletedAt
+        ) {
+          continue;
+        }
+
+        const tweetIds = [
+          ...new Set(group.map((p) => p.releaseId).filter(Boolean)),
+        ] as string[];
+        const metricsMap = await xProvider.batchTweetPublicMetrics(
+          integration.token,
+          tweetIds
+        );
+
+        for (const p of group) {
+          const m = metricsMap.get(p.releaseId);
+          if (m) {
+            p.likeCount = m.likeCount;
+            p.retweetCount = m.retweetCount;
+            p.replyCount = m.replyCount;
+          }
+        }
+      } catch (err) {
+        console.warn('attachXPublicMetricsToPosts:', integrationId, err);
+      }
+    }
   }
 
   async getPostsList(orgId: string, query: GetPostsListDto) {

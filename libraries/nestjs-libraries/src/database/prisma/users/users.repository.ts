@@ -174,4 +174,30 @@ export class UsersRepository {
       },
     });
   }
+
+  listUsersForPlatformAdmin(take: number) {
+    return this._user.model.user.findMany({
+      take,
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        providerName: true,
+        activated: true,
+        isSuperAdmin: true,
+        createdAt: true,
+        organizations: {
+          where: { disabled: false },
+          select: {
+            role: true,
+            organization: {
+              select: { id: true, name: true },
+            },
+          },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+  }
 }

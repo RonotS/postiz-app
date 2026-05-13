@@ -38,6 +38,11 @@ const nextConfig = {
   async redirects() {
     return [
       {
+        source: '/adminisamazing/users',
+        destination: '/adminisamazing/user-management',
+        permanent: false,
+      },
+      {
         source: '/api/uploads/:path*',
         destination:
           process.env.STORAGE_PROVIDER === 'local' ? '/uploads/:path*' : '/404',

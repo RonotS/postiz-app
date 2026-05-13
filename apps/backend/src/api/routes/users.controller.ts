@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   HttpException,
+  Param,
   Post,
   Query,
   Req,
@@ -58,6 +59,99 @@ export class UsersController {
     );
 
     return { url: `https://agent-media.ai/sso/${token}` };
+  }
+
+  @Get('/admin-hub-summary')
+  async getAdminHubSummary(@GetUserFromRequest() user: User) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Unauthorized', 400);
+    }
+    return this._orgService.getAdminHubSummary();
+  }
+
+  @Get('/admin-users')
+  async listAdminUsers(@GetUserFromRequest() user: User) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Unauthorized', 400);
+    }
+    return this._userService.listUsersForPlatformAdmin(200);
+  }
+
+  @Get('/admin-platform-analytics')
+  async getAdminPlatformAnalytics(@GetUserFromRequest() user: User) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Unauthorized', 400);
+    }
+    return this._orgService.getAdminPlatformAnalytics();
+  }
+
+  @Get('/admin-post-notifications')
+  async listAdminPostNotifications(
+    @GetUserFromRequest() user: User,
+    @Query('page') pageRaw?: string,
+    @Query('limit') limitRaw?: string,
+    @Query('scope') scopeRaw?: string
+  ) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Unauthorized', 400);
+    }
+    const page = Math.max(0, parseInt(pageRaw ?? '0', 10) || 0);
+    const limit = Math.min(
+      100,
+      Math.max(1, parseInt(limitRaw ?? '25', 10) || 25)
+    );
+    const scope = scopeRaw === 'all' ? 'all' : 'post';
+    return this._orgService.listAdminPostNotifications(page, limit, scope);
+  }
+
+  @Get('/admin-post-errors')
+  async listAdminPostErrors(
+    @GetUserFromRequest() user: User,
+    @Query('page') pageRaw?: string,
+    @Query('limit') limitRaw?: string
+  ) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Unauthorized', 400);
+    }
+    const page = Math.max(0, parseInt(pageRaw ?? '0', 10) || 0);
+    const limit = Math.min(
+      100,
+      Math.max(1, parseInt(limitRaw ?? '25', 10) || 25)
+    );
+    return this._orgService.listAdminPostErrors(page, limit);
+  }
+
+  @Get('/admin-posts/:postId')
+  async getAdminPostDetail(
+    @GetUserFromRequest() user: User,
+    @Param('postId') postId: string
+  ) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Unauthorized', 400);
+    }
+    const data = await this._orgService.getAdminPostDetail(postId);
+    if (!data) {
+      throw new HttpException('Not found', 404);
+    }
+    return data;
+  }
+
+  @Get('/admin-posts')
+  async listAdminPosts(
+    @GetUserFromRequest() user: User,
+    @Query('page') pageRaw?: string,
+    @Query('limit') limitRaw?: string,
+    @Query('q') q?: string
+  ) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Unauthorized', 400);
+    }
+    const page = Math.max(0, parseInt(pageRaw ?? '0', 10) || 0);
+    const limit = Math.min(
+      100,
+      Math.max(1, parseInt(limitRaw ?? '25', 10) || 25)
+    );
+    return this._orgService.listAdminPosts(page, limit, q);
   }
 
   @Get('/self')

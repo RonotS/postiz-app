@@ -169,6 +169,14 @@ export class IntegrationService {
     return this._integrationRepository.getIntegrationById(org, id);
   }
 
+  /** Per-tweet count of recorded auto-DM engager sends (dedup store). */
+  countAutoDmEngagersByTweetIds(integrationId: string, tweetIds: string[]) {
+    return this._integrationRepository.countAutoDmEngagersByTweetIds(
+      integrationId,
+      tweetIds
+    );
+  }
+
   async refreshToken(provider: SocialProvider, refresh: string) {
     try {
       const { refreshToken, accessToken, expiresIn } =
@@ -547,18 +555,6 @@ export class IntegrationService {
           integrationId,
           values
         );
-        await this._integrationRepository
-          .incrementAutoDmSentCountForPost(
-            integrationId,
-            data.postId,
-            userIds.length
-          )
-          .catch((err) =>
-            console.warn(
-              'processPlugs: failed to bump auto_dm_sent_count on post:',
-              err
-            )
-          );
       },
     };
 
