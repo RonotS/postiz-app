@@ -1,5 +1,8 @@
-[build]
-dockerfilePath = "Dockerfile.dev"
+# Do not set dockerfilePath here unless every Railway service in this repo
+# should build from that Dockerfile. A root dockerfilePath overrides the
+# dashboard builder (e.g. Nixpacks) and caused landing-only deploys to use
+# Dockerfile.dev. Use per-service Dockerfile settings in Railway for stacks
+# that need Docker, or build/push GHCR images in CI.
 
 [deploy]
 healthcheckPath = "/"

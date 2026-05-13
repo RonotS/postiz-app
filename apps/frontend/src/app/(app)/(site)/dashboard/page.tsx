@@ -906,7 +906,7 @@ export default function DashboardPage() {
                                 : 'border-newBorder hover:border-newSep'
                             }`}
                           >
-                            <div className="grid grid-cols-[auto_1fr_auto] gap-x-3 gap-y-2 sm:grid-cols-[88px_1fr_auto] sm:gap-x-4 sm:gap-y-0">
+                            <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 sm:grid-cols-[88px_1fr] sm:gap-x-4 sm:gap-y-0">
                               <div className="col-start-1 row-start-1 flex flex-col gap-1.5 w-auto min-w-[72px] sm:w-[88px] sm:min-w-0 flex-shrink-0 pt-0.5">
                                 <span
                                   className={`inline-flex w-fit max-w-full rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${st.className}`}
@@ -961,34 +961,7 @@ export default function DashboardPage() {
                                   )}
                                 </div>
                               </div>
-                              <div className="col-start-3 row-start-1 flex w-[min(100%,7.25rem)] shrink-0 flex-col gap-2 self-start sm:w-28">
-                                {post.group ? (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDeletePost(post);
-                                    }}
-                                    disabled={deletingPostId === post.id}
-                                    className="w-full inline-flex items-center justify-center gap-1 rounded-lg border border-red-400/45 bg-red-400/[0.06] px-3 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-400/15 disabled:opacity-50"
-                                  >
-                                    {deletingPostId === post.id
-                                      ? t('deleting', 'Deleting…')
-                                      : t('delete', 'Delete')}
-                                  </button>
-                                ) : null}
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    startEdit(post);
-                                  }}
-                                  className="w-full inline-flex items-center justify-center gap-1 rounded-lg border border-newBorder bg-newBgColor/40 px-3 py-1.5 text-xs font-medium text-customColor26 transition-colors hover:bg-boxHover"
-                                >
-                                  ✎ {t('edit', 'Edit')}
-                                </button>
-                              </div>
-                              <div className="col-span-3 row-start-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-newBorder/40 pt-2.5 text-[11px] leading-snug text-newTableText sm:hidden">
+                              <div className="col-span-2 row-start-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-newBorder/40 pt-2.5 text-[11px] leading-snug text-newTableText sm:hidden">
                                 {showEngagement && (
                                   <>
                                     <span className="inline-flex items-center gap-1 rounded-md bg-newBgColor/50 px-1.5 py-0.5">
