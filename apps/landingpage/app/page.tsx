@@ -6,7 +6,7 @@ const painPoints = [
 
 const featureCards = [
   {
-    title: 'Viral Inspiration Feed',
+    title: 'Viral Inspiration Feeds',
     description:
       'Browse high-performing posts by niche, format, and audience type so ideas never run dry.',
   },
