@@ -807,7 +807,9 @@ export class PostsService {
     taskQueue: string,
     postId: string,
     orgId: string,
-    state: State
+    state: State,
+    /** Skip waiting until publishDate (used for type "now" / immediate publish). */
+    postNow = false
   ) {
     try {
       const workflows = this._temporalService.client
@@ -847,6 +849,7 @@ export class PostsService {
               taskQueue: taskQueue,
               postId: postId,
               organizationId: orgId,
+              postNow,
             },
           ],
           typedSearchAttributes: new TypedSearchAttributes([
@@ -902,7 +905,8 @@ export class PostsService {
           post.settings.__type.split('-')[0].toLowerCase(),
           posts[0].id,
           orgId,
-          posts[0].state
+          posts[0].state,
+          body.type === 'now'
         ).catch((err) => { });
       }
 

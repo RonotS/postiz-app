@@ -129,6 +129,50 @@ function postQueueStatus(
   }
 }
 
+/** In-flight "Tweet now": still QUEUE in API until the worker finishes — show Publishing, not Scheduled. */
+function queueCardStatus(
+  post: PostItem,
+  pendingPublishPostId: string | null,
+  pendingPublishFingerprint: string | null,
+  t: ReturnType<typeof useT>
+): { label: string; className: string } {
+  const publishingBadge = {
+    label: t('status_publishing', 'Publishing'),
+    className:
+      'bg-violet-500/15 text-violet-200 border border-violet-400/30',
+  } as const;
+
+  if (post.state !== 'QUEUE') {
+    return postQueueStatus(post.state, t);
+  }
+
+  const isX =
+    post.integration?.providerIdentifier &&
+    ['x', 'twitter'].includes(
+      post.integration.providerIdentifier.toLowerCase()
+    );
+  if (!isX) {
+    return postQueueStatus(post.state, t);
+  }
+
+  if (pendingPublishPostId && pendingPublishPostId === post.id) {
+    return publishingBadge;
+  }
+
+  if (pendingPublishFingerprint) {
+    const postFp = stripHtmlForPreview(post.content || '').toLowerCase();
+    if (postFp === pendingPublishFingerprint) {
+      const publishUtc = dayjs.utc(post.publishDate);
+      const recentEnough = publishUtc.isAfter(dayjs.utc().subtract(6, 'minute'));
+      if (recentEnough) {
+        return publishingBadge;
+      }
+    }
+  }
+
+  return postQueueStatus(post.state, t);
+}
+
 const Toggle: FC<{
   enabled: boolean;
   onChange: (v: boolean) => void;
@@ -316,6 +360,17 @@ export default function DashboardPage() {
   const { data: nextSlotIso, mutate: mutateNextSlot } = useNextSlot();
   const { data: integrations = [] } = useIntegrations();
   const [submitting, setSubmitting] = useState(false);
+  /** Which composer action is in flight — avoids every action button showing "…" at once. */
+  const [activeSubmitMode, setActiveSubmitMode] = useState<
+    null | 'now' | 'draft' | 'queue'
+  >(null);
+  /** After "Tweet now", match QUEUE row by id and/or first-tweet text until X confirms. */
+  const [pendingPublishPostId, setPendingPublishPostId] = useState<
+    string | null
+  >(null);
+  const [pendingPublishFingerprint, setPendingPublishFingerprint] = useState<
+    string | null
+  >(null);
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
   const [editingPost, setEditingPost] = useState<PostItem | null>(null);
   // datetime-local string in user's local TZ ("YYYY-MM-DDTHH:mm")
@@ -338,6 +393,16 @@ export default function DashboardPage() {
       );
     }
   }, [nextSlotIso, editingPost, userTouchedDate]);
+
+  /** "Publishing now" overlay: show ~3s then dismiss if the job is still running (poll can take longer). */
+  useEffect(() => {
+    if (publishOverlay !== 'publishing') return;
+    const dismissMs = 3000;
+    const id = window.setTimeout(() => {
+      setPublishOverlay((cur) => (cur === 'publishing' ? null : cur));
+    }, dismissMs);
+    return () => window.clearTimeout(id);
+  }, [publishOverlay]);
 
   const xIntegration = useMemo(
     () =>
@@ -415,8 +480,20 @@ export default function DashboardPage() {
       }
       if (submitting) return;
       setSubmitting(true);
+      setActiveSubmitMode(mode);
       if (mode === 'now') {
+        const earlyThread = composerText
+          .split(/\n\s*\n\s*\n+/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        const firstTweet = earlyThread[0] || composerText;
+        setPendingPublishFingerprint(
+          stripHtmlForPreview(firstTweet).toLowerCase()
+        );
+        setPendingPublishPostId(null);
         setPublishOverlay('publishing');
+      } else {
+        setPendingPublishFingerprint(null);
       }
       try {
         const isEditing = !!editingPost;
@@ -547,7 +624,11 @@ export default function DashboardPage() {
 
         if (!res.ok) {
           const errText = await res.text().catch(() => '');
-          if (mode === 'now') setPublishOverlay(null);
+          if (mode === 'now') {
+            setPublishOverlay(null);
+            setPendingPublishPostId(null);
+            setPendingPublishFingerprint(null);
+          }
           toast.show(
             errText || t('post_failed', 'Could not create the post'),
             'warning'
@@ -564,6 +645,7 @@ export default function DashboardPage() {
             postedBody?.posts?.[0]?.id ||
             postedBody?.posts?.[0]?.postId ||
             null;
+          if (postedId) setPendingPublishPostId(postedId);
           const targetPreview = stripHtmlForPreview(values[0]?.content || '').toLowerCase();
           const startedAt = Date.now();
           const maxWaitMs = 120000;
@@ -594,9 +676,12 @@ export default function DashboardPage() {
               });
               if (matched?.state === 'PUBLISHED') {
                 published = true;
+                setPendingPublishPostId(null);
+                setPendingPublishFingerprint(null);
                 setPublishOverlay(isEditing ? 'updated' : 'published');
                 window.setTimeout(() => setPublishOverlay(null), 2800);
               }
+              await mutatePosts();
             }
             if (!published) {
               await new Promise((r) => setTimeout(r, 2000));
@@ -605,6 +690,8 @@ export default function DashboardPage() {
 
           if (!published) {
             setPublishOverlay(null);
+            setPendingPublishPostId(null);
+            setPendingPublishFingerprint(null);
             toast.show(
               t(
                 'still_publishing_to_x',
@@ -629,13 +716,18 @@ export default function DashboardPage() {
         setAttachedMedia([]); // clear attached images after successful submit
         await Promise.all([mutatePosts(), mutateNextSlot()]);
       } catch (err: any) {
-        if (mode === 'now') setPublishOverlay(null);
+        if (mode === 'now') {
+          setPublishOverlay(null);
+          setPendingPublishPostId(null);
+          setPendingPublishFingerprint(null);
+        }
         toast.show(
           err?.message || t('post_failed', 'Could not create the post'),
           'warning'
         );
       } finally {
         setSubmitting(false);
+        setActiveSubmitMode(null);
       }
     },
     [
@@ -889,7 +981,12 @@ export default function DashboardPage() {
                           .format('hh:mm a');
                         const dmsSent = post.dmsSent ?? 0;
                         const isBeingEdited = editingPost?.id === post.id;
-                        const st = postQueueStatus(post.state, t);
+                        const st = queueCardStatus(
+                          post,
+                          pendingPublishPostId,
+                          pendingPublishFingerprint,
+                          t
+                        );
                         const isXPost =
                           post.integration?.providerIdentifier &&
                           ['x', 'twitter'].includes(
@@ -1313,7 +1410,7 @@ export default function DashboardPage() {
                   disabled={submitting}
                   className="flex-1 bg-btnPrimary hover:opacity-90 text-white text-sm font-semibold py-2.5 rounded-lg transition-all flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {submitting
+                  {submitting && activeSubmitMode === 'queue'
                     ? t('saving_dots', 'Saving…')
                     : t('save_changes', 'Save changes')}
                 </button>
@@ -1324,9 +1421,9 @@ export default function DashboardPage() {
                     disabled={submitting}
                     className="flex-1 bg-newBgColor hover:bg-boxHover text-newTextColor text-sm font-semibold py-2.5 rounded-lg border border-newBorder transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {submitting
-                      ? t('posting', 'Posting…')
-                      : t('tweet_now', 'Tweet now')}
+                    {!submitting || activeSubmitMode !== 'now'
+                      ? t('tweet_now', 'Tweet now')
+                      : t('publishing_now', 'Publishing now...')}
                   </button>
                   <button
                     type="button"
@@ -1334,7 +1431,7 @@ export default function DashboardPage() {
                     disabled={submitting}
                     className="flex-1 bg-newBgColor hover:bg-boxHover text-newTextColor text-sm font-semibold py-2.5 rounded-lg border border-newBorder transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {submitting
+                    {submitting && activeSubmitMode === 'draft'
                       ? t('saving_dots', 'Saving…')
                       : t('save_draft', 'Save draft')}
                   </button>
@@ -1343,7 +1440,7 @@ export default function DashboardPage() {
                     disabled={submitting}
                     className="flex-[2] bg-btnPrimary hover:opacity-90 text-white text-sm font-semibold py-2.5 rounded-lg transition-all flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {submitting
+                    {submitting && activeSubmitMode === 'queue'
                       ? t('queueing', 'Queueing…')
                       : t('add_to_queue', 'Add to Queue')}
                   </button>
@@ -1616,7 +1713,7 @@ export default function DashboardPage() {
           <div className="mx-auto bg-newBgColorInner border border-newBorder rounded-xl shadow-xl px-6 py-4 w-fit min-w-[280px] text-center">
             <p className="text-lg font-semibold text-newTextColor">
               {publishOverlay === 'publishing'
-                ? t('publishing_now', 'Publishing now')
+                ? t('publishing_now', 'Publishing now...')
                 : publishOverlay === 'updated'
                 ? t('post_updated', 'Post updated')
                 : t('post_published', 'Post published')}
