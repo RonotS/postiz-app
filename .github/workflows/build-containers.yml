@@ -22,7 +22,9 @@ jobs:
       - name: Get Container Version
         id: getcontainerver
         run: |
-          echo "containerver=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION//\//-}"
+          echo "containerver=${VERSION}" >> "$GITHUB_OUTPUT"
 
   build-containers:
     needs: build-containers-common
