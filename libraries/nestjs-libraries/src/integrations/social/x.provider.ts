@@ -360,7 +360,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     // Resolve the thread text: per-post override > plug-level default.
     const rawThreadInput =
       typeof postSettings?.auto_thread_reply_text === 'string' &&
-      postSettings.auto_thread_reply_text.trim() !== ''
+        postSettings.auto_thread_reply_text.trim() !== ''
         ? postSettings.auto_thread_reply_text
         : fields.thread || '';
 
@@ -713,7 +713,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
     const rawMessage =
       (typeof postSettings?.auto_dm_followers_message === 'string' &&
-      postSettings.auto_dm_followers_message.trim() !== ''
+        postSettings.auto_dm_followers_message.trim() !== ''
         ? postSettings.auto_dm_followers_message
         : fields.message) || '';
     const dmText = stripHtmlValidation('normal', rawMessage, true);
@@ -1050,6 +1050,23 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     });
   }
 
+  /**
+   * Optional delay before each tweet/comment attempt. Defaults to a tiny 0–400ms
+   * stagger so posting feels immediate; set X_POST_JITTER_MS_MIN / X_POST_JITTER_MS_MAX
+   * (e.g. 8000 and 25000) if you need stronger anti-burst behavior for your API tier.
+   */
+  private getPostAttemptJitterMs(): number {
+    const parseMs = (v: string | undefined, fallback: number) => {
+      const n = parseInt(String(v ?? '').trim(), 10);
+      return Number.isFinite(n) && n >= 0 ? n : fallback;
+    };
+    const min = parseMs(process.env.X_POST_JITTER_MS_MIN, 0);
+    const max = parseMs(process.env.X_POST_JITTER_MS_MAX, 50);
+    const lo = Math.min(min, max);
+    const hi = Math.max(min, max);
+    return lo + Math.floor(Math.random() * (hi - lo + 1));
+  }
+
   private async uploadMedia(
     client: TwitterApi,
     postDetails: PostDetails<any>[]
@@ -1109,7 +1126,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
     for (const attempt of [0, 1, 2]) {
       if (attempt > 0) {
-        await timer(2000);
+        await timer(500);
       }
 
       try {
@@ -1185,9 +1202,12 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        // Anti-bot Jitter: Wait randomly between 8 to 25 seconds to break rigid bot-filter patterns
-        const jitterMs = Math.floor(Math.random() * 17000) + 8000;
-        console.log(`X POST Jitter (attempt ${attempt + 1}/${maxRetries + 1}): waiting ${jitterMs / 1000}s to mimic human behavior...`);
+        const jitterMs = this.getPostAttemptJitterMs();
+        if (jitterMs > 0) {
+          console.log(
+            `X POST jitter (attempt ${attempt + 1}/${maxRetries + 1}): ${jitterMs}ms`
+          );
+        }
         await timer(jitterMs);
 
         // @ts-ignore
@@ -1345,9 +1365,12 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
-        // Anti-bot Jitter: Wait randomly between 8 to 25 seconds
-        const jitterMs = Math.floor(Math.random() * 17000) + 8000;
-        console.log(`X COMMENT Jitter (attempt ${attempt + 1}/${maxRetries + 1}): waiting ${jitterMs / 1000}s to mimic human behavior...`);
+        const jitterMs = this.getPostAttemptJitterMs();
+        if (jitterMs > 0) {
+          console.log(
+            `X COMMENT jitter (attempt ${attempt + 1}/${maxRetries + 1}): ${jitterMs}ms`
+          );
+        }
         await timer(jitterMs);
 
         // @ts-ignore

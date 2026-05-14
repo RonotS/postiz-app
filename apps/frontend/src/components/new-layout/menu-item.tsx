@@ -11,7 +11,7 @@ export const MenuItem: FC<{ label: string; icon: ReactNode; path: string; onClic
   onClick,
 }) => {
   const currentPath = usePathname();
-  // Home is exactly `/dashboard` so `/dashboard/followers` does not stay highlighted on Home.
+  // Home is exactly `/dashboard` so child routes (e.g. followers, tweet-automations) do not highlight Home.
   const isActive =
     path === '/dashboard'
       ? currentPath === '/dashboard'

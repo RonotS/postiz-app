@@ -39,11 +39,11 @@ export default function DashboardFollowersPage() {
     <div className="flex flex-1 min-h-0 bg-newBgColor text-newTextColor flex-col w-full p-4 sm:p-6 lg:p-8 overflow-y-auto custom-scrollbar">
       <header className="mb-6">
         <h1 className="text-2xl font-bold text-newTextColor mb-2">
-          {t('followers', 'Followers')}
+          {t('profile_automations', 'Profile Automations')}
         </h1>
         <p className="text-newTableText text-sm max-w-[72ch] leading-relaxed">
           {t(
-            'followers_page_intro',
+            'profile_automations_page_intro',
             'Automatically welcome new followers on X with a direct message. Your queue and published posts stay on Home.'
           )}
         </p>
