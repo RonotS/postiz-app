@@ -32,6 +32,28 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { SVGLine } from '@gitroom/frontend/components/launches/launches.component';
 import { GlobalSettings } from '@gitroom/frontend/components/settings/global.settings';
 import { ApprovedAppsComponent } from '@gitroom/frontend/components/approved-apps/approved-apps.component';
+import { GrayedOutContent } from '@gitroom/frontend/components/layout/grayed-out-content';
+
+const DISABLED_SETTINGS_TABS = new Set([
+  'teams',
+  'webhooks',
+  'autopost',
+  'sets',
+  'signatures',
+  'api',
+  'approved_apps',
+]);
+
+const SettingsTabPanel: FC<{
+  tabKey: string;
+  children: React.ReactNode;
+}> = ({ tabKey, children }) =>
+  DISABLED_SETTINGS_TABS.has(tabKey) ? (
+    <GrayedOutContent>{children}</GrayedOutContent>
+  ) : (
+    <>{children}</>
+  );
+
 export const SettingsPopup: FC<{
   getRef?: Ref<any>;
 }> = (props) => {
@@ -166,48 +188,48 @@ export const SettingsPopup: FC<{
                 </div>
               )}
               {tab === 'teams' && !!user?.tier?.team_members && isGeneral && (
-                <div>
+                <SettingsTabPanel tabKey="teams">
                   <TeamsComponent />
-                </div>
+                </SettingsTabPanel>
               )}
 
               {tab === 'webhooks' && !!user?.tier?.webhooks && (
-                <div>
+                <SettingsTabPanel tabKey="webhooks">
                   <Webhooks />
-                </div>
+                </SettingsTabPanel>
               )}
 
               {tab === 'autopost' && !!user?.tier?.autoPost && (
-                <div>
+                <SettingsTabPanel tabKey="autopost">
                   <Autopost />
-                </div>
+                </SettingsTabPanel>
               )}
 
               {tab === 'sets' && user?.tier.current !== 'FREE' && (
-                <div>
+                <SettingsTabPanel tabKey="sets">
                   <Sets />
-                </div>
+                </SettingsTabPanel>
               )}
 
               {tab === 'signatures' && user?.tier.current !== 'FREE' && (
-                <div>
+                <SettingsTabPanel tabKey="signatures">
                   <SignaturesComponent />
-                </div>
+                </SettingsTabPanel>
               )}
 
               {tab === 'api' &&
                 !!user?.tier?.public_api &&
                 isGeneral &&
                 showLogout && (
-                  <div>
+                  <SettingsTabPanel tabKey="api">
                     <PublicComponent />
-                  </div>
+                  </SettingsTabPanel>
                 )}
 
               {tab === 'approved_apps' && (
-                <div>
+                <SettingsTabPanel tabKey="approved_apps">
                   <ApprovedAppsComponent />
-                </div>
+                </SettingsTabPanel>
               )}
             </div>
           </form>

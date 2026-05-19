@@ -15,6 +15,7 @@ import { Organization, User } from '@prisma/client';
 import { SubscriptionService } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscription.service';
 import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.request';
 import { StripeService } from '@gitroom/nestjs-libraries/services/stripe.service';
+import { isStripeBillingEnabled } from '@gitroom/helpers/stripe/stripe.billing.env';
 import { Response, Request } from 'express';
 import { AuthService } from '@gitroom/backend/services/auth/auth.service';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
@@ -32,6 +33,17 @@ import { TrackEnum } from '@gitroom/nestjs-libraries/user/track.enum';
 import { TrackService } from '@gitroom/nestjs-libraries/track/track.service';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { AuthorizationActions, Sections } from '@gitroom/backend/services/auth/permissions/permission.exception.class';
+
+/** `req.org` after auth middleware — same include as `OrganizationRepository.getOrgsByUserId`. */
+type OrganizationFromAuth = Organization & {
+  subscription: {
+    subscriptionTier: string;
+    totalChannels: number;
+    isLifetime: boolean;
+    createdAt: Date;
+  } | null;
+  users: { role: string; disabled: boolean }[];
+};
 
 @ApiTags('User')
 @Controller('/user')
@@ -157,7 +169,7 @@ export class UsersController {
   @Get('/self')
   async getSelf(
     @GetUserFromRequest() user: User,
-    @GetOrgFromRequest() organization: Organization,
+    @GetOrgFromRequest() organization: OrganizationFromAuth,
     @Req() req: Request
   ) {
     if (!organization) {
@@ -170,16 +182,18 @@ export class UsersController {
       ...user,
       orgId: organization.id,
       // @ts-ignore
-      totalChannels: !process.env.STRIPE_PUBLISHABLE_KEY ? 10000 : organization?.subscription?.totalChannels || pricing.FREE.channel,
-      // @ts-ignore
-      tier: organization?.subscription?.subscriptionTier || (!process.env.STRIPE_PUBLISHABLE_KEY ? 'ULTIMATE' : 'FREE'),
+      totalChannels: !isStripeBillingEnabled() ? 10000 : organization?.subscription?.totalChannels || pricing.FREE.channel,
+      // @ts-ignore — when Stripe billing is off, treat org as fully unlocked for UI (avoids first-billing gate while DB still has FREE).
+      tier: !isStripeBillingEnabled()
+        ? 'ULTIMATE'
+        : organization?.subscription?.subscriptionTier || 'FREE',
       // @ts-ignore
       role: organization?.users[0]?.role,
       // @ts-ignore
       isLifetime: !!organization?.subscription?.isLifetime,
       admin: !!user.isSuperAdmin,
       impersonate: !!impersonate,
-      isTrailing: !process.env.STRIPE_PUBLISHABLE_KEY ? false : organization?.isTrailing,
+      isTrailing: !isStripeBillingEnabled() ? false : organization?.isTrailing,
       allowTrial: organization?.allowTrial,
       streakSince: organization?.streakSince || null,
       // @ts-ignore

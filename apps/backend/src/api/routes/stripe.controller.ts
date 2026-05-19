@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { StripeService } from '@gitroom/nestjs-libraries/services/stripe.service';
 import { ApiTags } from '@nestjs/swagger';
+import { getStripeWebhookSigningSecret } from '@gitroom/helpers/stripe/stripe.billing.env';
 
 @ApiTags('Stripe')
 @Controller('/stripe')
@@ -17,11 +18,18 @@ export class StripeController {
 
   @Post('/')
   stripe(@Req() req: RawBodyRequest<Request>) {
+    const signingSecret = getStripeWebhookSigningSecret();
+    if (!signingSecret) {
+      throw new HttpException(
+        'Stripe webhook signing secret missing: set STRIPE_SIGNING_KEY or STRIPE_WEBHOOK_SECRET',
+        500
+      );
+    }
     const event = this._stripeService.validateRequest(
       req.rawBody,
       // @ts-ignore
       req.headers['stripe-signature'],
-      process.env.STRIPE_SIGNING_KEY
+      signingSecret
     );
 
     // Maybe it comes from another stripe webhook

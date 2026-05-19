@@ -5,6 +5,7 @@ import { Prisma, Role, ShortLinkPreference, State, SubscriptionTier } from '@pri
 import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { CreateOrgUserDto } from '@gitroom/nestjs-libraries/dtos/auth/create.org.user.dto';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
+import { isStripeBillingEnabled } from '@gitroom/helpers/stripe/stripe.billing.env';
 
 /** Same logic as PostsRepository.dmsSentFromSettings — X plug DMs stored on post JSON. */
 function postDmsSentFromSettings(settings: string | null | undefined): number {
@@ -1111,7 +1112,7 @@ export class OrganizationRepository {
       });
 
     if (
-      process.env.STRIPE_PUBLISHABLE_KEY &&
+      isStripeBillingEnabled() &&
       checkForSubscription?.subscription?.subscriptionTier ===
         SubscriptionTier.STANDARD
     ) {

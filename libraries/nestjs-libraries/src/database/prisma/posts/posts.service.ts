@@ -33,6 +33,7 @@ import {
   postId as postIdSearchParam,
 } from '@gitroom/nestjs-libraries/temporal/temporal.search.attribute';
 import { AnalyticsData } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
+import { isXAccountActivityPollingDisabled } from '@gitroom/helpers/x/x.account-activity.env';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { RefreshToken } from '@gitroom/nestjs-libraries/integrations/social.abstract';
@@ -744,8 +745,26 @@ export class PostsService {
 
     const currentPlug = loadAllPlugs.find((p) => p.identifier === providerName);
 
+    const xWebhookPlugFns = new Set([
+      'autoDmEngagers',
+      'autoRepostPost',
+      'autoPlugPost',
+      'autoThreadReply',
+    ]);
+
     return getPlugs
       .filter((plug) => plug.plugFunction !== 'autoDmFollowers')
+      .filter((plug) => {
+        if (
+          providerName === 'x' &&
+          plug.plugFunction &&
+          xWebhookPlugFns.has(plug.plugFunction) &&
+          isXAccountActivityPollingDisabled()
+        ) {
+          return false;
+        }
+        return true;
+      })
       .filter((plug) => {
         return currentPlug?.plugs?.some(
           (p: any) => p.methodName === plug.plugFunction
@@ -811,6 +830,12 @@ export class PostsService {
     /** Skip waiting until publishDate (used for type "now" / immediate publish). */
     postNow = false
   ) {
+    // Terminate any existing running workflows for the same postId so
+    // workflowIdConflictPolicy: 'TERMINATE_EXISTING' below has a clean slate.
+    // We log (rather than silently swallow) so a misconfigured Temporal
+    // search-attribute or RPC error becomes visible — the "post stuck on
+    // Publishing" failure mode used to be silent because the entire flow
+    // (terminate + start) was wrapped in empty `catch {}` blocks.
     try {
       const workflows = this._temporalService.client
         .getRawClient()
@@ -818,27 +843,42 @@ export class PostsService {
           query: `postId="${postId}" AND ExecutionStatus="Running"`,
         });
 
-      for await (const executionInfo of workflows) {
-        try {
-          const workflow = await this._temporalService.client.getWorkflowHandle(
-            executionInfo.workflowId
-          );
-          if (
-            workflow &&
-            (await workflow.describe()).status.name !== 'TERMINATED'
-          ) {
-            await workflow.terminate();
+      if (workflows) {
+        for await (const executionInfo of workflows) {
+          try {
+            const workflow = await this._temporalService.client.getWorkflowHandle(
+              executionInfo.workflowId
+            );
+            if (
+              workflow &&
+              (await workflow.describe()).status.name !== 'TERMINATED'
+            ) {
+              await workflow.terminate();
+            }
+          } catch (err) {
+            console.warn(
+              `[startWorkflow] failed to terminate existing workflow ${executionInfo.workflowId} for postId=${postId}:`,
+              (err as Error)?.message || err
+            );
           }
-        } catch (err) { }
+        }
       }
-    } catch (err) { }
+    } catch (err) {
+      console.warn(
+        `[startWorkflow] could not list existing workflows for postId=${postId} (continuing to start):`,
+        (err as Error)?.message || err
+      );
+    }
 
     if (state === 'DRAFT') {
       return;
     }
 
     try {
-      await this._temporalService.client
+      console.log(
+        `[startWorkflow] dispatching postWorkflowV102 postId=${postId} orgId=${orgId} taskQueue=${taskQueue} postNow=${postNow}`
+      );
+      const handle = await this._temporalService.client
         .getRawClient()
         ?.workflow.start('postWorkflowV102', {
           workflowId: `post_${postId}`,
@@ -863,7 +903,20 @@ export class PostsService {
             },
           ]),
         });
-    } catch (err) { }
+      console.log(
+        `[startWorkflow] postWorkflowV102 dispatched workflowId=${handle?.workflowId || `post_${postId}`} runId=${handle?.firstExecutionRunId || 'unknown'}`
+      );
+    } catch (err) {
+      // Surface the real reason instead of failing silently. Common causes:
+      //   • Temporal client not connected (orchestrator service down)
+      //   • Required search attributes (postId, organizationId) not
+      //     registered on the Temporal namespace
+      //   • Workflow type 'postWorkflowV102' not deployed to the worker
+      console.error(
+        `[startWorkflow] FAILED to dispatch postWorkflowV102 for postId=${postId} orgId=${orgId} taskQueue=${taskQueue} postNow=${postNow}:`,
+        err
+      );
+    }
   }
 
   async createPost(orgId: string, body: CreatePostDto): Promise<any[]> {

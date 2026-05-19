@@ -19,20 +19,25 @@ export const StreakComponent: FC = () => {
     return diffDays + 1;
   }, [user?.streakSince]);
 
+  const hasStreak = !!user?.streakSince && streakDays > 0;
+
   const tooltipContent = useMemo(() => {
+    if (!hasStreak) {
+      return 'Post a tweet today to start a posting streak.';
+    }
     if (streakDays === 1) {
       return 'You started your streak today! Keep posting daily to maintain it.';
     }
     return `You're on a ${streakDays} day posting streak! Keep it going!`;
-  }, [streakDays]);
-
-  if (!user?.streakSince || streakDays <= 0) {
-    return null;
-  }
+  }, [hasStreak, streakDays]);
 
   return (
     <div
-      className="flex items-center gap-[6px] text-orange-500 hover:text-orange-400 cursor-default"
+      className={`flex items-center gap-[6px] cursor-default ${
+        hasStreak
+          ? 'text-orange-500 hover:text-orange-400'
+          : 'text-textItemBlur hover:text-newTextColor'
+      }`}
       data-tooltip-id="tooltip"
       data-tooltip-content={tooltipContent}
     >

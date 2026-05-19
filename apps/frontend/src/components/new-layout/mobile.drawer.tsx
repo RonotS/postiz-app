@@ -56,13 +56,16 @@ export const MobileDrawer = () => {
         </div>
 
         <div className="flex-1 overflow-y-auto flex flex-col gap-2 scrollbar-none">
-          {all.map((item) => (
+          {all
+            .filter((item) => !item.hide)
+            .map((item) => (
             <div key={item.name} onClick={() => setIsOpen(false)}>
               <MenuItem
                 path={item.path}
                 label={item.name}
                 icon={item.icon}
                 onClick={item.onClick}
+                disabled={item.disabled}
               />
             </div>
           ))}

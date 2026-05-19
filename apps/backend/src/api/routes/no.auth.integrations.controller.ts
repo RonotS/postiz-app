@@ -23,6 +23,7 @@ import {
 } from '@gitroom/backend/services/auth/permissions/permission.exception.class';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
+import { isStripeBillingEnabled } from '@gitroom/helpers/stripe/stripe.billing.env';
 
 @ApiTags('Integrations')
 @Controller('/integrations')
@@ -199,7 +200,7 @@ export class NoAuthIntegrationsController {
     }
 
     if (
-      process.env.STRIPE_PUBLISHABLE_KEY &&
+      isStripeBillingEnabled() &&
       org.isTrailing &&
       (await this._integrationService.checkPreviousConnections(
         org.id,
@@ -224,7 +225,7 @@ export class NoAuthIntegrationsController {
         expiresIn,
         username,
         refresh ? false : integrationProvider.isBetweenSteps,
-        body.refresh,
+        refresh || body.refresh,
         +body.timezone,
         details
           ? AuthService.fixedEncryption(details)

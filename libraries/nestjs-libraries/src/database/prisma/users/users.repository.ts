@@ -175,6 +175,22 @@ export class UsersRepository {
     });
   }
 
+  async orgHasPlatformSuperAdmin(orgId: string): Promise<boolean> {
+    const found = await this._user.model.user.findFirst({
+      where: {
+        isSuperAdmin: true,
+        organizations: {
+          some: {
+            organizationId: orgId,
+            disabled: false,
+          },
+        },
+      },
+      select: { id: true },
+    });
+    return !!found;
+  }
+
   listUsersForPlatformAdmin(take: number) {
     return this._user.model.user.findMany({
       take,

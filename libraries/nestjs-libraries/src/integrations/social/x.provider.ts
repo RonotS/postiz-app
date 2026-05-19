@@ -1760,7 +1760,433 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     return [];
   }
 
+  /**
+   * Account Activity webhook: DM a single engager (like / RT / reply) for one tweet.
+   */
+  async webhookDmEngager(
+    integration: Integration,
+    tweetId: string,
+    engagerUserId: string,
+    eventType: 'like' | 'retweet' | 'reply',
+    fields: {
+      message: string;
+      targetLikes?: boolean | string;
+      targetRetweets?: boolean | string;
+      targetReplies?: boolean | string;
+    },
+    postSettings?: any,
+    plugContext?: {
+      loadDmdUserIds: (userIds: string[]) => Promise<Set<string>>;
+      saveDmdUserIds: (userIds: string[]) => Promise<void>;
+    }
+  ): Promise<boolean> {
+    if (!engagerUserId || engagerUserId === integration.internalId) {
+      return false;
+    }
+    if (postSettings?.auto_dm_enabled === false) {
+      return false;
+    }
+
+    const truthy = (v: any) =>
+      v === true || v === 'true' || v === 1 || v === '1';
+    const postTargets = postSettings?.auto_dm_targets || {};
+    const targetLikes =
+      postTargets.likes !== undefined
+        ? truthy(postTargets.likes)
+        : truthy(fields.targetLikes);
+    const targetRetweets =
+      postTargets.retweets !== undefined
+        ? truthy(postTargets.retweets)
+        : truthy(fields.targetRetweets);
+    const targetReplies =
+      postTargets.replies !== undefined
+        ? truthy(postTargets.replies)
+        : truthy(fields.targetReplies);
+    const noTargetsExplicit =
+      !targetLikes && !targetRetweets && !targetReplies;
+    const effectiveTargetLikes = noTargetsExplicit ? true : targetLikes;
+    const effectiveTargetRetweets = noTargetsExplicit ? false : targetRetweets;
+    const effectiveTargetReplies = noTargetsExplicit ? false : targetReplies;
+
+    const enabled =
+      (eventType === 'like' && effectiveTargetLikes) ||
+      (eventType === 'retweet' && effectiveTargetRetweets) ||
+      (eventType === 'reply' && effectiveTargetReplies);
+    if (!enabled) {
+      return false;
+    }
+
+    const rawMessage =
+      (typeof postSettings?.auto_dm_message === 'string' &&
+      postSettings.auto_dm_message.trim() !== ''
+        ? postSettings.auto_dm_message
+        : fields.message) || '';
+    const dmText = stripHtmlValidation('normal', rawMessage, true);
+    if (!dmText.trim()) {
+      return false;
+    }
+
+    if (plugContext?.loadDmdUserIds) {
+      const already = await plugContext.loadDmdUserIds([engagerUserId]);
+      if (already.has(engagerUserId)) {
+        return false;
+      }
+    }
+
+    const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+    const client = this.buildTwitterApi({
+      appKey: process.env.X_API_KEY!,
+      appSecret: process.env.X_API_SECRET!,
+      accessToken: accessTokenSplit,
+      accessSecret: accessSecretSplit,
+    });
+
+    try {
+      await timer(500);
+      await client.v2.sendDmToParticipant(engagerUserId, { text: dmText });
+      if (plugContext?.saveDmdUserIds) {
+        await plugContext.saveDmdUserIds([engagerUserId]);
+      }
+      return true;
+    } catch (dmErr: any) {
+      console.error(
+        `X WEBHOOK AUTO DM (${eventType}) user ${engagerUserId}:`,
+        dmErr?.data || dmErr
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Account Activity webhook: welcome DM for one new follower (no full-list poll).
+   */
+  async webhookDmFollower(
+    integration: Integration,
+    followerUserId: string,
+    fields: { message: string },
+    postSettings?: {
+      auto_dm_followers_enabled?: boolean;
+      auto_dm_followers_message?: string;
+    },
+    plugContext?: {
+      loadDmdUserIds: (userIds: string[]) => Promise<Set<string>>;
+      saveDmdUserIds: (userIds: string[]) => Promise<void>;
+      hasFollowerBaselineMarker: () => Promise<boolean>;
+      setFollowerBaselineMarker: () => Promise<void>;
+      loadFollowerSnapshotContains: (userIds: string[]) => Promise<Set<string>>;
+      saveFollowerSnapshotIds: (userIds: string[]) => Promise<void>;
+    }
+  ): Promise<boolean> {
+    if (postSettings?.auto_dm_followers_enabled === false) {
+      return false;
+    }
+    const ownerId = integration.internalId;
+    if (!ownerId || !followerUserId || followerUserId === ownerId) {
+      return false;
+    }
+    if (!plugContext) {
+      return false;
+    }
+
+    const baselineDone = await plugContext.hasFollowerBaselineMarker();
+    if (!baselineDone) {
+      await plugContext.setFollowerBaselineMarker();
+      await plugContext.saveFollowerSnapshotIds([followerUserId]);
+      return false;
+    }
+
+    const alreadyDmd = await plugContext.loadDmdUserIds([followerUserId]);
+    if (alreadyDmd.has(followerUserId)) {
+      return false;
+    }
+    const inSnapshot = await plugContext.loadFollowerSnapshotContains([
+      followerUserId,
+    ]);
+    if (inSnapshot.has(followerUserId)) {
+      return false;
+    }
+
+    const rawMessage =
+      (typeof postSettings?.auto_dm_followers_message === 'string' &&
+      postSettings.auto_dm_followers_message.trim() !== ''
+        ? postSettings.auto_dm_followers_message
+        : fields.message) || '';
+    const dmText = stripHtmlValidation('normal', rawMessage, true);
+    if (!dmText.trim()) {
+      return false;
+    }
+
+    const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+    const client = this.buildTwitterApi({
+      appKey: process.env.X_API_KEY!,
+      appSecret: process.env.X_API_SECRET!,
+      accessToken: accessTokenSplit,
+      accessSecret: accessSecretSplit,
+    });
+
+    try {
+      await timer(500);
+      await client.v2.sendDmToParticipant(followerUserId, { text: dmText });
+      await plugContext.saveDmdUserIds([followerUserId]);
+      await plugContext.saveFollowerSnapshotIds([followerUserId]);
+      return true;
+    } catch (dmErr: any) {
+      console.error(
+        `X WEBHOOK AUTO DM FOLLOWERS user ${followerUserId}:`,
+        dmErr?.data || dmErr
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Account Activity webhook: when a like arrives, run threshold-based plugs once.
+   */
+  async webhookRunLikeThresholdPlugs(
+    integration: Integration,
+    tweetId: string,
+    plugs: {
+      autoRepostPost?: { likesAmount: string };
+      autoPlugPost?: { likesAmount: string; post: string };
+      autoThreadReply?: { likesAmount: string; thread: string };
+    },
+    postSettings?: any,
+    plugContext?: {
+      loadDmdUserIds: (keys: string[]) => Promise<Set<string>>;
+      saveDmdUserIds: (keys: string[]) => Promise<void>;
+    }
+  ): Promise<void> {
+    const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+    const client = this.buildTwitterApi({
+      appKey: process.env.X_API_KEY!,
+      appSecret: process.env.X_API_SECRET!,
+      accessToken: accessTokenSplit,
+      accessSecret: accessSecretSplit,
+    });
+
+    let likeCount = 0;
+    try {
+      const tw = await client.v2.singleTweet(tweetId, {
+        'tweet.fields': ['public_metrics'],
+      });
+      likeCount = Math.max(0, Number(tw?.data?.public_metrics?.like_count) || 0);
+    } catch (err) {
+      console.error('X WEBHOOK: failed to read tweet metrics:', err);
+      return;
+    }
+
+    if (plugs.autoRepostPost && postSettings?.auto_retweet_enabled !== false) {
+      const threshold = Number(
+        postSettings?.auto_retweet_like_threshold ??
+          plugs.autoRepostPost.likesAmount ??
+          0
+      );
+      if (likeCount >= threshold) {
+        try {
+          await timer(1000);
+          await client.v2.retweet(integration.internalId, tweetId);
+        } catch (err) {
+          console.error('X WEBHOOK AUTO REPOST:', err);
+        }
+      }
+    }
+
+    if (plugs.autoPlugPost) {
+      const threshold = Number(plugs.autoPlugPost.likesAmount ?? 0);
+      if (likeCount >= threshold) {
+        const text = stripHtmlValidation(
+          'normal',
+          plugs.autoPlugPost.post,
+          true
+        );
+        if (text) {
+          try {
+            await timer(1000);
+            await client.v2.tweet({
+              text,
+              reply: { in_reply_to_tweet_id: tweetId },
+            });
+          } catch (err) {
+            console.error('X WEBHOOK AUTO PLUG REPLY:', err);
+          }
+        }
+      }
+    }
+
+    if (
+      plugs.autoThreadReply &&
+      postSettings?.auto_thread_reply_enabled !== false
+    ) {
+      const threshold = Number(
+        postSettings?.auto_thread_reply_likes ??
+          plugs.autoThreadReply.likesAmount ??
+          0
+      );
+      if (likeCount < threshold) {
+        return;
+      }
+      const doneMarker = 'thread_posted_v1';
+      if (plugContext?.loadDmdUserIds) {
+        const existing = await plugContext.loadDmdUserIds([doneMarker]);
+        if (existing.has(doneMarker)) {
+          return;
+        }
+      }
+      const rawThreadInput =
+        typeof postSettings?.auto_thread_reply_text === 'string' &&
+        postSettings.auto_thread_reply_text.trim() !== ''
+          ? postSettings.auto_thread_reply_text
+          : plugs.autoThreadReply.thread || '';
+      const rawText = stripHtmlValidation('normal', rawThreadInput, true);
+      const parts = rawText
+        .split(/\n\s*\n\s*\n+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (parts.length === 0) {
+        return;
+      }
+      let parentTweetId = tweetId;
+      try {
+        for (const part of parts) {
+          await timer(2000);
+          const created = await client.v2.tweet({
+            text: part,
+            reply: { in_reply_to_tweet_id: parentTweetId },
+          });
+          parentTweetId = created?.data?.id || parentTweetId;
+        }
+        if (plugContext?.saveDmdUserIds) {
+          await plugContext.saveDmdUserIds([doneMarker]);
+        }
+      } catch (err) {
+        console.error('X WEBHOOK AUTO THREAD REPLY:', err);
+      }
+    }
+  }
+
   mentionFormat(idOrHandle: string, name: string) {
     return `@${idOrHandle}`;
+  }
+
+  private clientForIntegration(integration: Integration): TwitterApi {
+    const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+    return this.buildTwitterApi({
+      appKey: process.env.X_API_KEY!,
+      appSecret: process.env.X_API_SECRET!,
+      accessToken: accessTokenSplit,
+      accessSecret: accessSecretSplit,
+    });
+  }
+
+  /** Profile automations: paginated follower list for any X user id. */
+  async listFollowersPage(
+    integration: Integration,
+    subjectUserId: string,
+    paginationToken?: string
+  ): Promise<{
+    subject: {
+      id: string;
+      name: string;
+      username: string;
+      picture?: string;
+    };
+    users: Array<{
+      id: string;
+      name: string;
+      username: string;
+      picture?: string;
+    }>;
+    nextToken?: string;
+  }> {
+    const client = this.clientForIntegration(integration);
+    const subjectId = String(subjectUserId || integration.internalId);
+
+    let subjectMeta = {
+      id: subjectId,
+      name: integration.name || '',
+      username: integration.profile || '',
+      picture: integration.picture || undefined,
+    };
+
+    if (subjectId !== integration.internalId) {
+      try {
+        const lookup = await client.v2.user(subjectId, {
+          'user.fields': ['profile_image_url', 'name', 'username'],
+        });
+        const u = lookup?.data;
+        if (u?.id) {
+          subjectMeta = {
+            id: String(u.id),
+            name: u.name || subjectMeta.name,
+            username: u.username || subjectMeta.username,
+            picture: u.profile_image_url || subjectMeta.picture,
+          };
+        }
+      } catch (err) {
+        console.warn('X listFollowersPage subject lookup:', err);
+      }
+    }
+
+    const res: any = await client.v2.followers(subjectId, {
+      max_results: 100,
+      ...(paginationToken ? { pagination_token: paginationToken } : {}),
+      'user.fields': ['profile_image_url', 'name', 'username'],
+    });
+
+    const users = (res?.data || []).map((u: any) => ({
+      id: String(u.id),
+      name: u.name || u.username || String(u.id),
+      username: u.username || '',
+      picture: u.profile_image_url || undefined,
+    }));
+
+    return {
+      subject: subjectMeta,
+      users,
+      nextToken: res?.meta?.next_token || undefined,
+    };
+  }
+
+  /** Follow target accounts as the connected integration (rate-limited batch). */
+  async followUsers(
+    integration: Integration,
+    targetUserIds: string[]
+  ): Promise<{
+    succeeded: string[];
+    failed: Array<{ id: string; error: string }>;
+  }> {
+    const ownerId = integration.internalId;
+    if (!ownerId) {
+      return { succeeded: [], failed: [{ id: '', error: 'Missing channel id' }] };
+    }
+
+    const client = this.clientForIntegration(integration);
+    const unique = [
+      ...new Set(
+        (targetUserIds || [])
+          .map((id) => String(id).trim())
+          .filter((id) => id && id !== ownerId)
+      ),
+    ].slice(0, 25);
+
+    const succeeded: string[] = [];
+    const failed: Array<{ id: string; error: string }> = [];
+
+    for (const targetId of unique) {
+      try {
+        await timer(1200);
+        await client.v2.follow(ownerId, targetId);
+        succeeded.push(targetId);
+      } catch (err: any) {
+        const msg =
+          err?.data?.detail ||
+          err?.data?.title ||
+          err?.message ||
+          'Follow failed';
+        failed.push({ id: targetId, error: String(msg) });
+      }
+    }
+
+    return { succeeded, failed };
   }
 }

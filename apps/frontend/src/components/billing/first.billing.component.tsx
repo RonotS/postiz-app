@@ -12,6 +12,7 @@ import NotificationComponent from '@gitroom/frontend/components/notifications/no
 import dynamic from 'next/dynamic';
 import { LogoTextComponent } from '@gitroom/frontend/components/ui/logo-text.component';
 import { pricing } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/pricing';
+import { usePlanPrices } from '@gitroom/frontend/components/billing/use-plan-prices';
 import { capitalize } from 'lodash';
 import clsx from 'clsx';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
@@ -28,6 +29,7 @@ import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import useCookie from 'react-use-cookie';
 import { LogoutComponent } from '@gitroom/frontend/components/layout/logout.component';
 import { DeveloperIconComponent } from '@gitroom/frontend/components/developer/developer.icon.component';
+import Link from 'next/link';
 
 const ModeComponent = dynamic(
   () => import('@gitroom/frontend/components/layout/mode.component'),
@@ -58,6 +60,8 @@ export const FirstBillingComponent = () => {
   const t = useT();
   const [datafast_visitor_id] = useCookie('datafast_visitor_id', '');
   const [datafast_session_id] = useCookie('datafast_session_id', '');
+  const [payTodayNoTrial, setPayTodayNoTrial] = useState(false);
+  const { effectivePricing: planPricing } = usePlanPrices();
 
   useEffect(() => {
     setStripe(loadStripe(stripeClient));
@@ -70,6 +74,7 @@ export const FirstBillingComponent = () => {
         body: JSON.stringify({
           billing: tier,
           period: period,
+          ...(payTodayNoTrial && user?.allowTrial ? { skipTrial: true } : {}),
           ...(datafast_visitor_id && datafast_session_id
             ? { datafast_visitor_id, datafast_session_id }
             : {}),
@@ -77,16 +82,16 @@ export const FirstBillingComponent = () => {
         }),
       })
     ).json();
-  }, [tier, period]);
+  }, [tier, period, payTodayNoTrial, user?.allowTrial, dub, datafast_visitor_id, datafast_session_id]);
 
   const showYouTube = () => {
     modals.openModal({
-      title: 'Grow Fast With Postiz (Play the video)',
+      title: 'Grow Fast With TweetMax (Play the video)',
       children: (
         <iframe
           className="h-full aspect-video min-w-[800px]"
           src="https://www.youtube.com/embed/BdsCVvEYgHU?si=vvhaZJ8I5oXXvVJS?autoplay=1"
-          title="Postiz Tutorial"
+          title="TweetMax Tutorial"
           allow="autoplay"
           allowFullScreen
         />
@@ -95,7 +100,7 @@ export const FirstBillingComponent = () => {
   };
 
   const { data, isLoading } = useSWR(
-    `/billing-${tier}-${period}`,
+    `/billing-embedded-${tier}-${period}-${payTodayNoTrial ? '1' : '0'}`,
     loadCheckout,
     {
       revalidateOnFocus: false,
@@ -107,8 +112,8 @@ export const FirstBillingComponent = () => {
   );
 
   const price = useMemo(
-    () => Object.entries(pricing).filter(([key, value]) => key !== 'FREE'),
-    []
+    () => Object.entries(planPricing).filter(([key]) => key !== 'FREE'),
+    [planPricing]
   );
 
   const JoinOver = () => {
@@ -122,7 +127,7 @@ export const FirstBillingComponent = () => {
           {t('billing_who_use', 'who use')}{' '}
           {t(
             'billing_postiz_grow_social',
-            'Postiz To Grow Their Social Presence'
+            'TweetMax To Grow Their Social Presence'
           )}
         </div>
 
@@ -137,7 +142,7 @@ export const FirstBillingComponent = () => {
                 alt="YouTube"
               />
             </div>
-            <div>See the power of Postiz (click here)</div>
+            <div>See the power of TweetMax (click here)</div>
           </div>
         </div>
 
@@ -205,6 +210,17 @@ export const FirstBillingComponent = () => {
           <div className="block tablet:hidden">
             <JoinOver />
           </div>
+          {user?.allowTrial && (
+            <label className="mb-[16px] flex cursor-pointer items-center gap-[10px] text-[14px] text-customColor18 select-none">
+              <input
+                type="checkbox"
+                checked={payTodayNoTrial}
+                onChange={(e) => setPayTodayNoTrial(e.target.checked)}
+                className="h-[16px] w-[16px] accent-[#618DFF]"
+              />
+              <span>Pay today — skip the 7-day free trial</span>
+            </label>
+          )}
           {!isLoading && data && stripe ? (
             <EmbeddedBilling
               stripe={stripe}
@@ -218,10 +234,20 @@ export const FirstBillingComponent = () => {
         </div>
         <div className="flex flex-col ps-[40px] tablet:!ps-[0] border-l border-newColColor py-[40px] mobile:!pt-[24px] tablet:border-none tablet:pb-0">
           <div className="top-[20px] sticky">
-            <div className="hidden tablet:block">
-              <JoinOver />
-            </div>
-            <div className="flex mb-[24px] mobile:flex-col">
+          <div className="hidden tablet:block">
+            <JoinOver />
+          </div>
+          <div className="text-[14px] text-customColor18 mt-[12px] max-w-[520px]">
+            <Link
+              href="/billing"
+              className="text-[#618DFF] underline underline-offset-2 hover:text-textColor"
+            >
+              Open plans page (Stripe Checkout)
+            </Link>{' '}
+            — same account; use this to test the hosted payment page or pay
+            immediately without the embedded flow.
+          </div>
+          <div className="flex mb-[24px] mobile:flex-col">
               <div className="flex-1 text-[24px] font-[700]">
                 {t('billing_choose_plan', 'Choose a Plan')}
               </div>
@@ -312,8 +338,9 @@ type FeatureItem = {
 
 export const BillingFeatures: FC<{ tier: string }> = ({ tier }) => {
   const t = useT();
+  const { effectivePricing: planPricing } = usePlanPrices();
   const features = useMemo(() => {
-    const currentPricing = pricing[tier];
+    const currentPricing = planPricing[tier] ?? pricing[tier];
     const channelsOr = currentPricing.channel;
     const list: FeatureItem[] = [];
 
@@ -368,7 +395,7 @@ export const BillingFeatures: FC<{ tier: string }> = ({ tier }) => {
       });
     }
     return list;
-  }, [tier]);
+  }, [tier, planPricing]);
 
   const renderFeature = (feature: FeatureItem) => {
     const translatedText = t(feature.key, feature.defaultValue);

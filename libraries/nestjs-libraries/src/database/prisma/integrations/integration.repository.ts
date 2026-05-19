@@ -324,7 +324,55 @@ export class IntegrationRepository {
       });
     }
 
+    if (type === 'social' && internalId) {
+      await this.relinkOrphanedPostsToIntegration(org, internalId, upsert.id);
+    }
+
     return upsert;
+  }
+
+  /**
+   * After reconnecting the same social account, posts may still point at an older
+   * integration row (e.g. soft-deleted channel or mangled internalId). Move them
+   * to the active integration so calendar/queue show them again.
+   */
+  async relinkOrphanedPostsToIntegration(
+    org: string,
+    internalId: string,
+    targetIntegrationId: string
+  ) {
+    const siblingIntegrations = await this._integration.model.integration.findMany(
+      {
+        where: {
+          organizationId: org,
+          OR: [
+            { internalId },
+            { rootInternalId: internalId },
+            { internalId: { startsWith: `deleted_${internalId}_` } },
+          ],
+        },
+        select: { id: true },
+      }
+    );
+
+    const sourceIds = siblingIntegrations
+      .map((row) => row.id)
+      .filter((id) => id !== targetIntegrationId);
+
+    if (!sourceIds.length) {
+      return;
+    }
+
+    await this._posts.model.post.updateMany({
+      where: {
+        organizationId: org,
+        integrationId: { in: sourceIds },
+        deletedAt: null,
+      },
+      data: {
+        integrationId: targetIntegrationId,
+      },
+    });
   }
 
   needsToBeRefreshed() {
@@ -605,6 +653,32 @@ export class IntegrationRepository {
         id: true,
         settings: true,
         integrationId: true,
+      },
+    });
+  }
+
+  findActiveXIntegrationsByInternalId(internalId: string) {
+    return this._integration.model.integration.findMany({
+      where: {
+        internalId: String(internalId),
+        providerIdentifier: 'x',
+        deletedAt: null,
+        disabled: false,
+      },
+    });
+  }
+
+  getActivePlugByFunction(
+    organizationId: string,
+    integrationId: string,
+    plugFunction: string
+  ) {
+    return this._plugs.model.plugs.findFirst({
+      where: {
+        organizationId,
+        integrationId,
+        plugFunction,
+        activated: true,
       },
     });
   }

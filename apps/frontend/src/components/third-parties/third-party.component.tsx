@@ -11,6 +11,7 @@ import { useToaster } from '@gitroom/react/toaster/toaster';
 import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import useCookie from 'react-use-cookie';
 import { SVGLine } from '@gitroom/frontend/components/launches/launches.component';
+import { GrayedOutContent } from '@gitroom/frontend/components/layout/grayed-out-content';
 
 export const ThirdPartyMenuComponent: FC<{
   reload: () => void;
@@ -113,7 +114,7 @@ export const ThirdPartyComponent = () => {
   const [collapseMenu, setCollapseMenu] = useCookie('collapseMenu', '0');
 
   return (
-    <>
+    <GrayedOutContent className="flex flex-1 min-h-0 min-w-0">
       <div
         className={clsx(
           'bg-newBgColorInner p-[20px] hidden md:flex flex-col gap-[15px] transition-all flex-shrink-0',
@@ -203,6 +204,6 @@ export const ThirdPartyComponent = () => {
       <div className="bg-newBgColorInner flex-1 flex-col flex p-[10px] md:p-[20px] gap-[12px] min-w-0 overflow-x-hidden">
         <ThirdPartyListComponent reload={mutate} />
       </div>
-    </>
+    </GrayedOutContent>
   );
 };

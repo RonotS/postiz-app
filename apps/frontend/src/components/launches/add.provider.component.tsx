@@ -24,30 +24,57 @@ const resolver = classValidatorResolver(ApiKeyDto);
 export const useAddProvider = (update?: () => void, invite?: boolean) => {
   const modal = useModals();
   const fetch = useFetch();
+  const toast = useToaster();
   return useCallback(async () => {
-    const data = await (await fetch('/integrations')).json();
-    modal.openModal({
-      title: 'Add Channel',
-      withCloseButton: true,
-      children: (
-        <AddProviderComponent invite={!!invite} update={update} {...data} />
-      ),
-    });
-  }, []);
+    try {
+      const res = await fetch('/integrations');
+      if (!res.ok) {
+        const detail = await res.text().catch(() => '');
+        toast.show(
+          `Could not load channels (${res.status}). ${detail.slice(0, 200) || 'Check that the API is running and the database is up.'}`,
+          'warning'
+        );
+        return;
+      }
+      const data = await res.json();
+      modal.openModal({
+        title: 'Add Channel',
+        withCloseButton: true,
+        children: (
+          <AddProviderComponent invite={!!invite} update={update} {...data} />
+        ),
+      });
+    } catch {
+      toast.show(
+        'Could not reach the API (network error). Confirm NEXT_PUBLIC_BACKEND_URL, that pnpm run dev:backend is running, and Postgres is reachable (dev compose maps Postgres to host port 5433 — see DATABASE_URL).',
+        'warning'
+      );
+    }
+  }, [fetch, invite, modal, toast, update]);
 };
 export const AddProviderButton: FC<{
   update?: () => void;
+  disabled?: boolean;
 }> = (props) => {
-  const { update } = props;
+  const { update, disabled = false } = props;
   const add = useAddProvider(update);
   const invite = useAddProvider(update, true);
   const t = useT();
 
+  const disabledClass =
+    'opacity-40 grayscale cursor-not-allowed pointer-events-none';
+
   return (
     <div className="flex group-[.sidebar]:block gap-[8px]">
       <button
-        className="flex-1 group-[.sidebar]:w-[100%] group-[.sidebar]:flex-none text-btnText bg-btnSimple h-[44px] pt-[12px] pb-[14px] ps-[16px] pe-[20px] justify-center items-center flex rounded-[8px] gap-[8px]"
-        onClick={add}
+        type="button"
+        disabled={disabled}
+        aria-disabled={disabled}
+        className={clsx(
+          'flex-1 group-[.sidebar]:w-[100%] group-[.sidebar]:flex-none text-btnText bg-btnSimple h-[44px] pt-[12px] pb-[14px] ps-[16px] pe-[20px] justify-center items-center flex rounded-[8px] gap-[8px]',
+          disabled && disabledClass
+        )}
+        onClick={disabled ? undefined : add}
       >
         <div>
           <svg
@@ -71,13 +98,19 @@ export const AddProviderButton: FC<{
         </div>
       </button>
       <button
-        onClick={invite}
+        type="button"
+        disabled={disabled}
+        aria-disabled={disabled}
+        onClick={disabled ? undefined : invite}
         data-tooltip-id="tooltip"
         data-tooltip-content={t(
           'invite_link',
           'Send Invite Link to a customer to add channel'
         )}
-        className="group-[.sidebar]:hidden min-h-[44px] min-w-[44px] bg-btnSimple justify-center items-center flex rounded-[8px] cursor-pointer"
+        className={clsx(
+          'group-[.sidebar]:hidden min-h-[44px] min-w-[44px] bg-btnSimple justify-center items-center flex rounded-[8px] cursor-pointer',
+          disabled && disabledClass
+        )}
       >
         <svg
           xmlns="http://www.w3.org/2000/svg"

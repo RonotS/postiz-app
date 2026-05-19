@@ -7,6 +7,7 @@ import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/in
 import dayjs from 'dayjs';
 import { WebhooksService } from '@gitroom/nestjs-libraries/database/prisma/webhooks/webhooks.service';
 import { AuthorizationActions, Sections } from './permission.exception.class';
+import { isStripeBillingEnabled } from '@gitroom/helpers/stripe/stripe.billing.env';
 
 export type AppAbility = Ability<[AuthorizationActions, Sections]>;
 
@@ -24,7 +25,7 @@ export class PermissionsService {
 
     const tier =
       subscription?.subscriptionTier ||
-      (!process.env.STRIPE_PUBLISHABLE_KEY ? 'PRO' : 'FREE');
+      (!isStripeBillingEnabled() ? 'PRO' : 'FREE');
 
     const { channel, ...all } = pricing[tier];
     return {
@@ -41,7 +42,10 @@ export class PermissionsService {
     created_at: Date,
     permission: 'USER' | 'ADMIN' | 'SUPERADMIN',
     requestedPermission: Array<[AuthorizationActions, Sections]>,
-    refreshChannelId?: string
+    refreshChannelId?: string,
+    /** Platform-level super admin (`User.isSuperAdmin`) — bypasses ALL limits
+     *  regardless of org subscription tier or post counts. */
+    isPlatformSuperAdmin = false
   ) {
     const { can, build } = new AbilityBuilder<
       Ability<[AuthorizationActions, Sections]>
@@ -49,7 +53,8 @@ export class PermissionsService {
 
     if (
       requestedPermission.length === 0 ||
-      !process.env.STRIPE_PUBLISHABLE_KEY
+      !isStripeBillingEnabled() ||
+      isPlatformSuperAdmin
     ) {
       for (const [action, section] of requestedPermission) {
         can(action, section);

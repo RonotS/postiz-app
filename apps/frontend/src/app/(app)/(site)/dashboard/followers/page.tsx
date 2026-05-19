@@ -1,54 +1,65 @@
 'use client';
 
-import { useMemo } from 'react';
-import useSWR from 'swr';
-import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { FollowersPanel } from '@gitroom/frontend/components/dashboard/followers.panel';
-
-type IntegrationItem = {
-  id: string;
-  name: string;
-  identifier: string;
-  disabled?: boolean;
-};
+import { XFollowersExplorerPanel } from '@gitroom/frontend/components/dashboard/x-followers-explorer.panel';
+import {
+  ProfileAutomationsHero,
+  ProfileAutomationsPageShell,
+  ProfileAutomationsSection,
+} from '@gitroom/frontend/components/dashboard/profile-automations.ui';
+import {
+  ProfileAutomationsIcon,
+  ProfileAutomationsSectionIcon,
+} from '@gitroom/frontend/components/dashboard/profile-automations.icons';
 
 export default function DashboardFollowersPage() {
   const t = useT();
-  const fetch = useFetch();
-  const { data: integrations = [] } = useSWR(
-    '/integrations/list',
-    async () => {
-      const res = await fetch('/integrations/list');
-      if (!res.ok) return [] as IntegrationItem[];
-      const data = await res.json();
-      return (data.integrations || []) as IntegrationItem[];
-    },
-    { revalidateOnFocus: false, revalidateIfStale: false }
-  );
-
-  const xIntegration = useMemo(
-    () =>
-      integrations.find(
-        (i) => !i.disabled && (i.identifier === 'x' || i.identifier === 'twitter')
-      ),
-    [integrations]
-  );
 
   return (
-    <div className="flex flex-1 min-h-0 bg-newBgColor text-newTextColor flex-col w-full p-4 sm:p-6 lg:p-8 overflow-y-auto custom-scrollbar">
-      <header className="mb-6">
-        <h1 className="text-2xl font-bold text-newTextColor mb-2">
-          {t('profile_automations', 'Profile Automations')}
-        </h1>
-        <p className="text-newTableText text-sm max-w-[72ch] leading-relaxed">
-          {t(
-            'profile_automations_page_intro',
-            'Automatically welcome new followers on X with a direct message. Your queue and published posts stay on Home.'
+    <ProfileAutomationsPageShell>
+      <ProfileAutomationsHero
+        title={t('profile_automations', 'Profile automations')}
+        description={t(
+          'profile_automations_page_intro_v2',
+          'Browse followers, explore followers-of-followers, and follow accounts from your connected X profiles. Auto-DM welcomes new followers below.'
+        )}
+        icon={<ProfileAutomationsIcon size={24} />}
+      />
+
+      <div className="w-full min-w-0 grid grid-cols-1 gap-8 xl:grid-cols-12 xl:gap-8 2xl:gap-10">
+        <ProfileAutomationsSection
+          className="xl:col-span-7 2xl:col-span-8"
+          title={t('follower_explorer', 'Follower explorer')}
+          subtitle={t(
+            'follower_explorer_section_sub',
+            'Drill into networks and follow accounts in bulk from the profile you select.'
           )}
-        </p>
-      </header>
-      <FollowersPanel xIntegrationId={xIntegration?.id} />
-    </div>
+          icon={
+            <ProfileAutomationsSectionIcon>
+              <ProfileAutomationsIcon />
+            </ProfileAutomationsSectionIcon>
+          }
+        >
+          <XFollowersExplorerPanel />
+        </ProfileAutomationsSection>
+
+        <ProfileAutomationsSection
+          className="xl:col-span-5 2xl:col-span-4"
+          title={t('auto_dm_new_followers', 'Auto DM new followers')}
+          subtitle={t(
+            'auto_dm_section_sub',
+            'Send an automatic welcome message when someone new follows you.'
+          )}
+          icon={
+            <ProfileAutomationsSectionIcon>
+              <ProfileAutomationsIcon />
+            </ProfileAutomationsSectionIcon>
+          }
+        >
+          <FollowersPanel />
+        </ProfileAutomationsSection>
+      </div>
+    </ProfileAutomationsPageShell>
   );
 }

@@ -19,6 +19,43 @@ export interface PricingInnerInterface {
 export interface PricingInterface {
   [key: string]: PricingInnerInterface;
 }
+
+/**
+ * Optional micro-pricing for Stripe tests (set on server + client env).
+ * Use the same value in `NEXT_PUBLIC_STRIPE_PLAN_PRICE_OVERRIDE_USD` (frontend)
+ * and `STRIPE_PLAN_PRICE_OVERRIDE_USD` (backend) so UI and Stripe prices match.
+ * Stripe USD card payments require at least $0.50 per charge — checkout will
+ * error below that unless you use test mode / test cards per Stripe rules.
+ */
+function readUsdPlanOverride(): number | null {
+  try {
+    const raw = (
+      (typeof process !== 'undefined' &&
+        (process.env.NEXT_PUBLIC_STRIPE_PLAN_PRICE_OVERRIDE_USD ||
+          process.env.STRIPE_PLAN_PRICE_OVERRIDE_USD)) ||
+      ''
+    )
+      .toString()
+      .trim();
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+const _usdPlanOverride = readUsdPlanOverride();
+
+function withUsdOverride(month: number, year: number) {
+  if (_usdPlanOverride == null) {
+    return { month_price: month, year_price: year };
+  }
+  const m = _usdPlanOverride;
+  const y = Math.max(1, Math.round(m * 100 * 12) / 100);
+  return { month_price: m, year_price: y };
+}
+
 export const pricing: PricingInterface = {
   FREE: {
     current: 'FREE',
@@ -40,8 +77,10 @@ export const pricing: PricingInterface = {
   },
   STANDARD: {
     current: 'STANDARD',
-    month_price: 29,
-    year_price: 278,
+    ...(() => {
+      const { month_price, year_price } = withUsdOverride(29, 278);
+      return { month_price, year_price };
+    })(),
     channel: 5,
     posts_per_month: 400,
     image_generation_count: 20,
@@ -76,8 +115,10 @@ export const pricing: PricingInterface = {
   },
   PRO: {
     current: 'PRO',
-    month_price: 49,
-    year_price: 470,
+    ...(() => {
+      const { month_price, year_price } = withUsdOverride(49, 470);
+      return { month_price, year_price };
+    })(),
     channel: 30,
     posts_per_month: 1000000,
     image_generation_count: 300,

@@ -8,7 +8,7 @@ import {
   AbilityPolicy,
   CHECK_POLICIES_KEY,
 } from '@gitroom/backend/services/auth/permissions/permissions.ability';
-import { Organization } from '@prisma/client';
+import { Organization, User } from '@prisma/client';
 import { Request } from 'express';
 import { SubscriptionException } from './permission.exception.class';
 
@@ -42,12 +42,21 @@ export class PoliciesGuard implements CanActivate {
 
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-expect-error
-    const { org }: { org: Organization } = request;
+    const { org, user }: { org: Organization; user?: User } = request;
 
     const refreshChannelId = typeof request.query?.refresh === 'string' ? request.query.refresh : undefined;
 
-    // @ts-ignore
-    const ability = await this._authorizationService.check(org.id, org.createdAt, org.users[0].role, policyHandlers, refreshChannelId);
+    const ability = await this._authorizationService.check(
+      org.id,
+      org.createdAt,
+      // @ts-ignore - org.users[0].role attached by auth middleware
+      org.users[0].role,
+      policyHandlers,
+      refreshChannelId,
+      // Platform super admin (User.isSuperAdmin) bypasses all subscription /
+      // post-limit checks regardless of which org they're acting in.
+      !!user?.isSuperAdmin
+    );
 
     const item = policyHandlers.find(
       (handler) => !this.execPolicyHandler(handler, ability)

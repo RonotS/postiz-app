@@ -23,6 +23,12 @@ import {
 import { HtmlComponent } from '@gitroom/frontend/components/layout/html.component';
 import Script from 'next/script';
 import { ChangeDirClient } from '@gitroom/frontend/components/new-layout/change.dir.client';
+import { themeFaviconHref } from '@gitroom/frontend/components/layout/theme-favicon.shared';
+import { ThemeFavicon } from '@gitroom/frontend/components/layout/theme-favicon';
+import {
+  getStripePublishableKey,
+  isStripeBillingEnabled,
+} from '@gitroom/helpers/stripe/stripe.billing.env';
 
 const jakartaSans = Plus_Jakarta_Sans({
   weight: ['600', '500'],
@@ -33,13 +39,40 @@ const jakartaSans = Plus_Jakarta_Sans({
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const cookieStore = await cookies();
   const language = cookieStore.get(cookieName)?.value || fallbackLng;
-  const Plausible = !!process.env.STRIPE_PUBLISHABLE_KEY
-    ? PlausibleProvider
-    : Fragment;
+  const mode = cookieStore.get('mode')?.value || 'dark';
+  const stripePk = getStripePublishableKey() ?? '';
+  const billingOn = isStripeBillingEnabled();
+  const Plausible = billingOn ? PlausibleProvider : Fragment;
   return (
     <html>
       <head>
-        <link rel="icon" href="/favicon.ico" sizes="any" />
+        <link
+          data-theme-favicon
+          rel="icon"
+          href={themeFaviconHref(mode)}
+          type="image/png"
+          sizes="32x32"
+        />
+        <link
+          data-theme-favicon
+          rel="icon"
+          href={themeFaviconHref(mode)}
+          type="image/png"
+          sizes="96x96"
+        />
+        <link
+          data-theme-favicon
+          rel="icon"
+          href={themeFaviconHref(mode)}
+          type="image/png"
+          sizes="192x192"
+        />
+        <link
+          id="theme-apple-touch"
+          rel="apple-touch-icon"
+          href={themeFaviconHref(mode)}
+          sizes="180x180"
+        />
         {!!process.env.DATAFAST_WEBSITE_ID && (
           <Script
             data-website-id={process.env.DATAFAST_WEBSITE_ID}
@@ -53,6 +86,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
       <body
         className={clsx(jakartaSans.className, 'dark text-primary !bg-primary')}
       >
+        <ThemeFavicon />
         <VariableContextComponent
           storageProvider={
             process.env.STORAGE_PROVIDER! as 'local' | 'cloudflare'
@@ -60,8 +94,8 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           environment={process.env.NODE_ENV!}
           backendUrl={process.env.NEXT_PUBLIC_BACKEND_URL!}
           plontoKey={process.env.NEXT_PUBLIC_POLOTNO!}
-          stripeClient={process.env.STRIPE_PUBLISHABLE_KEY!}
-          billingEnabled={!!process.env.STRIPE_PUBLISHABLE_KEY}
+          stripeClient={stripePk}
+          billingEnabled={billingOn}
           discordUrl={process.env.NEXT_PUBLIC_DISCORD_SUPPORT!}
           frontEndUrl={process.env.FRONTEND_URL!}
           isGeneral={!!process.env.IS_GENERAL}
@@ -72,7 +106,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           cloudflareUrl={process.env.CLOUDFLARE_BUCKET_URL || ''}
           mainUrl={process.env.MAIN_URL || ''}
           mcpUrl={process.env.MCP_URL}
-          dub={!!process.env.STRIPE_PUBLISHABLE_KEY}
+          dub={billingOn}
           facebookPixel={process.env.NEXT_PUBLIC_FACEBOOK_PIXEL!}
           telegramBotName={process.env.TELEGRAM_BOT_NAME!}
           neynarClientId={process.env.NEYNAR_CLIENT_ID!}

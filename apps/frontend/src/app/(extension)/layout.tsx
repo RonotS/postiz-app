@@ -4,10 +4,14 @@ import 'react-tooltip/dist/react-tooltip.css';
 import '@copilotkit/react-ui/styles.css';
 import LayoutContext from '@gitroom/frontend/components/layout/layout.context';
 import { ReactNode } from 'react';
+import { cookies } from 'next/headers';
+import { themeFaviconHref } from '@gitroom/frontend/components/layout/theme-favicon.shared';
+import { ThemeFavicon } from '@gitroom/frontend/components/layout/theme-favicon';
 import { Plus_Jakarta_Sans } from 'next/font/google';
 import clsx from 'clsx';
 import { VariableContextComponent } from '@gitroom/react/helpers/variable.context';
 import UtmSaver from '@gitroom/helpers/utils/utm.saver';
+import { isStripeBillingEnabled } from '@gitroom/helpers/stripe/stripe.billing.env';
 
 const jakartaSans = Plus_Jakarta_Sans({
   weight: ['600', '500'],
@@ -16,14 +20,44 @@ const jakartaSans = Plus_Jakarta_Sans({
 });
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
+  const cookieStore = await cookies();
+  const mode = cookieStore.get('mode')?.value || 'dark';
+  const billingOn = isStripeBillingEnabled();
   return (
     <html>
       <head>
-        <link rel="icon" href="/favicon.ico" sizes="any" />
+        <link
+          data-theme-favicon
+          rel="icon"
+          href={themeFaviconHref(mode)}
+          type="image/png"
+          sizes="32x32"
+        />
+        <link
+          data-theme-favicon
+          rel="icon"
+          href={themeFaviconHref(mode)}
+          type="image/png"
+          sizes="96x96"
+        />
+        <link
+          data-theme-favicon
+          rel="icon"
+          href={themeFaviconHref(mode)}
+          type="image/png"
+          sizes="192x192"
+        />
+        <link
+          id="theme-apple-touch"
+          rel="apple-touch-icon"
+          href={themeFaviconHref(mode)}
+          sizes="180x180"
+        />
       </head>
       <body
         className={clsx(jakartaSans.className, 'dark text-primary !bg-primary')}
       >
+        <ThemeFavicon />
         <VariableContextComponent
           language="en"
           storageProvider={
@@ -33,7 +67,7 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
           environment={process.env.NODE_ENV!}
           backendUrl={process.env.NEXT_PUBLIC_BACKEND_URL!}
           plontoKey={process.env.NEXT_PUBLIC_POLOTNO!}
-          billingEnabled={!!process.env.STRIPE_PUBLISHABLE_KEY}
+          billingEnabled={billingOn}
           discordUrl={process.env.NEXT_PUBLIC_DISCORD_SUPPORT!}
           frontEndUrl={process.env.FRONTEND_URL!}
           isGeneral={!!process.env.IS_GENERAL}

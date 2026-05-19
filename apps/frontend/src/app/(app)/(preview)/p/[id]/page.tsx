@@ -14,7 +14,7 @@ import { RenderPreviewDateClient } from '@gitroom/frontend/components/preview/re
 
 dayjs.extend(utc);
 export const metadata: Metadata = {
-  title: `${isGeneralServerSide() ? 'PostX AI' : 'Gitroom'} Preview`,
+  title: `${isGeneralServerSide() ? 'TweetMax' : 'Gitroom'} Preview`,
   description: '',
 };
 export default async function Auth(

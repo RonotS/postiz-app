@@ -89,8 +89,10 @@ services:
       # === Payment / Stripe Settings
       FEE_AMOUNT: 0.05
       STRIPE_PUBLISHABLE_KEY: ''
+      # NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY: ''  # optional alias of STRIPE_PUBLISHABLE_KEY
       STRIPE_SECRET_KEY: ''
       STRIPE_SIGNING_KEY: ''
+      # STRIPE_WEBHOOK_SECRET: ''  # optional alias of STRIPE_SIGNING_KEY
       STRIPE_SIGNING_KEY_CONNECT: ''
 
       # === Developer Settings

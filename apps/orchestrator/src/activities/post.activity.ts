@@ -24,6 +24,8 @@ import {
 } from '@gitroom/nestjs-libraries/temporal/temporal.search.attribute';
 import { SubscriptionService } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscription.service';
 import { TrackActivities } from '@gitroom/orchestrator/activities/activity.heartbeat';
+import { isStripeBillingEnabled } from '@gitroom/helpers/stripe/stripe.billing.env';
+import { UsersService } from '@gitroom/nestjs-libraries/database/prisma/users/users.service';
 
 @Injectable()
 @Activity()
@@ -37,7 +39,8 @@ export class PostActivity {
     private _refreshIntegrationService: RefreshIntegrationService,
     private _webhookService: WebhooksService,
     private _temporalService: TemporalService,
-    private _subscriptionService: SubscriptionService
+    private _subscriptionService: SubscriptionService,
+    private _usersService: UsersService
   ) {}
 
   @ActivityMethod()
@@ -87,10 +90,31 @@ export class PostActivity {
 
   @ActivityMethod()
   async getPostsList(orgId: string, postId: string) {
-    if (process.env.STRIPE_SECRET_KEY) {
+    // Subscription gate: only block when Stripe billing is actually active for
+    // the app (publishable key present + POSTIZ_DISABLE_STRIPE_BILLING not set).
+    // Previously this checked `process.env.STRIPE_SECRET_KEY`, which is set
+    // for *server-side* Stripe operations (e.g. webhook signature verification)
+    // even when public billing is disabled — that caused the workflow to
+    // silently return [] for orgs without a Subscription row, leaving posts
+    // stuck on "Publishing" with no log explaining why.
+    if (isStripeBillingEnabled()) {
       const subscription = await this._subscriptionService.getSubscription(orgId);
       if (!subscription) {
-        return [];
+        // Platform super admin bypass: if any user in this org has the
+        // platform-level isSuperAdmin flag, allow posting without a Stripe
+        // subscription (same policy used by the permissions guard).
+        const hasSuperAdmin = await this._orgHasPlatformSuperAdmin(orgId);
+        if (!hasSuperAdmin) {
+          console.warn(
+            `[getPostsList] orgId=${orgId} postId=${postId} → returning [] because Stripe billing is enabled but this org has no Subscription row, and no platform super admin is in the org. ` +
+            `The workflow will silently exit and the post will stay in QUEUE (UI shows "Publishing"). ` +
+            `Fix: subscribe the org via /billing, set POSTIZ_DISABLE_STRIPE_BILLING=true, or make the user a platform super admin.`
+          );
+          return [];
+        }
+        console.log(
+          `[getPostsList] orgId=${orgId} postId=${postId} → bypassing Stripe subscription gate because the org contains a platform super admin.`
+        );
       }
     }
 
@@ -100,10 +124,31 @@ export class PostActivity {
       orgId
     );
     if (!getPosts || getPosts.length === 0 || getPosts[0].parentPostId) {
+      console.warn(
+        `[getPostsList] orgId=${orgId} postId=${postId} → returning [] because ` +
+        (!getPosts || getPosts.length === 0
+          ? 'no posts were found (post may have been deleted between create and workflow start).'
+          : 'the first post has a parentPostId (this is a comment/child post, not the head of a thread).')
+      );
       return [];
     }
 
     return getPosts;
+  }
+
+  /** Returns true if the given org has at least one user with the
+   *  platform-level `isSuperAdmin` flag set. Used to bypass the Stripe
+   *  subscription gate so platform admins can post on free orgs. */
+  private async _orgHasPlatformSuperAdmin(orgId: string): Promise<boolean> {
+    try {
+      return await this._usersService.orgHasPlatformSuperAdmin(orgId);
+    } catch (err) {
+      console.warn(
+        `[getPostsList] _orgHasPlatformSuperAdmin lookup failed for orgId=${orgId} (treating as false):`,
+        (err as Error)?.message || err
+      );
+      return false;
+    }
   }
 
   @ActivityMethod()

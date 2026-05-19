@@ -52,6 +52,9 @@ Thumbs.db
 **/*.swp
 **/*.swo
 
+# Local runtime data (e.g. admin-edited billing plan prices)
+.data/
+
 # Temporary files
 *.orig
 *.~*~

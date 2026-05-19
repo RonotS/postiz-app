@@ -32,6 +32,7 @@ import {
 } from '@gitroom/backend/services/auth/permissions/permission.exception.class';
 import { uniqBy } from 'lodash';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
+import { XMassFollowDto } from '@gitroom/nestjs-libraries/dtos/integrations/x-mass-follow.dto';
 
 function integrationPictureForClient(
   stored: string | null | undefined
@@ -188,6 +189,45 @@ export class IntegrationsController {
       : { name: '' };
 
     return this._integrationService.updateNameAndUrl(id, name, url);
+  }
+
+  @Get('/:id/x-followers')
+  @CheckPolicies([AuthorizationActions.Read, Sections.CHANNEL])
+  async listXFollowers(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Query('userId') userId?: string,
+    @Query('pagination_token') paginationToken?: string
+  ) {
+    return this._integrationService.listXFollowers(
+      org.id,
+      id,
+      userId,
+      paginationToken
+    );
+  }
+
+  @Get('/:id/x-follow-rate-limit')
+  @CheckPolicies([AuthorizationActions.Read, Sections.CHANNEL])
+  async getXFollowRateLimit(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._integrationService.getXFollowRateLimit(org.id, id);
+  }
+
+  @Post('/:id/x-follow')
+  @CheckPolicies([AuthorizationActions.Update, Sections.CHANNEL])
+  async massFollowXUsers(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: XMassFollowDto
+  ) {
+    return this._integrationService.massFollowXUsers(
+      org.id,
+      id,
+      body.userIds
+    );
   }
 
   @Get('/:id')

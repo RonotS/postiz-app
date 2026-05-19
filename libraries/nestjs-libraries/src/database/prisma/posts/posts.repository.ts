@@ -283,9 +283,13 @@ export class PostsRepository {
       deletedAt: null as Date | null,
       parentPostId: null as string | null,
       intervalInDays: null as number | null,
+      integration: {
+        deletedAt: null,
+      },
       ...(query.customer
         ? {
             integration: {
+              deletedAt: null,
               customerId: query.customer,
             },
           }

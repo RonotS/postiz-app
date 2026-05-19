@@ -105,10 +105,8 @@ export async function proxy(request: NextRequest) {
     );
   }
 
-  // If the url is /auth and the cookie exists, redirect to /
-  if (nextUrl.pathname.startsWith('/auth') && authCookie) {
-    return NextResponse.redirect(new URL(`/${url}`, nextUrl.href));
-  }
+  // Do not redirect logged-in users away from /auth. They may need register/login
+  // (switch account, OAuth ?token=… with an existing session, or local testing).
   if (nextUrl.pathname.startsWith('/auth') && !authCookie) {
     if (org) {
       const redirect = NextResponse.redirect(new URL(`/`, nextUrl.href));

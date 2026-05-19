@@ -12,6 +12,7 @@ import { useToaster } from '@gitroom/react/toaster/toaster';
 import dayjs from 'dayjs';
 import clsx from 'clsx';
 import { pricing } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/pricing';
+import { usePlanPrices } from '@gitroom/frontend/components/billing/use-plan-prices';
 import { FAQComponent } from '@gitroom/frontend/components/billing/faq.component';
 import { useSWRConfig } from 'swr';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
@@ -213,7 +214,7 @@ export const MainBillingComponent: FC<{
   sub?: Subscription;
 }> = (props) => {
   const { sub } = props;
-  const { isGeneral } = useVariables();
+  const { isGeneral, billingEnabled } = useVariables();
   const { mutate } = useSWRConfig();
   const fetch = useFetch();
   const toast = useToaster();
@@ -224,10 +225,12 @@ export const MainBillingComponent: FC<{
   const utm = useUtmUrl();
   const track = useTrack();
   const t = useT();
+  const { effectivePricing: planPricing } = usePlanPrices();
   const queryParams = useSearchParams();
   const [finishTrial, setFinishTrial] = useState(
     !!queryParams.get('finishTrial')
   );
+  const [payTodayNoTrial, setPayTodayNoTrial] = useState(false);
 
   const [subscription, setSubscription] = useState<Subscription | undefined>(
     sub
@@ -298,8 +301,8 @@ export const MainBillingComponent: FC<{
 
         const messages = [];
         if (
-          !pricing[billing].team_members &&
-          pricing[subscription?.subscriptionTier!]?.team_members
+          !planPricing[billing].team_members &&
+          planPricing[subscription?.subscriptionTier!]?.team_members
         ) {
           messages.push(
             `Your team members will be removed from your organization`
@@ -387,6 +390,9 @@ export const MainBillingComponent: FC<{
               period: monthlyOrYearly === 'on' ? 'YEARLY' : 'MONTHLY',
               utm,
               billing,
+              ...(payTodayNoTrial && user?.allowTrial
+                ? { skipTrial: true }
+                : {}),
               ...(dub ? { dub } : {}),
             }),
           })
@@ -394,7 +400,7 @@ export const MainBillingComponent: FC<{
         if (url) {
           await track(TrackEnum.InitiateCheckout, {
             value:
-              pricing[billing][
+              planPricing[billing][
                 monthlyOrYearly === 'on' ? 'year_price' : 'month_price'
               ],
           });
@@ -432,7 +438,7 @@ export const MainBillingComponent: FC<{
         }
         setLoading(false);
       },
-    [monthlyOrYearly, subscription, user, utm]
+    [monthlyOrYearly, subscription, user, utm, payTodayNoTrial, dub]
   );
   if (user?.isLifetime) {
     router.replace('/');
@@ -440,6 +446,31 @@ export const MainBillingComponent: FC<{
   }
   return (
     <div className="flex flex-col gap-[16px]">
+      {billingEnabled && (
+        <div className="rounded-[8px] border border-customColor6 bg-sixth px-[16px] py-[12px] text-[14px] text-customColor18">
+          <div className="font-[600] text-newTextColor mb-[6px]">
+            Stripe checkout (live or test keys from your server)
+          </div>
+          <p className="mb-[8px]">
+            Choose Standard or Pro, then use Purchase / trial. You are redirected
+            to Stripe to pay; webhooks on your server complete the subscription.
+          </p>
+          {user?.allowTrial && (
+            <label className="flex cursor-pointer items-center gap-[10px] select-none">
+              <input
+                type="checkbox"
+                checked={payTodayNoTrial}
+                onChange={(e) => setPayTodayNoTrial(e.target.checked)}
+                className="h-[16px] w-[16px] accent-[#618DFF]"
+              />
+              <span>
+                Pay today — skip the 7-day trial (charges the card immediately on
+                live keys)
+              </span>
+            </label>
+          )}
+        </div>
+      )}
       <div className="flex flex-row">
         <div className="flex-1 text-[20px]">{t('plans', 'Plans')}</div>
         <div className="flex items-center gap-[16px]">
@@ -453,7 +484,7 @@ export const MainBillingComponent: FC<{
 
       {finishTrial && <FinishTrial close={() => setFinishTrial(false)} />}
       <div className="flex gap-[16px] [@media(max-width:1024px)]:flex-col [@media(max-width:1024px)]:text-center">
-        {Object.entries(pricing)
+        {Object.entries(planPricing)
           .filter((f) => !isGeneral || f[0] !== 'FREE')
           .map(([name, values]) => (
             <div

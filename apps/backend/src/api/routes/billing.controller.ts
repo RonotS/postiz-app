@@ -4,6 +4,9 @@ import { StripeService } from '@gitroom/nestjs-libraries/services/stripe.service
 import { GetOrgFromRequest } from '@gitroom/nestjs-libraries/user/org.from.request';
 import { Organization, User } from '@prisma/client';
 import { BillingSubscribeDto } from '@gitroom/nestjs-libraries/dtos/billing/billing.subscribe.dto';
+import { CreateStripePromotionDto } from '@gitroom/nestjs-libraries/dtos/billing/create-stripe-promotion.dto';
+import { UpdateBillingPlanPricesDto } from '@gitroom/nestjs-libraries/dtos/billing/update-billing-plan-prices.dto';
+import { BillingPlanPricingService } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/billing-plan-pricing.service';
 import { ApiTags } from '@nestjs/swagger';
 import { GetUserFromRequest } from '@gitroom/nestjs-libraries/user/user.from.request';
 import { NotificationService } from '@gitroom/nestjs-libraries/database/prisma/notifications/notification.service';
@@ -18,8 +21,14 @@ export class BillingController {
     private _subscriptionService: SubscriptionService,
     private _stripeService: StripeService,
     private _notificationService: NotificationService,
-    private _nowpayments: Nowpayments
+    private _nowpayments: Nowpayments,
+    private _planPricing: BillingPlanPricingService
   ) {}
+
+  @Get('/plan-prices')
+  getPlanPrices() {
+    return this._planPricing.getPublicPrices();
+  }
 
   @Get('/check/:id')
   async checkId(
@@ -75,7 +84,7 @@ export class BillingController {
       org.id,
       user.id,
       body,
-      org.allowTrial
+      org.allowTrial && !body.skipTrial
     );
   }
 
@@ -92,7 +101,7 @@ export class BillingController {
       org.id,
       user.id,
       body,
-      org.allowTrial
+      org.allowTrial && !body.skipTrial
     );
   }
 
@@ -195,6 +204,103 @@ export class BillingController {
       org.id,
       user.id,
       body.subscription
+    );
+  }
+
+  @Get('/stripe-admin/plan-prices')
+  getStripeAdminPlanPrices(@GetUserFromRequest() user: User) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Forbidden', 403);
+    }
+    return this._planPricing.getAdminView();
+  }
+
+  @Post('/stripe-admin/plan-prices')
+  async saveStripeAdminPlanPrices(
+    @GetUserFromRequest() user: User,
+    @Body() body: UpdateBillingPlanPricesDto
+  ) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Forbidden', 403);
+    }
+    const result = await this._planPricing.updateFromAdmin(body);
+    if (!result.ok) {
+      throw new HttpException(result.message, 400);
+    }
+    return result;
+  }
+
+  @Get('/stripe-admin/promotion-codes')
+  async listStripePromotionCodes(@GetUserFromRequest() user: User) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Forbidden', 403);
+    }
+    return this._stripeService.listPromotionCodesForAdmin();
+  }
+
+  @Post('/stripe-admin/promotion-codes')
+  async createStripePromotionCode(
+    @GetUserFromRequest() user: User,
+    @Body() body: CreateStripePromotionDto
+  ) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Forbidden', 403);
+    }
+    return this._stripeService.createPromotionWithCode(body);
+  }
+
+  @Get('/stripe-admin/test/ping')
+  async stripeAdminTestPing(@GetUserFromRequest() user: User) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Forbidden', 403);
+    }
+    return this._stripeService.adminStripeConnectivityPing();
+  }
+
+  @Get('/stripe-admin/test/pricing')
+  async stripeAdminTestPricing(@GetUserFromRequest() user: User) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Forbidden', 403);
+    }
+    return this._stripeService.adminStripePricingDiagnostics();
+  }
+
+  @Post('/stripe-admin/test/checkout-50c')
+  async stripeAdminTestCheckout50c(
+    @GetUserFromRequest() user: User,
+    @Body() body?: { amountCents?: number }
+  ) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Forbidden', 403);
+    }
+    const base =
+      process.env.FRONTEND_URL ||
+      process.env.MAIN_URL ||
+      process.env.NEXT_PUBLIC_BACKEND_URL;
+    if (!base) {
+      throw new HttpException(
+        'Set FRONTEND_URL or MAIN_URL so Checkout can redirect back to /adminisamazing/billing',
+        400
+      );
+    }
+    const origin = base.replace(/\/api\/?$/, '');
+    const raw = body?.amountCents;
+    const amountCents =
+      raw === undefined || raw === null
+        ? undefined
+        : Math.floor(Number(raw));
+    if (
+      amountCents !== undefined &&
+      (!Number.isFinite(amountCents) || amountCents < 1)
+    ) {
+      throw new HttpException(
+        'amountCents must be a positive integer (cents), or omit to use STRIPE_ADMIN_TEST_CHECKOUT_AMOUNT_CENTS / default 50',
+        400
+      );
+    }
+    return this._stripeService.adminStripeTestCheckoutSession(
+      origin,
+      amountCents
     );
   }
 

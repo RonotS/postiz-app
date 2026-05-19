@@ -20,13 +20,29 @@ RUN npm --no-update-notifier --no-fund --global install pnpm@10.6.1 pm2
 
 WORKDIR /app
 
+# Download deps into the store using only manifests. This layer is cached until the
+# lockfile or any copied package.json changes — not on unrelated source edits.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/backend/package.json apps/backend/package.json
+COPY apps/commands/package.json apps/commands/package.json
+COPY apps/extension/package.json apps/extension/package.json
+COPY apps/frontend/package.json apps/frontend/package.json
+COPY apps/landingpage/package.json apps/landingpage/package.json
+COPY apps/orchestrator/package.json apps/orchestrator/package.json
+COPY apps/sdk/package.json apps/sdk/package.json
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    pnpm fetch --frozen-lockfile
+
 COPY . /app
 COPY var/docker/nginx.conf /etc/nginx/nginx.conf.template
 
 # Prisma generate (postinstall) does not need a real DB, but the URL must parse.
 ENV DATABASE_URL="postgresql://build:build@127.0.0.1:5432/build"
 
-RUN pnpm install
+# Avoid --offline: root postinstall runs `prisma generate`; `pnpm dlx`/registry
+# metadata for ad-hoc packages is not available fully offline. Prefer store cache.
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile --prefer-offline
 
 # Next.js inlines NEXT_PUBLIC_* at build time — must match the public site or the
 # browser will call localhost and hit CORS. Pass these on `docker build`:
@@ -40,7 +56,8 @@ ENV NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL}
 ENV FRONTEND_URL=${FRONTEND_URL}
 ENV MAIN_URL=${MAIN_URL}
 
-RUN NODE_OPTIONS="--max-old-space-size=4096" pnpm run build
+RUN --mount=type=cache,id=next-cache,target=/app/apps/frontend/.next/cache \
+    NODE_OPTIONS="--max-old-space-size=4096" pnpm run build
 
 # Use envsubst to replace $PORT in nginx.conf at runtime (Railway sets PORT dynamically)
 # Default to 5000 if PORT is not set (local Docker usage)

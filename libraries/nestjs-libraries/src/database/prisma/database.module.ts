@@ -6,6 +6,7 @@ import { UsersService } from '@gitroom/nestjs-libraries/database/prisma/users/us
 import { UsersRepository } from '@gitroom/nestjs-libraries/database/prisma/users/users.repository';
 import { SubscriptionService } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscription.service';
 import { SubscriptionRepository } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscription.repository';
+import { BillingPlanPricingService } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/billing-plan-pricing.service';
 import { NotificationService } from '@gitroom/nestjs-libraries/database/prisma/notifications/notification.service';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
@@ -40,6 +41,8 @@ import { OAuthRepository } from '@gitroom/nestjs-libraries/database/prisma/oauth
 import { OAuthService } from '@gitroom/nestjs-libraries/database/prisma/oauth/oauth.service';
 import { AnnouncementsRepository } from '@gitroom/nestjs-libraries/database/prisma/announcements/announcements.repository';
 import { AnnouncementsService } from '@gitroom/nestjs-libraries/database/prisma/announcements/announcements.service';
+import { XAccountActivityService } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.service';
+import { XAccountActivityHandler } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.handler';
 
 @Global()
 @Module({
@@ -55,6 +58,7 @@ import { AnnouncementsService } from '@gitroom/nestjs-libraries/database/prisma/
     OrganizationRepository,
     SubscriptionService,
     SubscriptionRepository,
+    BillingPlanPricingService,
     NotificationService,
     NotificationsRepository,
     WebhooksRepository,
@@ -89,6 +93,8 @@ import { AnnouncementsService } from '@gitroom/nestjs-libraries/database/prisma/
     VideoManager,
     AnnouncementsRepository,
     AnnouncementsService,
+    XAccountActivityService,
+    XAccountActivityHandler,
   ],
   get exports() {
     return this.providers;

@@ -52,6 +52,13 @@ export class UsersService {
     return this._usersRepository.updateEmailNotifications(userId, body);
   }
 
+  /** Returns true when at least one user in the given organization has the
+   *  platform-level `isSuperAdmin` flag set. Used as a bypass for
+   *  subscription/usage gates so platform admins can operate on FREE orgs. */
+  async orgHasPlatformSuperAdmin(orgId: string): Promise<boolean> {
+    return this._usersRepository.orgHasPlatformSuperAdmin(orgId);
+  }
+
   async listUsersForPlatformAdmin(take = 200) {
     const rows = await this._usersRepository.listUsersForPlatformAdmin(take);
     return rows.map((u) => ({

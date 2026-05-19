@@ -6,7 +6,8 @@ import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { SetSelectionModal } from '@gitroom/frontend/components/launches/calendar';
 import { AddEditModal } from '@gitroom/frontend/components/new-launch/add.edit.modal';
-import { ModalWrapperComponent } from '@gitroom/frontend/components/new-launch/modal.wrapper.component';
+import { getActiveXIntegrations } from '@gitroom/frontend/components/layout/x-integration.util';
+import { XProfilePickerModal } from '@gitroom/frontend/components/launches/x-profile-picker.component';
 
 export const NewPost = () => {
   const fetch = useFetch();
@@ -47,33 +48,68 @@ export const NewPost = () => {
 
     if (set === 'exit') return;
 
-    modal.openModal({
-      id: 'add-edit-modal',
-      closeOnClickOutside: false,
-      removeLayout: true,
-      closeOnEscape: false,
-      withCloseButton: false,
-      askClose: true,
-      fullScreen: true,
-      classNames: {
-        modal: 'w-[100%] max-w-[1400px] text-textColor',
-      },
-      children: (
-        <AddEditModal
-          allIntegrations={integrations.map((p) => ({
-            ...p,
-          }))}
-          {...(set?.content ? { set: JSON.parse(set.content) } : {})}
-          reopenModal={createAPost}
-          mutate={reloadCalendarView}
-          integrations={integrations}
-          date={dayjs.utc(date).local()}
-        />
-      ),
-      size: '80%',
-      title: ``,
-    });
-  }, [integrations, sets]);
+    const openComposer = (selectedChannels?: string[]) => {
+      modal.openModal({
+        id: 'add-edit-modal',
+        closeOnClickOutside: false,
+        removeLayout: true,
+        closeOnEscape: false,
+        withCloseButton: false,
+        askClose: true,
+        fullScreen: true,
+        classNames: {
+          modal: 'w-[100%] max-w-[1400px] text-textColor',
+        },
+        children: (
+          <AddEditModal
+            allIntegrations={integrations.map((p) => ({
+              ...p,
+            }))}
+            {...(set?.content ? { set: JSON.parse(set.content) } : {})}
+            {...(selectedChannels?.length
+              ? { selectedChannels }
+              : {})}
+            reopenModal={createAPost}
+            mutate={reloadCalendarView}
+            integrations={integrations}
+            date={dayjs.utc(date).local()}
+          />
+        ),
+        size: '80%',
+        title: ``,
+      });
+    };
+
+    const xAccounts = getActiveXIntegrations(integrations);
+    if (xAccounts.length > 1) {
+      modal.openModal({
+        title: t('choose_x_profiles', 'Choose X profile(s)'),
+        closeOnClickOutside: true,
+        closeOnEscape: true,
+        withCloseButton: true,
+        onClose: () => undefined,
+        classNames: { modal: 'text-textColor' },
+        children: (
+          <XProfilePickerModal
+            integrations={xAccounts as any}
+            onCancel={() => modal.closeAll()}
+            onContinue={(ids) => {
+              modal.closeAll();
+              openComposer(ids);
+            }}
+          />
+        ),
+      });
+      return;
+    }
+
+    if (xAccounts.length === 1) {
+      openComposer([xAccounts[0].id!]);
+      return;
+    }
+
+    openComposer();
+  }, [integrations, sets, modal, reloadCalendarView, t, fetch]);
   return (
     <button
       onClick={createAPost}

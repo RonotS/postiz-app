@@ -31,6 +31,12 @@ export const Title = () => {
     if (path?.startsWith('/adminisamazing/billing')) {
       return 'Billing';
     }
+    if (path?.startsWith('/adminisamazing/stripe-test')) {
+      return 'Stripe test';
+    }
+    if (path === '/adminisamazing') {
+      return 'Overview';
+    }
     if (path?.startsWith('/adminisamazing')) {
       return 'Admin';
     }

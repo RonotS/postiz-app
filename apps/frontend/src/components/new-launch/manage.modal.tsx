@@ -458,7 +458,14 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                   id="social-content"
                   className="gap-[32px] flex flex-col pe-[8px] pt-[20px] ps-[20px] absolute top-0 left-0 w-full h-full overflow-x-hidden overflow-y-scroll scrollbar scrollbar-thumb-newColColor scrollbar-track-newBgColorInner"
                 >
-                  <div className="flex w-full">
+                  <div className="flex w-full flex-col gap-2">
+                    <p className="text-xs text-newTableText px-1">
+                      {t(
+                        'pick_channels_hint',
+                        'Choose one or more channels. The same content is sent to each selected profile.'
+                      )}
+                    </p>
+                    <div className="flex w-full">
                     <div className="flex flex-1">
                       <PicksSocialsComponent toolTip={true} />
                     </div>
@@ -470,6 +477,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                         />
                       )}
                     </div>
+                  </div>
                   </div>
                   <div className="flex flex-1 gap-[6px] flex-col">
                     <div>{!existingData.integration && <SelectCurrent />}</div>

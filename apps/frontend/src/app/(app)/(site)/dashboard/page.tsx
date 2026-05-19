@@ -7,6 +7,8 @@ import { useToaster } from '@gitroom/react/toaster/toaster';
 import { deleteDialog } from '@gitroom/react/helpers/delete.dialog';
 import { newDayjs } from '@gitroom/frontend/components/layout/set.timezone';
 import { expandPosts } from '@gitroom/helpers/utils/posts.list.minify';
+import { getActiveXIntegrations } from '@gitroom/frontend/components/layout/x-integration.util';
+import { XProfileMultiSelect } from '@gitroom/frontend/components/launches/x-profile-picker.component';
 import dayjs from 'dayjs';
 import {
   FC,
@@ -17,6 +19,7 @@ import {
   useState,
 } from 'react';
 import useSWR from 'swr';
+import { usePathname } from 'next/navigation';
 
 const SETTINGS_STORAGE_KEY = 'dashboard-composer-settings';
 const DRAFT_STORAGE_KEY = 'dashboard-composer-draft';
@@ -78,7 +81,11 @@ type PostItem = {
   likeCount?: number;
   retweetCount?: number;
   replyCount?: number;
-  integration?: { providerIdentifier?: string; name?: string };
+  integration?: {
+    id?: string;
+    providerIdentifier?: string;
+    name?: string;
+  };
 };
 
 /** Browser URL for uploaded media paths (full CDN URL, absolute /uploads, or filename). */
@@ -97,7 +104,10 @@ function stripHtmlForPreview(text: string) {
   return (text || '').replace(/<[^>]*>/g, '').trim();
 }
 
-/** Label + style for queue card status (scheduled / published / draft). */
+/** Label + style for queue card status (scheduled / published / draft).
+ *  Tailwind `darkMode: 'class'` — pale (-200) text on light backgrounds is
+ *  invisible, so use a darker shade for light mode and override with the
+ *  pale shade under `dark:`. */
 function postQueueStatus(
   state: string,
   t: ReturnType<typeof useT>
@@ -107,24 +117,25 @@ function postQueueStatus(
       return {
         label: t('status_scheduled', 'Scheduled'),
         className:
-          'bg-sky-500/15 text-sky-200 border border-sky-400/25',
+          'bg-sky-500/20 text-sky-800 border border-sky-500/40 dark:bg-sky-500/15 dark:text-sky-200 dark:border-sky-400/25',
       };
     case 'PUBLISHED':
       return {
         label: t('status_published', 'Published'),
         className:
-          'bg-emerald-500/15 text-emerald-200 border border-emerald-400/25',
+          'bg-emerald-500/20 text-emerald-800 border border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-200 dark:border-emerald-400/25',
       };
     case 'DRAFT':
       return {
         label: t('status_draft', 'Draft'),
         className:
-          'bg-amber-500/15 text-amber-200 border border-amber-400/25',
+          'bg-amber-500/25 text-amber-800 border border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200 dark:border-amber-400/25',
       };
     default:
       return {
         label: state,
-        className: 'bg-newBgLineColor/50 text-newTableText border border-newBorder',
+        className:
+          'bg-newBgLineColor/50 text-newTableText border border-newBorder',
       };
   }
 }
@@ -139,7 +150,7 @@ function queueCardStatus(
   const publishingBadge = {
     label: t('status_publishing', 'Publishing'),
     className:
-      'bg-violet-500/15 text-violet-200 border border-violet-400/30',
+      'bg-violet-500/20 text-violet-800 border border-violet-500/40 dark:bg-violet-500/15 dark:text-violet-200 dark:border-violet-400/30',
   } as const;
 
   if (post.state !== 'QUEUE') {
@@ -279,6 +290,14 @@ const useIntegrations = () => {
 
 export default function DashboardPage() {
   const t = useT();
+  const pathname = usePathname();
+  const queuePageTitle = useMemo(
+    () =>
+      pathname?.startsWith('/dashboard/tweet-automations')
+        ? t('tweet_automations', 'Tweet Automations')
+        : t('queue', 'Queue'),
+    [pathname, t]
+  );
   const toast = useToaster();
   const { frontEndUrl, mainUrl } = useVariables();
   const mediaOrigin = useMemo(
@@ -292,6 +311,10 @@ export default function DashboardPage() {
     null | 'publishing' | 'published' | 'updated'
   >(null);
   const [advancedOpen, setAdvancedOpen] = useState(true);
+  // Toggle for the right-side composer panel. On lg+ screens the user can
+  // collapse the panel to give the queue full width; a small re-open button
+  // appears on the right edge so they can bring it back.
+  const [composerCollapsed, setComposerCollapsed] = useState(false);
   const [settings, setSettings] = useState<ComposerSettings>(DEFAULT_SETTINGS);
   const [composerText, setComposerText] = useState('');
   const [hydrated, setHydrated] = useState(false);
@@ -404,13 +427,27 @@ export default function DashboardPage() {
     return () => window.clearTimeout(id);
   }, [publishOverlay]);
 
-  const xIntegration = useMemo(
-    () =>
-      integrations.find(
-        (i) => !i.disabled && (i.identifier === 'x' || i.identifier === 'twitter')
-      ),
+  const xIntegrations = useMemo(
+    () => getActiveXIntegrations(integrations),
     [integrations]
   );
+
+  const [selectedXProfileIds, setSelectedXProfileIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!xIntegrations.length || editingPost) {
+      return;
+    }
+    setSelectedXProfileIds((prev) => {
+      const valid = prev.filter((id) =>
+        xIntegrations.some((x) => x.id === id)
+      );
+      if (valid.length) {
+        return valid;
+      }
+      return xIntegrations.map((x) => x.id);
+    });
+  }, [xIntegrations, editingPost]);
 
   const allPosts: PostItem[] = postsData?.posts || [];
 
@@ -468,11 +505,17 @@ export default function DashboardPage() {
         );
         return;
       }
-      if (!xIntegration) {
+      const targetIntegrationIds = editingPost?.integration?.id
+        ? [editingPost.integration.id]
+        : selectedXProfileIds.filter((id) =>
+            xIntegrations.some((x) => x.id === id)
+          );
+
+      if (!targetIntegrationIds.length) {
         toast.show(
           t(
             'connect_x_first',
-            'Connect your X account first to publish from the home queue'
+            'Connect your X account and select at least one profile to publish from the queue'
           ),
           'warning'
         );
@@ -562,59 +605,49 @@ export default function DashboardPage() {
           ? 'draft'
           : 'schedule';
 
+        const xPostSettings = {
+          __type: 'x' as const,
+          who_can_reply_post: 'everyone' as const,
+          made_with_ai: false,
+          paid_partnership: settings.paidPartnership,
+          ...(settings.autoRetweet
+            ? {
+                auto_retweet_enabled: true,
+                auto_retweet_interval_hours: settings.autoRetweetInterval,
+                auto_retweet_times: settings.autoRetweetTimes,
+              }
+            : { auto_retweet_enabled: false }),
+          ...(settings.autoDm
+            ? {
+                auto_dm_enabled: true,
+                auto_dm_message: settings.autoDmMessage,
+                auto_dm_targets: {
+                  likes: settings.autoDmTargetLikes,
+                  retweets: settings.autoDmTargetRetweets,
+                  replies: settings.autoDmTargetReplies,
+                },
+              }
+            : { auto_dm_enabled: false }),
+          ...(settings.autoThreadReply
+            ? {
+                auto_thread_reply_enabled: true,
+                auto_thread_reply_likes: settings.autoThreadReplyLikes,
+                auto_thread_reply_text: settings.autoThreadReplyText,
+              }
+            : { auto_thread_reply_enabled: false }),
+        };
+
         const payload = {
           type,
           shortLink: false,
           date,
           tags: [] as string[],
-          posts: [
-            {
-              integration: { id: xIntegration.id },
-              group: isEditing ? editingPost!.group || '' : '',
-              settings: {
-                __type: 'x',
-                who_can_reply_post: 'everyone',
-                made_with_ai: false,
-                paid_partnership: settings.paidPartnership,
-                // Auto-retweet per-post overrides for the autoRepostPost plug.
-                // The plug reads these via postSettings; missing fields fall
-                // back to plug-level defaults from the Plugs page.
-                ...(settings.autoRetweet
-                  ? {
-                      auto_retweet_enabled: true,
-                      auto_retweet_interval_hours: settings.autoRetweetInterval,
-                      auto_retweet_times: settings.autoRetweetTimes,
-                    }
-                  : { auto_retweet_enabled: false }),
-                // Auto-DM per-post overrides for the autoDmEngagers plug.
-                // The plug reads these via postSettings; missing fields fall
-                // back to plug-level defaults configured in the Plugs page.
-                ...(settings.autoDm
-                  ? {
-                      auto_dm_enabled: true,
-                      auto_dm_message: settings.autoDmMessage,
-                      auto_dm_targets: {
-                        likes: settings.autoDmTargetLikes,
-                        retweets: settings.autoDmTargetRetweets,
-                        replies: settings.autoDmTargetReplies,
-                      },
-                    }
-                  : { auto_dm_enabled: false }),
-                // Auto thread reply per-post overrides for the autoThreadReply
-                // plug. When enabled the plug is upserted with this post's
-                // threshold + thread text; the plug method reads the same
-                // settings at run time so each post posts ITS configured thread.
-                ...(settings.autoThreadReply
-                  ? {
-                      auto_thread_reply_enabled: true,
-                      auto_thread_reply_likes: settings.autoThreadReplyLikes,
-                      auto_thread_reply_text: settings.autoThreadReplyText,
-                    }
-                  : { auto_thread_reply_enabled: false }),
-              },
-              value: values,
-            },
-          ],
+          posts: targetIntegrationIds.map((integrationId) => ({
+            integration: { id: integrationId },
+            group: isEditing ? editingPost!.group || '' : '',
+            settings: xPostSettings,
+            value: values,
+          })),
         };
 
         const res = await fetch('/posts', {
@@ -735,7 +768,8 @@ export default function DashboardPage() {
       settings,
       toast,
       t,
-      xIntegration,
+      xIntegrations,
+      selectedXProfileIds,
       submitting,
       startDate,
       endDate,
@@ -865,6 +899,9 @@ export default function DashboardPage() {
     setEditingPost(post);
     setComposerText(post.content);
     setUserTouchedDate(false);
+    if (post.integration?.id) {
+      setSelectedXProfileIds([post.integration.id]);
+    }
   }, []);
 
   const cancelEdit = useCallback(() => {
@@ -932,7 +969,7 @@ export default function DashboardPage() {
         <div className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 lg:p-8 border-b lg:border-b-0 lg:border-r border-newBorder custom-scrollbar">
           <header className="mb-6">
             <h1 className="text-2xl font-bold text-newTextColor mb-4">
-              {t('queue', 'Queue')}
+              {queuePageTitle}
             </h1>
 
             {!loadingPosts && filteredPosts.length === 0 && (
@@ -1045,7 +1082,7 @@ export default function DashboardPage() {
                                     className="inline-flex items-center gap-1 rounded-md bg-newBgColor/50 px-1.5 py-0.5"
                                     title={t(
                                       'queue_auto_dms_hint',
-                                      'Recipients Postiz recorded after a successful auto-DM for this tweet (same as engager plug dedup). X may show fewer threads in your inbox.'
+                                      'Recipients TweetMax recorded after a successful auto-DM for this tweet (same as engager plug dedup). X may show fewer threads in your inbox.'
                                     )}
                                   >
                                     ✉ {dmsSent}{' '}
@@ -1082,7 +1119,7 @@ export default function DashboardPage() {
                                   className="inline-flex items-center gap-1 rounded-md bg-newBgColor/50 px-1.5 py-0.5"
                                   title={t(
                                     'queue_auto_dms_hint',
-                                    'Recipients Postiz recorded after a successful auto-DM for this tweet (same as engager plug dedup). X may show fewer threads in your inbox.'
+                                    'Recipients TweetMax recorded after a successful auto-DM for this tweet (same as engager plug dedup). X may show fewer threads in your inbox.'
                                   )}
                                 >
                                   ✉ {dmsSent}{' '}
@@ -1106,14 +1143,35 @@ export default function DashboardPage() {
           )}
         </div>
 
+        {/* Floating re-open tab — visible only when the composer is collapsed
+            on lg+ screens. Mobile keeps the composer stacked below the queue. */}
+        {composerCollapsed && (
+          <button
+            type="button"
+            onClick={() => setComposerCollapsed(false)}
+            title={t('expand_composer', 'Show composer')}
+            aria-label={t('expand_composer', 'Show composer')}
+            className="hidden lg:flex fixed right-0 top-1/2 -translate-y-1/2 z-30 items-center justify-center w-7 h-12 rounded-l-md bg-newBgColorInner border border-r-0 border-newBorder text-newTableText hover:text-newTextColor hover:bg-boxHover transition-colors"
+          >
+            ⇤
+          </button>
+        )}
+
         {/* Right Section: Composer */}
-        <div className="w-full lg:w-[420px] lg:flex-shrink-0 flex flex-col bg-newBgColorInner lg:border-l border-newBorder overflow-y-auto custom-scrollbar">
+        <div
+          className={`w-full lg:w-[420px] lg:flex-shrink-0 flex-col bg-newBgColorInner lg:border-l border-newBorder overflow-y-auto custom-scrollbar flex ${
+            composerCollapsed ? 'lg:hidden' : ''
+          }`}
+        >
           <div className="p-3 border-b border-newBorder flex justify-end gap-1">
-            <button className="p-2 hover:bg-boxHover rounded-lg text-newTableText">
+            <button
+              type="button"
+              onClick={() => setComposerCollapsed(true)}
+              title={t('collapse_composer', 'Hide composer')}
+              aria-label={t('collapse_composer', 'Hide composer')}
+              className="p-2 hover:bg-boxHover rounded-lg text-newTableText hover:text-newTextColor transition-colors"
+            >
               ⇥
-            </button>
-            <button className="p-2 hover:bg-boxHover rounded-lg text-newTableText">
-              ⛶
             </button>
           </div>
 
@@ -1253,6 +1311,16 @@ export default function DashboardPage() {
                 ? t('editing', 'Editing')
                 : t('your_content', 'Your content')}
             </h3>
+
+            {xIntegrations.length > 0 && (
+              <XProfileMultiSelect
+                integrations={xIntegrations as any}
+                selectedIds={selectedXProfileIds}
+                onChange={setSelectedXProfileIds}
+                disabled={!!editingPost}
+                compact
+              />
+            )}
 
             <div className="bg-newBgColor border border-newBorder rounded-xl p-4 relative focus-within:border-newSep transition-all min-h-[180px] flex flex-col">
               <textarea

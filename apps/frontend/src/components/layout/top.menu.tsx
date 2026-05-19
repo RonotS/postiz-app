@@ -7,6 +7,7 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { MenuItem } from '@gitroom/frontend/components/new-layout/menu-item';
 import { ConnectedAccount } from '@gitroom/frontend/components/layout/connected.account';
+import { ProfileAutomationsIcon } from '@gitroom/frontend/components/dashboard/profile-automations.icons';
 
 interface MenuItemInterface {
   name: string;
@@ -16,6 +17,7 @@ interface MenuItemInterface {
   hide?: boolean;
   requireBilling?: boolean;
   onClick?: () => void;
+  disabled?: boolean;
 }
 
 export const useMenuItem = () => {
@@ -69,9 +71,10 @@ export const useMenuItem = () => {
           strokeWidth="2"
           strokeLinecap="round"
           strokeLinejoin="round"
+          aria-hidden
         >
-          <path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-          <polyline points="9 22 9 12 15 12 15 22" />
+          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+          <path d="M9 22V12h6v10" />
         </svg>
       ),
       path: '/dashboard',
@@ -99,24 +102,7 @@ export const useMenuItem = () => {
     },
     {
       name: t('profile_automations', 'Profile Automations'),
-      icon: (
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          width="21"
-          height="21"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
-          <circle cx="9" cy="7" r="4" />
-          <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
-          <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-        </svg>
-      ),
+      icon: <ProfileAutomationsIcon />,
       path: '/dashboard/followers',
     },
     {
@@ -249,8 +235,10 @@ export const useMenuItem = () => {
   ] satisfies MenuItemInterface[] as MenuItemInterface[];
 
   const secondMenu = [
+    /* Hidden for now — set hide: false to show again */
     {
       name: t('UGC', 'UGC'),
+      hide: true,
       icon: (
         <svg
           fill="#c52e2e"
@@ -284,6 +272,7 @@ export const useMenuItem = () => {
     },
     {
       name: t('affiliate', 'Affiliate'),
+      hide: true,
       icon: (
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -342,6 +331,7 @@ export const useMenuItem = () => {
     },
     {
       name: t('billing', 'Billing'),
+      hide: true,
       icon: (
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -407,7 +397,7 @@ export const TopMenu: FC = () => {
   const { isGeneral, billingEnabled } = useVariables();
   return (
     <>
-      <div className="flex flex-1 flex-col gap-[4px] minCustom:gap-[8px] blurMe">
+      <div className="flex flex-1 flex-col gap-[4px] minCustom:gap-[8px] min-w-0 max-w-full blurMe">
         {
           // @ts-ignore
           user?.orgId &&
@@ -436,11 +426,12 @@ export const TopMenu: FC = () => {
                   icon={item.icon}
                   key={item.name}
                   onClick={item.onClick}
+                  disabled={item.disabled}
                 />
               ))
         }
       </div>
-      <div className="flex flex-col gap-[4px] minCustom:gap-[8px] blurMe">
+      <div className="flex flex-col gap-[4px] minCustom:gap-[8px] min-w-0 max-w-full blurMe">
         {(() => {
           const visible = secondMenu.filter((f) => {
             if (f.hide) return false;
@@ -461,6 +452,7 @@ export const TopMenu: FC = () => {
                   icon={item.icon}
                   key={item.name}
                   onClick={item.onClick}
+                  disabled={item.disabled}
                 />
               ))}
               {user?.orgId && <ConnectedAccount />}
@@ -471,6 +463,7 @@ export const TopMenu: FC = () => {
                   icon={item.icon}
                   key={item.name}
                   onClick={item.onClick}
+                  disabled={item.disabled}
                 />
               ))}
             </>

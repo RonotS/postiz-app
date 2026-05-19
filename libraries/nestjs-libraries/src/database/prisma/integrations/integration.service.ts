@@ -15,6 +15,7 @@ import { Integration, Organization } from '@prisma/client';
 import { NotificationService } from '@gitroom/nestjs-libraries/database/prisma/notifications/notification.service';
 import dayjs from 'dayjs';
 import { timer } from '@gitroom/helpers/utils/timer';
+import { isStripeBillingEnabled } from '@gitroom/helpers/stripe/stripe.billing.env';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { RefreshToken } from '@gitroom/nestjs-libraries/integrations/social.abstract';
 import { IntegrationTimeDto } from '@gitroom/nestjs-libraries/dtos/integrations/integration.time.dto';
@@ -29,6 +30,19 @@ import {
   xFollowerDmPollerWorkflowId,
   X_FOLLOWER_DM_DEFAULT_POLL_INTERVAL_MS,
 } from '@gitroom/nestjs-libraries/temporal/x.follower.dm.constants';
+import { XAccountActivityService } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.service';
+import { XAccountActivityHandler } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.handler';
+import { XProvider } from '@gitroom/nestjs-libraries/integrations/social/x.provider';
+import { X_FOLLOW_BATCH_MAX } from '@gitroom/nestjs-libraries/integrations/social/x-follow-rate-limit';
+import {
+  getXFollowRateLimitForIntegration,
+  recordXFollowsForIntegration,
+} from '@gitroom/nestjs-libraries/integrations/social/x-follow-rate-limit.store';
+import {
+  getXAccountActivityRedisSubscribedKey,
+  isXAccountActivityPollingDisabled,
+  isXAccountActivityWebhooksEnabled,
+} from '@gitroom/helpers/x/x.account-activity.env';
 
 dayjs.extend(utc);
 
@@ -42,7 +56,9 @@ export class IntegrationService {
     private _notificationService: NotificationService,
     @Inject(forwardRef(() => RefreshIntegrationService))
     private _refreshIntegrationService: RefreshIntegrationService,
-    private _temporalService: TemporalService
+    private _temporalService: TemporalService,
+    private _xAccountActivity: XAccountActivityService,
+    private _xAccountActivityHandler: XAccountActivityHandler
   ) { }
 
   async changeActiveCron(orgId: string) {
@@ -120,7 +136,7 @@ export class IntegrationService {
         : await this.storage.uploadSimple(picture)
       : undefined;
 
-    return this._integrationRepository.createOrUpdateIntegration(
+    const row = await this._integrationRepository.createOrUpdateIntegration(
       additionalSettings,
       oneTimeToken,
       org,
@@ -138,6 +154,14 @@ export class IntegrationService {
       timezone,
       customInstanceDetails
     );
+
+    if (provider === 'x') {
+      void this.syncXAccountActivitySubscription(row).catch((err) =>
+        console.error('syncXAccountActivitySubscription:', err)
+      );
+    }
+
+    return row;
   }
 
   updateIntegrationGroup(org: string, id: string, group: string) {
@@ -193,8 +217,78 @@ export class IntegrationService {
   }
 
   async disconnectChannel(orgId: string, integration: Integration) {
+    if (integration.providerIdentifier === 'x') {
+      void this.unsyncXAccountActivitySubscription(integration).catch((err) =>
+        console.error('unsyncXAccountActivitySubscription:', err)
+      );
+    }
     await this._integrationRepository.disconnectChannel(orgId, integration.id);
     await this.informAboutRefreshError(orgId, integration);
+  }
+
+  /** Inbound X Account Activity webhook payload (CRC + events). */
+  async handleXAccountActivityPayload(
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    return this._xAccountActivityHandler.handlePayload(payload);
+  }
+
+  async syncXAccountActivitySubscription(
+    integration: Integration
+  ): Promise<void> {
+    if (
+      integration.providerIdentifier !== 'x' ||
+      !this._xAccountActivity.isEnabled()
+    ) {
+      return;
+    }
+    const webhookId = await this._xAccountActivity.ensureWebhookRegistered();
+    if (!webhookId) {
+      return;
+    }
+    const ok = await this._xAccountActivity.subscribeUser(
+      integration.token,
+      webhookId
+    );
+    if (ok) {
+      await ioRedis.set(
+        getXAccountActivityRedisSubscribedKey(integration.id),
+        '1',
+        'EX',
+        60 * 60 * 24 * 365
+      );
+    }
+  }
+
+  async unsyncXAccountActivitySubscription(
+    integration: Integration
+  ): Promise<void> {
+    if (integration.providerIdentifier !== 'x') {
+      return;
+    }
+    const webhookId = await this._xAccountActivity.getStoredWebhookId();
+    if (!webhookId || !integration.internalId) {
+      return;
+    }
+    await this._xAccountActivity.unsubscribeUser(
+      integration.token,
+      webhookId,
+      integration.internalId
+    );
+    await ioRedis.del(getXAccountActivityRedisSubscribedKey(integration.id));
+  }
+
+  private async syncXAccountActivityForIntegrationId(
+    orgId: string,
+    integrationId: string
+  ): Promise<void> {
+    const integration = await this._integrationRepository.getIntegrationById(
+      orgId,
+      integrationId
+    );
+    if (integration) {
+      await this.syncXAccountActivitySubscription(integration);
+    }
   }
 
   async informAboutRefreshError(
@@ -268,7 +362,7 @@ export class IntegrationService {
       await this._integrationRepository.getIntegrationsList(org)
     ).filter((f) => !f.disabled);
     if (
-      !!process.env.STRIPE_PUBLISHABLE_KEY &&
+      isStripeBillingEnabled() &&
       integrations.length >= totalChannels
     ) {
       throw new Error('You have reached the maximum number of channels');
@@ -745,6 +839,9 @@ export class IntegrationService {
     integrationId: string,
     plugId: string
   ): Promise<void> {
+    if (isXAccountActivityPollingDisabled()) {
+      return;
+    }
     const raw = this._temporalService.client?.getRawClient();
     if (!raw) return;
     const workflowId = xFollowerDmPollerWorkflowId(integrationId);
@@ -806,7 +903,15 @@ export class IntegrationService {
     );
 
     if (body.func === 'autoDmFollowers' && row.activated) {
-      await this.startXFollowerDmPollerWorkflow(orgId, integrationId, row.id);
+      if (!isXAccountActivityPollingDisabled()) {
+        await this.startXFollowerDmPollerWorkflow(orgId, integrationId, row.id);
+      }
+    }
+
+    if (row.activated && isXAccountActivityWebhooksEnabled()) {
+      void this.syncXAccountActivityForIntegrationId(orgId, integrationId).catch(
+        (err) => console.error('syncXAccountActivityForIntegrationId:', err)
+      );
     }
 
     return {
@@ -824,11 +929,21 @@ export class IntegrationService {
 
     if (updated.plugFunction === 'autoDmFollowers') {
       if (status) {
-        await this.startXFollowerDmPollerWorkflow(
-          orgId,
-          updated.integrationId,
-          plugId
-        );
+        if (!isXAccountActivityPollingDisabled()) {
+          await this.startXFollowerDmPollerWorkflow(
+            orgId,
+            updated.integrationId,
+            plugId
+          );
+        }
+        if (isXAccountActivityWebhooksEnabled()) {
+          void this.syncXAccountActivityForIntegrationId(
+            orgId,
+            updated.integrationId
+          ).catch((err) =>
+            console.error('syncXAccountActivityForIntegrationId:', err)
+          );
+        }
       } else {
         await this.stopXFollowerDmPollerWorkflow(updated.integrationId);
       }
@@ -853,6 +968,120 @@ export class IntegrationService {
     );
     const loadOnlyIds = exisingData.map((p) => p.value);
     return difference(id, loadOnlyIds);
+  }
+
+  async listXFollowers(
+    orgId: string,
+    integrationId: string,
+    subjectUserId?: string,
+    paginationToken?: string
+  ) {
+    const integration = await this.getIntegrationById(orgId, integrationId);
+    if (!integration || integration.providerIdentifier !== 'x') {
+      throw new HttpException('Invalid X integration', HttpStatus.BAD_REQUEST);
+    }
+    if (integration.disabled || integration.deletedAt) {
+      throw new HttpException('Channel is disabled', HttpStatus.BAD_REQUEST);
+    }
+
+    const x = this._integrationManager.getSocialIntegration(
+      'x'
+    ) as XProvider;
+
+    const subject = subjectUserId?.trim() || integration.internalId;
+    if (!subject) {
+      throw new HttpException('Missing user id', HttpStatus.BAD_REQUEST);
+    }
+
+    try {
+      return await x.listFollowersPage(
+        integration,
+        subject,
+        paginationToken?.trim() || undefined
+      );
+    } catch (err: any) {
+      const msg =
+        err?.data?.detail ||
+        err?.data?.title ||
+        err?.message ||
+        'Could not load followers';
+      throw new HttpException(String(msg), HttpStatus.BAD_REQUEST);
+    }
+  }
+
+  async getXFollowRateLimit(orgId: string, integrationId: string) {
+    const integration = await this.getIntegrationById(orgId, integrationId);
+    if (!integration || integration.providerIdentifier !== 'x') {
+      throw new HttpException('Invalid X integration', HttpStatus.BAD_REQUEST);
+    }
+
+    return getXFollowRateLimitForIntegration(integrationId);
+  }
+
+  async massFollowXUsers(
+    orgId: string,
+    integrationId: string,
+    userIds: string[]
+  ) {
+    const integration = await this.getIntegrationById(orgId, integrationId);
+    if (!integration || integration.providerIdentifier !== 'x') {
+      throw new HttpException('Invalid X integration', HttpStatus.BAD_REQUEST);
+    }
+    if (integration.disabled || integration.deletedAt) {
+      throw new HttpException('Channel is disabled', HttpStatus.BAD_REQUEST);
+    }
+    if (integration.refreshNeeded) {
+      throw new HttpException(
+        'Reconnect this X channel before following users',
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
+    const rateBefore = await getXFollowRateLimitForIntegration(integrationId);
+    if (rateBefore.limited) {
+      throw new HttpException(
+        {
+          message: `Follow limit reached (${rateBefore.limit} per ${rateBefore.windowMinutes} minutes). Try again after ${rateBefore.resetsAt}.`,
+          rateLimit: rateBefore,
+        },
+        HttpStatus.TOO_MANY_REQUESTS
+      );
+    }
+
+    const cappedIds = userIds.slice(
+      0,
+      Math.min(X_FOLLOW_BATCH_MAX, rateBefore.remaining)
+    );
+
+    if (cappedIds.length === 0) {
+      throw new HttpException(
+        {
+          message: `Follow limit reached (${rateBefore.limit} per ${rateBefore.windowMinutes} minutes).`,
+          rateLimit: rateBefore,
+        },
+        HttpStatus.TOO_MANY_REQUESTS
+      );
+    }
+
+    const x = this._integrationManager.getSocialIntegration(
+      'x'
+    ) as XProvider;
+
+    try {
+      const result = await x.followUsers(integration, cappedIds);
+      const rateLimit = await recordXFollowsForIntegration(
+        integrationId,
+        result.succeeded.length
+      );
+      return { ...result, rateLimit };
+    } catch (err: any) {
+      const msg =
+        err?.data?.detail ||
+        err?.data?.title ||
+        err?.message ||
+        'Follow request failed';
+      throw new HttpException(String(msg), HttpStatus.BAD_REQUEST);
+    }
   }
 
   async findFreeDateTime(
