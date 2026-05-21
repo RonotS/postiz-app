@@ -7,3 +7,4 @@ export * from './send.email.workflow';
 export * from './refresh.token.workflow';
 export * from './streak.workflow';
 export * from './x.follower.dm.poller.workflow';
+export * from './x.profile-automations.poller.workflow';

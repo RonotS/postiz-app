@@ -20,7 +20,7 @@ export async function xFollowerDmPollerWorkflow({
   organizationId: _organizationId,
   integrationId: _integrationId,
   plugId,
-  pollIntervalMs = 120_000,
+  pollIntervalMs = 30_000,
 }: {
   organizationId: string;
   integrationId: string;
@@ -31,7 +31,7 @@ export async function xFollowerDmPollerWorkflow({
   void _organizationId;
   void _integrationId;
 
-  const tickMs = Math.max(60_000, Math.min(3_600_000, pollIntervalMs));
+  const tickMs = Math.max(30_000, Math.min(3_600_000, pollIntervalMs));
 
   while (true) {
     const active = await isFollowerDmPlugActive(plugId);

@@ -29,6 +29,12 @@ import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorato
   'X can have maximum 4 pictures, or maximum one video, it can also be without attachments'
 )
 export class XProvider extends SocialAbstract implements SocialProvider {
+  /** Cached following ids per integration row id (profile automations explorer). */
+  private myFollowingIdCache = new Map<
+    string,
+    { at: number; ids: Set<string> }
+  >();
+
   identifier = 'x';
   name = 'X';
   isBetweenSteps = false;
@@ -161,7 +167,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     // maxConcurrentJob=1) to be permanently busy with plug calls, queueing
     // up new post workflows behind the plug backlog. Don't lower this in
     // production; if you need faster plug testing, do it on local only.
-    runEveryMilliseconds: 18000000, // 5 hours
+    runEveryMilliseconds: 30_000,
     totalRuns: 3,
     fields: [
       {
@@ -248,7 +254,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     description:
       'When a post reaches a certain number of likes, automatically reply to the original post with your promotional message.',
     // runEveryMilliseconds: 18000000, // 5 hours
-    runEveryMilliseconds: 120000,
+    runEveryMilliseconds: 30_000,
     totalRuns: 10,
     fields: [
       {
@@ -306,7 +312,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     disabled: !!process.env.DISABLE_X_ANALYTICS,
     description:
       'When a post reaches a certain number of likes, automatically reply with a full thread (multiple chained tweets). Separate each tweet in the thread with three blank lines — same convention as the composer. The first reply is to the original tweet, each subsequent tweet replies to the previous one.',
-    runEveryMilliseconds: 120000,
+    runEveryMilliseconds: 30_000,
     totalRuns: 10,
     fields: [
       {
@@ -478,7 +484,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     description:
       'Send a Direct Message to anyone who engages with a post — every liker / retweeter / replier (based on the targets you enable) gets a DM the next time the plug runs. There is no minimum engagement count: a single engagement is enough. Each post in the composer chooses its own targets and can override the message below. Recipients must follow you or have open DMs, and X API rate limits apply.',
     // runEveryMilliseconds: 18000000, // 5 hours
-    runEveryMilliseconds: 120000,
+    runEveryMilliseconds: 30_000,
     totalRuns: 3,
     fields: [
       {
@@ -667,6 +673,80 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     return ids;
   }
 
+  /** Paginated GET /2/users/:id/following */
+  private async fetchFollowingUserIds(
+    client: TwitterApi,
+    userId: string,
+    options: { maxPages: number; pageSize: number }
+  ): Promise<string[]> {
+    const ids: string[] = [];
+    const pageSize = Math.min(Math.max(options.pageSize, 10), 1000);
+    let pagination_token: string | undefined;
+    for (let p = 0; p < options.maxPages; p++) {
+      const res: any = await client.v2.following(userId, {
+        max_results: pageSize,
+        ...(pagination_token ? { pagination_token } : {}),
+      });
+      const users = res?.data || [];
+      for (const u of users) {
+        if (u?.id) ids.push(String(u.id));
+      }
+      pagination_token = res?.meta?.next_token;
+      if (!pagination_token) break;
+    }
+    return ids;
+  }
+
+  /** Accounts the connected channel already follows (cached ~10 min). */
+  private async getMyFollowingIdSet(
+    integration: Integration,
+    client: TwitterApi
+  ): Promise<Set<string>> {
+    const cacheKey = integration.id;
+    const cached = this.myFollowingIdCache.get(cacheKey);
+    const ttlMs = 10 * 60 * 1000;
+    if (cached && Date.now() - cached.at < ttlMs) {
+      return cached.ids;
+    }
+
+    const ownerId = integration.internalId;
+    if (!ownerId) {
+      return new Set();
+    }
+
+    const ids = await this.fetchFollowingUserIds(client, ownerId, {
+      maxPages: 5,
+      pageSize: 1000,
+    });
+    const set = new Set(ids);
+    this.myFollowingIdCache.set(cacheKey, { at: Date.now(), ids: set });
+    return set;
+  }
+
+  private markMyFollowingIds(integrationId: string, userIds: string[]) {
+    if (!userIds.length) return;
+    const cached = this.myFollowingIdCache.get(integrationId);
+    if (cached) {
+      for (const id of userIds) {
+        cached.ids.add(String(id));
+      }
+      return;
+    }
+    this.myFollowingIdCache.set(integrationId, {
+      at: Date.now(),
+      ids: new Set(userIds.map(String)),
+    });
+  }
+
+  private unmarkMyFollowingIds(integrationId: string, userIds: string[]) {
+    if (!userIds.length) return;
+    const cached = this.myFollowingIdCache.get(integrationId);
+    if (!cached) return;
+    for (const id of userIds) {
+      cached.ids.delete(String(id));
+    }
+  }
+
   @Plug({
     identifier: 'x-autoDmFollowers',
     title: 'Auto DM New Followers',
@@ -675,7 +755,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       'Runs on its own schedule (no posting required): polls your X followers and sends a welcome DM to new ones. The first run only records your current followers (no DMs) so existing fans are not messaged. Requires DM API access on your X app. Large accounts only scan recent follower pages per run.',
     // Metadata for Plugs UI; the live poller interval is `pollIntervalMs` on
     // `xFollowerDmPollerWorkflow` (default 2m, override with X_FOLLOWER_DM_POLL_INTERVAL_MS).
-    runEveryMilliseconds: 120000,
+    runEveryMilliseconds: 30_000,
     totalRuns: 3,
     fields: [
       {
@@ -810,6 +890,500 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       return dmSent;
     } catch (err) {
       console.error('X AUTO DM FOLLOWERS FATAL ERROR:', err);
+    }
+
+    return false;
+  }
+
+  private truthyPlugField(v: unknown): boolean {
+    return v === true || v === 'true' || v === 1 || v === '1';
+  }
+
+  private buildClientForIntegration(integration: Integration) {
+    const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+    return this.buildTwitterApi({
+      appKey: process.env.X_API_KEY!,
+      appSecret: process.env.X_API_SECRET!,
+      accessToken: accessTokenSplit,
+      accessSecret: accessSecretSplit,
+    });
+  }
+
+  private mapPinnedTweetPreview(tweet: {
+    id: string;
+    text?: string;
+    created_at?: string;
+    public_metrics?: {
+      like_count?: number;
+      retweet_count?: number;
+      reply_count?: number;
+    };
+  }) {
+    const metrics = tweet.public_metrics;
+    return {
+      id: String(tweet.id),
+      text: tweet.text || '',
+      createdAt: tweet.created_at || null,
+      url: `https://twitter.com/i/web/status/${tweet.id}`,
+      likeCount: metrics?.like_count ?? 0,
+      repostCount: metrics?.retweet_count ?? 0,
+      replyCount: metrics?.reply_count ?? 0,
+    };
+  }
+
+  /**
+   * Loads pinned tweet id for the connected channel. Prefer `GET /2/users/me`
+   * (OAuth context) over `GET /2/users/:id` — more reliable after reconnect.
+   */
+  async resolvePinnedTweetId(
+    integration: Integration
+  ): Promise<string | undefined> {
+    const result = await this.fetchPinnedTweetForIntegration(integration);
+    return result.pinnedId;
+  }
+
+  private async fetchPinnedTweetForIntegration(
+    integration: Integration
+  ): Promise<{
+    pinnedId?: string;
+    tweet?: {
+      id: string;
+      text?: string;
+      created_at?: string;
+      public_metrics?: {
+        like_count?: number;
+        retweet_count?: number;
+        reply_count?: number;
+      };
+    };
+    error?: string;
+  }> {
+    if (!integration.internalId) {
+      return {
+        error:
+          'Missing X user id on this channel. Disconnect and reconnect your X account.',
+      };
+    }
+
+    const client = this.buildClientForIntegration(integration);
+
+    try {
+      const me = await client.v2.me({
+        'user.fields': ['pinned_tweet_id'],
+        expansions: ['pinned_tweet_id'],
+        'tweet.fields': ['created_at', 'text', 'public_metrics'],
+      });
+      const pinnedRaw = me.data?.pinned_tweet_id;
+      if (!pinnedRaw) {
+        return {};
+      }
+      const pinnedId = String(pinnedRaw);
+      const includes = me.includes as { tweets?: Array<{ id: string }> } | undefined;
+      const tweets = includes?.tweets;
+      const embedded = Array.isArray(tweets)
+        ? tweets.find((t) => String(t.id) === pinnedId)
+        : undefined;
+      if (embedded?.id) {
+        return { pinnedId, tweet: embedded as any };
+      }
+      return { pinnedId };
+    } catch (meErr) {
+      console.warn(
+        'X pinned tweet: GET /2/users/me failed, trying user(id):',
+        meErr
+      );
+    }
+
+    try {
+      const ownerId = integration.internalId;
+      const userResult = await client.v2.user(ownerId, {
+        'user.fields': ['pinned_tweet_id'],
+        expansions: ['pinned_tweet_id'],
+        'tweet.fields': ['created_at', 'text', 'public_metrics'],
+      });
+      const pinnedRaw = userResult.data?.pinned_tweet_id;
+      if (!pinnedRaw) {
+        return {};
+      }
+      const pinnedId = String(pinnedRaw);
+      const tweets = (userResult.includes as { tweets?: Array<{ id: string }> })
+        ?.tweets;
+      const embedded = Array.isArray(tweets)
+        ? tweets.find((t) => String(t.id) === pinnedId)
+        : undefined;
+      if (embedded?.id) {
+        return { pinnedId, tweet: embedded as any };
+      }
+      return { pinnedId };
+    } catch (err) {
+      const msg = formatXApiErrorMessage(err, 'Could not load pinned post from X');
+      console.error('X PINNED TWEET LOOKUP ERROR:', msg, err);
+      return { error: msg };
+    }
+  }
+
+  async getPinnedTweetPreview(integration: Integration): Promise<{
+    pinned: {
+      id: string;
+      text: string;
+      createdAt: string | null;
+      url: string;
+      likeCount: number;
+      repostCount: number;
+      replyCount: number;
+    } | null;
+    error?: string;
+  }> {
+    const loaded = await this.fetchPinnedTweetForIntegration(integration);
+    if (loaded.error) {
+      return { pinned: null, error: loaded.error };
+    }
+    if (!loaded.pinnedId) {
+      return { pinned: null };
+    }
+
+    if (loaded.tweet?.id) {
+      return { pinned: this.mapPinnedTweetPreview(loaded.tweet) };
+    }
+
+    try {
+      const client = this.buildClientForIntegration(integration);
+      const { data } = await client.v2.singleTweet(loaded.pinnedId, {
+        'tweet.fields': ['created_at', 'text', 'public_metrics'],
+      });
+      if (!data?.id) {
+        return {
+          pinned: null,
+          error:
+            'X returned a pinned tweet id but the tweet could not be loaded. It may be deleted or restricted on your API plan.',
+        };
+      }
+      return { pinned: this.mapPinnedTweetPreview(data) };
+    } catch (err) {
+      const msg = formatXApiErrorMessage(
+        err,
+        'Could not load pinned tweet details from X'
+      );
+      console.error('X PINNED TWEET PREVIEW ERROR:', msg, err);
+      return { pinned: null, error: msg };
+    }
+  }
+
+  @Plug({
+    identifier: 'x-autoDeleteProfile',
+    title: 'Auto-Delete',
+    disabled: !!process.env.DISABLE_X_ANALYTICS,
+    description:
+      'Automatically delete your posts on X based on rules you configure.',
+    runEveryMilliseconds: 30_000,
+    totalRuns: 3,
+    fields: [],
+  })
+  async autoDeleteProfile(
+    integration: Integration,
+    _tweetReleaseId: string,
+    fields: {
+      ruleByDate?: string;
+      ruleByKeywords?: string;
+      ruleByTweetCount?: string;
+      ruleByLikes?: string;
+      dateOlderThanDays?: string;
+      keywords?: string;
+      maxTweetCount?: string;
+      maxLikes?: string;
+      applyPosts?: string;
+      applyReposts?: string;
+      applyQuotes?: string;
+      applyReplies?: string;
+    }
+  ) {
+    const ownerId = integration.internalId;
+    if (!ownerId) return false;
+
+    const applyPosts = this.truthyPlugField(fields.applyPosts);
+    const applyReposts = this.truthyPlugField(fields.applyReposts);
+    const applyQuotes = this.truthyPlugField(fields.applyQuotes);
+    const applyReplies = this.truthyPlugField(fields.applyReplies);
+    if (!applyPosts && !applyReposts && !applyQuotes && !applyReplies) {
+      return false;
+    }
+
+    const ruleByDate = this.truthyPlugField(fields.ruleByDate);
+    const ruleByKeywords = this.truthyPlugField(fields.ruleByKeywords);
+    const ruleByTweetCount = this.truthyPlugField(fields.ruleByTweetCount);
+    const ruleByLikes = this.truthyPlugField(fields.ruleByLikes);
+    if (!ruleByDate && !ruleByKeywords && !ruleByTweetCount && !ruleByLikes) {
+      return false;
+    }
+
+    const olderThanDays = Math.max(
+      1,
+      Number(fields.dateOlderThanDays) || 30
+    );
+    const dateCutoff = Date.now() - olderThanDays * 86_400_000;
+    const keywordList = (fields.keywords || '')
+      .split(',')
+      .map((k) => k.trim().toLowerCase())
+      .filter(Boolean);
+    const maxTweets = Math.max(100, Number(fields.maxTweetCount) || 1000);
+    const maxLikes = Math.max(0, Number(fields.maxLikes) || 5);
+
+    const client = this.buildClientForIntegration(integration);
+    let deleted = false;
+
+    const matchesContentType = (tweet: {
+      referenced_tweets?: { type: string }[];
+    }) => {
+      const refs = tweet.referenced_tweets || [];
+      const isRetweet = refs.some((r) => r.type === 'retweeted');
+      const isQuote = refs.some((r) => r.type === 'quoted');
+      const isReply = refs.some((r) => r.type === 'replied_to');
+      if (isRetweet) return applyReposts;
+      if (isQuote) return applyQuotes;
+      if (isReply) return applyReplies;
+      return applyPosts;
+    };
+
+    const matchesNonCountRules = (tweet: {
+      created_at?: string;
+      text?: string;
+      public_metrics?: { like_count?: number };
+    }) => {
+      if (ruleByDate && tweet.created_at) {
+        if (new Date(tweet.created_at).getTime() > dateCutoff) return false;
+      }
+      if (ruleByKeywords) {
+        if (!keywordList.length) return false;
+        const text = (tweet.text || '').toLowerCase();
+        if (!keywordList.some((kw) => text.includes(kw))) return false;
+      }
+      if (ruleByLikes) {
+        const likes = tweet.public_metrics?.like_count ?? 0;
+        if (likes > maxLikes) return false;
+      }
+      return true;
+    };
+
+    try {
+      const exclude: ('replies' | 'retweets')[] = [];
+      if (!applyReplies) exclude.push('replies');
+      if (!applyReposts) exclude.push('retweets');
+
+      const timeline = await client.v2.userTimeline(ownerId, {
+        'tweet.fields': [
+          'created_at',
+          'referenced_tweets',
+          'public_metrics',
+          'text',
+        ],
+        exclude: exclude.length ? exclude : undefined,
+        max_results: 100,
+      });
+
+      const tweets = (timeline.data.data || []).filter((t) => t?.id);
+
+      let toDelete = tweets.filter(
+        (t) => matchesContentType(t) && matchesNonCountRules(t)
+      );
+
+      if (ruleByTweetCount && toDelete.length > maxTweets) {
+        toDelete = [...toDelete].sort(
+          (a, b) =>
+            new Date(a.created_at || 0).getTime() -
+            new Date(b.created_at || 0).getTime()
+        );
+        const excess = toDelete.length - maxTweets;
+        toDelete = toDelete.slice(0, excess);
+      }
+
+      if (!toDelete.length) {
+        return false;
+      }
+
+      for (const tweet of toDelete) {
+        try {
+          await timer(1500);
+          await client.v2.deleteTweet(tweet.id);
+          deleted = true;
+        } catch (delErr) {
+          console.error(`X AUTO DELETE PROFILE ERROR ${tweet.id}:`, delErr);
+        }
+      }
+    } catch (err) {
+      console.error('X AUTO DELETE PROFILE FATAL:', err);
+    }
+
+    return deleted;
+  }
+
+  @Plug({
+    identifier: 'x-autoDeleteReposts',
+    title: 'Repost Auto-Delete',
+    disabled: !!process.env.DISABLE_X_ANALYTICS,
+    description:
+      'Delete your reposts (retweets) after a configured number of hours.',
+    runEveryMilliseconds: 30_000,
+    totalRuns: 3,
+    fields: [
+      {
+        name: 'deleteAfterHours',
+        type: 'number',
+        placeholder: '24',
+        description: 'Hours after which reposts are deleted (max 48)',
+        validation: /^\d+$/,
+      },
+    ],
+  })
+  async autoDeleteReposts(
+    integration: Integration,
+    _tweetReleaseId: string,
+    fields: { deleteAfterHours?: string }
+  ) {
+    const ownerId = integration.internalId;
+    if (!ownerId) return false;
+
+    const hours = Math.min(
+      48,
+      Math.max(1, Number(fields.deleteAfterHours) || 24)
+    );
+    const cutoff = Date.now() - hours * 3_600_000;
+    const client = this.buildClientForIntegration(integration);
+    let deleted = false;
+
+    try {
+      const timeline = await client.v2.userTimeline(ownerId, {
+        'tweet.fields': ['created_at', 'referenced_tweets'],
+        exclude: ['replies'],
+        max_results: 100,
+      });
+
+      for (const tweet of timeline.data.data || []) {
+        if (!tweet?.id || !tweet.created_at) continue;
+        const isRetweet = tweet.referenced_tweets?.some(
+          (r) => r.type === 'retweeted'
+        );
+        if (!isRetweet) continue;
+        if (new Date(tweet.created_at).getTime() > cutoff) continue;
+
+        try {
+          await timer(1500);
+          await client.v2.deleteTweet(tweet.id);
+          deleted = true;
+        } catch (delErr) {
+          console.error(`X AUTO DELETE REPOST ERROR ${tweet.id}:`, delErr);
+        }
+      }
+    } catch (err) {
+      console.error('X AUTO DELETE REPOSTS FATAL:', err);
+    }
+
+    return deleted;
+  }
+
+  @Plug({
+    identifier: 'x-autoDmPinnedPost',
+    title: 'Pinned Post Auto-DM',
+    disabled: !!process.env.DISABLE_X_ANALYTICS,
+    description:
+      'Send a DM when people interact with your pinned post (like, repost, or reply).',
+    runEveryMilliseconds: 30_000,
+    totalRuns: 3,
+    fields: [
+      {
+        name: 'message',
+        type: 'richtext',
+        placeholder: 'DM message (use [tweet] for the pinned post link)',
+        description: 'Message sent when engagement conditions are met',
+        validation: /^[\s\S]{3,}$/g,
+      },
+    ],
+  })
+  async autoDmPinnedPost(
+    integration: Integration,
+    _tweetReleaseId: string,
+    fields: {
+      message: string;
+      targetLike?: string;
+      targetRepost?: string;
+      targetReply?: string;
+    },
+    _postSettings?: unknown,
+    plugContext?: {
+      loadDmdUserIds: (userIds: string[]) => Promise<Set<string>>;
+      saveDmdUserIds: (userIds: string[]) => Promise<void>;
+    }
+  ) {
+    const pinnedId = await this.resolvePinnedTweetId(integration);
+    if (!pinnedId) {
+      console.warn('X PINNED AUTO DM: no pinned tweet on profile');
+      return false;
+    }
+
+    const rawMessage = fields.message || '';
+    const dmText = stripHtmlValidation(
+      'normal',
+      rawMessage.replace(/\[tweet\]/gi, `https://twitter.com/i/web/status/${pinnedId}`),
+      true
+    );
+    if (!dmText.trim()) return false;
+
+    const targetLike = this.truthyPlugField(fields.targetLike);
+    const targetRepost = this.truthyPlugField(fields.targetRepost);
+    const targetReply = this.truthyPlugField(fields.targetReply);
+    if (!targetLike && !targetRepost && !targetReply) return false;
+
+    if (!plugContext?.loadDmdUserIds || !plugContext?.saveDmdUserIds) {
+      return false;
+    }
+
+    const client = this.buildClientForIntegration(integration);
+    const userIdSet = new Set<string>();
+
+    try {
+      if (targetLike) {
+        const ids = await this.fetchLikers(client, pinnedId);
+        ids.forEach((uid) => userIdSet.add(uid));
+      }
+      if (targetRepost) {
+        const ids = await this.fetchRetweeters(client, pinnedId);
+        ids.forEach((uid) => userIdSet.add(uid));
+      }
+      if (targetReply) {
+        const ids = await this.fetchRepliers(client, pinnedId);
+        ids.forEach((uid) => userIdSet.add(uid));
+      }
+
+      const ownerId = integration.internalId;
+      const candidates = Array.from(userIdSet).filter(
+        (uid) => uid && uid !== ownerId
+      );
+      if (!candidates.length) return false;
+
+      const alreadyDmd = await plugContext.loadDmdUserIds(candidates);
+      const toDm = candidates.filter((uid) => !alreadyDmd.has(uid));
+      if (!toDm.length) return false;
+
+      let sent = false;
+      const success: string[] = [];
+      for (const userId of toDm) {
+        try {
+          await timer(2000);
+          await client.v2.sendDmToParticipant(userId, { text: dmText });
+          success.push(userId);
+          sent = true;
+        } catch (dmErr: any) {
+          console.error(
+            `X PINNED AUTO DM ERROR for user ${userId}:`,
+            dmErr?.data || dmErr
+          );
+        }
+      }
+      if (success.length) {
+        await plugContext.saveDmdUserIds(success);
+      }
+      return sent;
+    } catch (err) {
+      console.error('X PINNED AUTO DM FATAL:', err);
     }
 
     return false;
@@ -1857,6 +2431,65 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     }
   }
 
+  /** Account Activity: DM engagers on the account's pinned tweet only. */
+  async webhookPinnedPostDm(
+    integration: Integration,
+    pinnedTweetId: string,
+    engagerUserId: string,
+    eventType: 'like' | 'retweet' | 'reply',
+    fields: {
+      message: string;
+      targetLike?: boolean | string;
+      targetRepost?: boolean | string;
+      targetReply?: boolean | string;
+    },
+    plugContext?: {
+      loadDmdUserIds: (userIds: string[]) => Promise<Set<string>>;
+      saveDmdUserIds: (userIds: string[]) => Promise<void>;
+    }
+  ): Promise<boolean> {
+    if (!engagerUserId || engagerUserId === integration.internalId) {
+      return false;
+    }
+
+    const enabled =
+      (eventType === 'like' && this.truthyPlugField(fields.targetLike)) ||
+      (eventType === 'retweet' && this.truthyPlugField(fields.targetRepost)) ||
+      (eventType === 'reply' && this.truthyPlugField(fields.targetReply));
+    if (!enabled) return false;
+
+    const dmText = stripHtmlValidation(
+      'normal',
+      (fields.message || '').replace(
+        /\[tweet\]/gi,
+        `https://twitter.com/i/web/status/${pinnedTweetId}`
+      ),
+      true
+    );
+    if (!dmText.trim()) return false;
+
+    if (plugContext?.loadDmdUserIds) {
+      const already = await plugContext.loadDmdUserIds([engagerUserId]);
+      if (already.has(engagerUserId)) return false;
+    }
+
+    const client = this.buildClientForIntegration(integration);
+    try {
+      await timer(500);
+      await client.v2.sendDmToParticipant(engagerUserId, { text: dmText });
+      if (plugContext?.saveDmdUserIds) {
+        await plugContext.saveDmdUserIds([engagerUserId]);
+      }
+      return true;
+    } catch (dmErr: any) {
+      console.error(
+        `X PINNED WEBHOOK DM (${eventType}) user ${engagerUserId}:`,
+        dmErr?.data || dmErr
+      );
+      return false;
+    }
+  }
+
   /**
    * Account Activity webhook: welcome DM for one new follower (no full-list poll).
    */
@@ -2078,12 +2711,97 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     });
   }
 
-  /** Profile automations: paginated follower list for any X user id. */
+  /** Resolve an X user by @handle for follow automations search. */
+  async resolveUserByUsername(
+    integration: Integration,
+    username: string
+  ): Promise<{
+    id: string;
+    name: string;
+    username: string;
+    picture?: string;
+  }> {
+    const handle = String(username || '')
+      .trim()
+      .replace(/^@+/, '');
+    if (!handle) {
+      throw new Error('Enter a username');
+    }
+
+    const client = this.clientForIntegration(integration);
+    const lookup = await client.v2.userByUsername(handle, {
+      'user.fields': ['profile_image_url', 'name', 'username'],
+    });
+    const u = lookup?.data;
+    if (!u?.id) {
+      throw new Error(`User @${handle} not found`);
+    }
+
+    return {
+      id: String(u.id),
+      name: u.name || handle,
+      username: u.username || handle,
+      picture: u.profile_image_url || undefined,
+    };
+  }
+
+  private mapFollowListUser(
+    u: any,
+    myFollowingIds: Set<string>
+  ): {
+    id: string;
+    name: string;
+    username: string;
+    picture?: string;
+    alreadyFollowing: boolean;
+    publicMetrics?: {
+      followersCount: number;
+      followingCount: number;
+      tweetCount: number;
+      listedCount?: number;
+    };
+    createdAt?: string;
+    verified?: boolean;
+  } {
+    const id = String(u.id);
+    const metrics = u.public_metrics;
+    return {
+      id,
+      name: u.name || u.username || id,
+      username: u.username || '',
+      picture: u.profile_image_url || undefined,
+      alreadyFollowing: myFollowingIds.has(id),
+      ...(metrics
+        ? {
+            publicMetrics: {
+              followersCount: metrics.followers_count ?? 0,
+              followingCount: metrics.following_count ?? 0,
+              tweetCount: metrics.tweet_count ?? 0,
+              listedCount: metrics.listed_count,
+            },
+          }
+        : {}),
+      createdAt: u.created_at,
+      verified: u.verified === true,
+    };
+  }
+
+  private readonly followListUserFields = [
+    'profile_image_url',
+    'name',
+    'username',
+    'public_metrics',
+    'created_at',
+    'verified',
+  ] as const;
+
+  /** Follow automations: paginated follower list for any X user id. */
   async listFollowersPage(
     integration: Integration,
     subjectUserId: string,
     paginationToken?: string
   ): Promise<{
+    listType: 'followers';
     subject: {
       id: string;
       name: string;
@@ -2095,6 +2813,15 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       name: string;
       username: string;
       picture?: string;
+      alreadyFollowing: boolean;
+      publicMetrics?: {
+        followersCount: number;
+        followingCount: number;
+        tweetCount: number;
+        listedCount?: number;
+      };
+      createdAt?: string;
+      verified?: boolean;
     }>;
     nextToken?: string;
   }> {
@@ -2130,17 +2857,101 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const res: any = await client.v2.followers(subjectId, {
       max_results: 100,
       ...(paginationToken ? { pagination_token: paginationToken } : {}),
-      'user.fields': ['profile_image_url', 'name', 'username'],
+      'user.fields': [...this.followListUserFields],
     });
 
-    const users = (res?.data || []).map((u: any) => ({
-      id: String(u.id),
-      name: u.name || u.username || String(u.id),
-      username: u.username || '',
-      picture: u.profile_image_url || undefined,
-    }));
+    const myFollowingIds = await this.getMyFollowingIdSet(integration, client);
+
+    const users = (res?.data || []).map((u: any) =>
+      this.mapFollowListUser(u, myFollowingIds)
+    );
 
     return {
+      listType: 'followers',
+      subject: subjectMeta,
+      users,
+      nextToken: res?.meta?.next_token || undefined,
+    };
+  }
+
+  /** Paginated accounts the subject user follows (use for unfollow cleanup on your profile). */
+  async listFollowingPage(
+    integration: Integration,
+    subjectUserId: string,
+    paginationToken?: string
+  ): Promise<{
+    listType: 'following';
+    subject: {
+      id: string;
+      name: string;
+      username: string;
+      picture?: string;
+    };
+    users: Array<{
+      id: string;
+      name: string;
+      username: string;
+      picture?: string;
+      alreadyFollowing: boolean;
+      publicMetrics?: {
+        followersCount: number;
+        followingCount: number;
+        tweetCount: number;
+        listedCount?: number;
+      };
+      createdAt?: string;
+      verified?: boolean;
+    }>;
+    nextToken?: string;
+  }> {
+    const client = this.clientForIntegration(integration);
+    const subjectId = String(subjectUserId || integration.internalId);
+
+    let subjectMeta = {
+      id: subjectId,
+      name: integration.name || '',
+      username: integration.profile || '',
+      picture: integration.picture || undefined,
+    };
+
+    if (subjectId !== integration.internalId) {
+      try {
+        const lookup = await client.v2.user(subjectId, {
+          'user.fields': ['profile_image_url', 'name', 'username'],
+        });
+        const u = lookup?.data;
+        if (u?.id) {
+          subjectMeta = {
+            id: String(u.id),
+            name: u.name || subjectMeta.name,
+            username: u.username || subjectMeta.username,
+            picture: u.profile_image_url || subjectMeta.picture,
+          };
+        }
+      } catch (err) {
+        console.warn('X listFollowingPage subject lookup:', err);
+      }
+    }
+
+    const res: any = await client.v2.following(subjectId, {
+      max_results: 100,
+      ...(paginationToken ? { pagination_token: paginationToken } : {}),
+      'user.fields': [...this.followListUserFields],
+    });
+
+    const myFollowingIds = await this.getMyFollowingIdSet(integration, client);
+
+    const users = (res?.data || []).map((u: any) => {
+      const mapped = this.mapFollowListUser(u, myFollowingIds);
+      return {
+        ...mapped,
+        alreadyFollowing:
+          subjectId === integration.internalId ? true : mapped.alreadyFollowing,
+      };
+    });
+
+    return {
+      listType: 'following',
       subject: subjectMeta,
       users,
       nextToken: res?.meta?.next_token || undefined,
@@ -2177,6 +2988,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         await timer(1200);
         await client.v2.follow(ownerId, targetId);
         succeeded.push(targetId);
+        this.markMyFollowingIds(integration.id, [targetId]);
       } catch (err: any) {
         const msg =
           err?.data?.detail ||
@@ -2189,4 +3001,88 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
     return { succeeded, failed };
   }
+
+  /** Unfollow target accounts as the connected integration (rate-limited batch). */
+  async unfollowUsers(
+    integration: Integration,
+    targetUserIds: string[]
+  ): Promise<{
+    succeeded: string[];
+    failed: Array<{ id: string; error: string }>;
+  }> {
+    const ownerId = integration.internalId;
+    if (!ownerId) {
+      return { succeeded: [], failed: [{ id: '', error: 'Missing channel id' }] };
+    }
+
+    const client = this.clientForIntegration(integration);
+    const unique = [
+      ...new Set(
+        (targetUserIds || [])
+          .map((id) => String(id).trim())
+          .filter((id) => id && id !== ownerId)
+      ),
+    ].slice(0, 25);
+
+    const succeeded: string[] = [];
+    const failed: Array<{ id: string; error: string }> = [];
+
+    for (const targetId of unique) {
+      try {
+        await timer(1200);
+        await client.v2.unfollow(ownerId, targetId);
+        succeeded.push(targetId);
+        this.unmarkMyFollowingIds(integration.id, [targetId]);
+      } catch (err: any) {
+        const msg =
+          err?.data?.detail ||
+          err?.data?.title ||
+          err?.message ||
+          'Unfollow failed';
+        failed.push({ id: targetId, error: String(msg) });
+      }
+    }
+
+    return { succeeded, failed };
+  }
+}
+
+/** Human-readable message from twitter-api-v2 / X HTTP errors. */
+export function formatXApiErrorMessage(
+  err: unknown,
+  fallback = 'X API request failed'
+): string {
+  const e = err as {
+    code?: number;
+    message?: string;
+    data?: {
+      detail?: string;
+      title?: string;
+      errors?: Array<
+        { detail?: string; message?: string; title?: string } | string
+      >;
+    };
+  };
+  const data = e?.data;
+  if (data?.detail) return String(data.detail);
+  if (data?.title) return String(data.title);
+  const errors = data?.errors;
+  if (Array.isArray(errors) && errors.length) {
+    const first = errors[0];
+    if (typeof first === 'string') return first;
+    if (first && typeof first === 'object') {
+      if (first.detail) return String(first.detail);
+      if (first.message) return String(first.message);
+      if (first.title) return String(first.title);
+    }
+  }
+  if (e?.code === 404) {
+    return (
+      'X returned not found (404). The account may not exist, followers/following may not be available for your API tier on that user, or the pagination token expired — try searching again from page 1.'
+    );
+  }
+  if (e?.code === 403) {
+    return 'X denied access (403). Your app may lack permission for this endpoint or account.';
+  }
+  return e?.message || fallback;
 }

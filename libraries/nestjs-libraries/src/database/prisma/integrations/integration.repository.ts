@@ -683,6 +683,21 @@ export class IntegrationRepository {
     });
   }
 
+  listActiveProfileAutomationPlugIds(integrationId: string) {
+    return this._plugs.model.plugs
+      .findMany({
+        where: {
+          integrationId,
+          activated: true,
+          plugFunction: {
+            in: ['autoDeleteProfile', 'autoDeleteReposts', 'autoDmPinnedPost'],
+          },
+        },
+        select: { id: true },
+      })
+      .then((rows) => rows.map((r) => r.id));
+  }
+
   /** Bump per-post auto-DM counter stored in Post.settings JSON (dashboard queue). */
   async incrementAutoDmSentCountForPost(
     integrationId: string,

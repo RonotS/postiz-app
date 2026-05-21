@@ -752,8 +752,18 @@ export class PostsService {
       'autoThreadReply',
     ]);
 
+    const xProfilePollPlugFns = new Set([
+      'autoDeleteProfile',
+      'autoDeleteReposts',
+      'autoDmPinnedPost',
+    ]);
+
     return getPlugs
       .filter((plug) => plug.plugFunction !== 'autoDmFollowers')
+      .filter(
+        (plug) =>
+          !plug.plugFunction || !xProfilePollPlugFns.has(plug.plugFunction)
+      )
       .filter((plug) => {
         if (
           providerName === 'x' &&

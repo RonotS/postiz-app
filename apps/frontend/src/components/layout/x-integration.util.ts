@@ -2,6 +2,8 @@ export type IntegrationLike = {
   id?: string;
   identifier: string;
   name?: string;
+  /** X handle / profile slug from `/integrations/list` (`profile` column). */
+  display?: string;
   picture?: string;
   disabled?: boolean;
   inBetweenSteps?: boolean;

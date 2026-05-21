@@ -8,8 +8,8 @@ type SidebarIconProps = {
   className?: string;
 };
 
-/** Same SVG as Profile Automations in the sidebar (`top.menu`). */
-export const ProfileAutomationsIcon: FC<SidebarIconProps> = ({
+/** Multi-user icon for Follow automations in the sidebar. */
+export const FollowAutomationsIcon: FC<SidebarIconProps> = ({
   size = 21,
   className,
 }) => (
@@ -33,14 +33,40 @@ export const ProfileAutomationsIcon: FC<SidebarIconProps> = ({
   </svg>
 );
 
-/** Wraps a sidebar icon for section headers on Profile automations pages. */
+/** @deprecated Use FollowAutomationsIcon */
+export const ProfileAutomationsIcon = FollowAutomationsIcon;
+
+/** Single-user profile icon for Profile automations in the sidebar. */
+export const ProfileAutomationsNavIcon: FC<SidebarIconProps> = ({
+  size = 21,
+  className,
+}) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+    aria-hidden
+  >
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+    <circle cx="12" cy="7" r="4" />
+  </svg>
+);
+
+/** Wraps a sidebar icon for section headers on dashboard automation pages. */
 export const ProfileAutomationsSectionIcon: FC<{
   children: ReactNode;
   className?: string;
 }> = ({ children, className }) => (
   <div
     className={clsx(
-      'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-newBorder/80 bg-newBgColorInner text-textItemBlur shadow-sm',
+      'flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-gray-300 bg-newBgColorInner text-btnPrimary shadow-sm dark:border-newBorder dark:text-newTextColor',
       className
     )}
   >

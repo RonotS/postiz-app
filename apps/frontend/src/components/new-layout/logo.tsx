@@ -1,11 +1,7 @@
 'use client';
 
-import { useSyncedThemeMode } from '@gitroom/frontend/components/layout/use-synced-theme-mode';
-
 export const Logo = () => {
-  const mode = useSyncedThemeMode();
-  const src =
-    mode === 'light' ? '/favicon(black).png' : '/favicon(white).png';
+  const src = '/favicon(whitev2).png';
 
   return (
     <img

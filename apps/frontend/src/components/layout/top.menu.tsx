@@ -7,7 +7,10 @@ import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { MenuItem } from '@gitroom/frontend/components/new-layout/menu-item';
 import { ConnectedAccount } from '@gitroom/frontend/components/layout/connected.account';
-import { ProfileAutomationsIcon } from '@gitroom/frontend/components/dashboard/profile-automations.icons';
+import {
+  FollowAutomationsIcon,
+  ProfileAutomationsNavIcon,
+} from '@gitroom/frontend/components/dashboard/profile-automations.icons';
 
 interface MenuItemInterface {
   name: string;
@@ -101,9 +104,14 @@ export const useMenuItem = () => {
       path: '/dashboard/tweet-automations',
     },
     {
-      name: t('profile_automations', 'Profile Automations'),
-      icon: <ProfileAutomationsIcon />,
+      name: t('follow_automations', 'Follow automations'),
+      icon: <FollowAutomationsIcon />,
       path: '/dashboard/followers',
+    },
+    {
+      name: t('profile_automations', 'Profile automations'),
+      icon: <ProfileAutomationsNavIcon />,
+      path: '/dashboard/profile-automations',
     },
     {
       name: isGeneral ? t('calendar', 'Calendar') : t('launches', 'Launches'),

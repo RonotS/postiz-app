@@ -360,6 +360,15 @@ export class PostActivity {
   }
 
   @ActivityMethod()
+  async listActiveProfileAutomationPlugIds(
+    integrationId: string
+  ): Promise<string[]> {
+    return this._integrationService.listActiveProfileAutomationPlugIds(
+      integrationId
+    );
+  }
+
+  @ActivityMethod()
   async processInternalPlug(data: {
     post: string;
     originalIntegration: string;

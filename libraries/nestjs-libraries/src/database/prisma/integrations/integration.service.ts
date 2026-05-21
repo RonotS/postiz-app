@@ -29,14 +29,25 @@ import { TemporalService } from 'nestjs-temporal-core';
 import {
   xFollowerDmPollerWorkflowId,
   X_FOLLOWER_DM_DEFAULT_POLL_INTERVAL_MS,
+  xProfileAutomationsPollerWorkflowId,
+  X_PROFILE_AUTOMATION_PLUG_FUNCTIONS,
+  type XProfileAutomationPlugFunction,
 } from '@gitroom/nestjs-libraries/temporal/x.follower.dm.constants';
 import { XAccountActivityService } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.service';
 import { XAccountActivityHandler } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.handler';
-import { XProvider } from '@gitroom/nestjs-libraries/integrations/social/x.provider';
-import { X_FOLLOW_BATCH_MAX } from '@gitroom/nestjs-libraries/integrations/social/x-follow-rate-limit';
+import {
+  XProvider,
+  formatXApiErrorMessage,
+} from '@gitroom/nestjs-libraries/integrations/social/x.provider';
+import {
+  X_FOLLOW_BATCH_MAX,
+  formatFollowRateLimitMessage,
+} from '@gitroom/nestjs-libraries/integrations/social/x-follow-rate-limit';
 import {
   getXFollowRateLimitForIntegration,
+  getXUnfollowRateLimitForIntegration,
   recordXFollowsForIntegration,
+  recordXUnfollowsForIntegration,
 } from '@gitroom/nestjs-libraries/integrations/social/x-follow-rate-limit.store';
 import {
   getXAccountActivityRedisSubscribedKey,
@@ -716,10 +727,54 @@ export class IntegrationService {
       },
     };
 
+    let engagementReleaseId = data.postId;
+    if (getPlugById.plugFunction === 'autoDmPinnedPost') {
+      const xProvider = integration as XProvider;
+      const pinnedId = await xProvider.resolvePinnedTweetId(
+        getPlugById.integration
+      );
+      if (pinnedId) {
+        engagementReleaseId = pinnedId;
+      }
+    }
+
+    const pinnedEngagementPlugContext = {
+      loadDmdUserIds: async (userIds: string[]): Promise<Set<string>> => {
+        if (userIds.length === 0) return new Set();
+        const candidates = userIds.map(
+          (uid) => `${engagementReleaseId}:${uid}`
+        );
+        const existing = await this._integrationRepository.loadExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          candidates
+        );
+        const existingValues = new Set(existing.map((e: any) => e.value));
+        return new Set(
+          userIds.filter((uid) =>
+            existingValues.has(`${engagementReleaseId}:${uid}`)
+          )
+        );
+      },
+      saveDmdUserIds: async (userIds: string[]) => {
+        if (userIds.length === 0) return;
+        const values = userIds.map(
+          (uid) => `${engagementReleaseId}:${uid}`
+        );
+        await this._integrationRepository.saveExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          values
+        );
+      },
+    };
+
     const plugContext =
       getPlugById.plugFunction === 'autoDmFollowers'
         ? followerPlugContext
-        : engagementPlugContext;
+        : getPlugById.plugFunction === 'autoDmPinnedPost'
+          ? pinnedEngagementPlugContext
+          : engagementPlugContext;
 
     // @ts-ignore
     const process = await integration[getPlugById.plugFunction](
@@ -847,7 +902,7 @@ export class IntegrationService {
     const workflowId = xFollowerDmPollerWorkflowId(integrationId);
     const fromEnv = Number(process.env.X_FOLLOWER_DM_POLL_INTERVAL_MS);
     const pollIntervalMs = Math.max(
-      60_000,
+      30_000,
       Math.min(
         3_600_000,
         Number.isFinite(fromEnv) && fromEnv > 0
@@ -891,6 +946,80 @@ export class IntegrationService {
     );
   }
 
+  async listActiveProfileAutomationPlugIds(
+    integrationId: string
+  ): Promise<string[]> {
+    return this._integrationRepository.listActiveProfileAutomationPlugIds(
+      integrationId
+    );
+  }
+
+  private isProfileAutomationPlug(
+    func: string
+  ): func is XProfileAutomationPlugFunction {
+    return (X_PROFILE_AUTOMATION_PLUG_FUNCTIONS as readonly string[]).includes(
+      func
+    );
+  }
+
+  private async startXProfileAutomationsPollerWorkflow(
+    organizationId: string,
+    integrationId: string
+  ): Promise<void> {
+    if (isXAccountActivityPollingDisabled()) {
+      return;
+    }
+    const raw = this._temporalService.client?.getRawClient();
+    if (!raw) return;
+    const workflowId = xProfileAutomationsPollerWorkflowId(integrationId);
+    const fromEnv = Number(process.env.X_PROFILE_AUTOMATIONS_POLL_INTERVAL_MS);
+    const pollIntervalMs = Math.max(
+      30_000,
+      Math.min(
+        3_600_000,
+        Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 30_000
+      )
+    );
+    try {
+      await raw.workflow.start('xProfileAutomationsPollerWorkflow', {
+        taskQueue: 'main',
+        workflowId,
+        workflowIdConflictPolicy: 'TERMINATE_EXISTING',
+        args: [{ organizationId, integrationId, pollIntervalMs }],
+      });
+    } catch (err) {
+      console.error('startXProfileAutomationsPollerWorkflow:', err);
+    }
+  }
+
+  private async stopXProfileAutomationsPollerWorkflow(
+    integrationId: string
+  ): Promise<void> {
+    try {
+      await this._temporalService.terminateWorkflow(
+        xProfileAutomationsPollerWorkflowId(integrationId)
+      );
+    } catch {
+      /* workflow may not exist */
+    }
+  }
+
+  private async syncProfileAutomationsPoller(
+    organizationId: string,
+    integrationId: string
+  ): Promise<void> {
+    const plugIds =
+      await this.listActiveProfileAutomationPlugIds(integrationId);
+    if (plugIds.length) {
+      await this.startXProfileAutomationsPollerWorkflow(
+        organizationId,
+        integrationId
+      );
+    } else {
+      await this.stopXProfileAutomationsPollerWorkflow(integrationId);
+    }
+  }
+
   async createOrUpdatePlug(
     orgId: string,
     integrationId: string,
@@ -906,6 +1035,10 @@ export class IntegrationService {
       if (!isXAccountActivityPollingDisabled()) {
         await this.startXFollowerDmPollerWorkflow(orgId, integrationId, row.id);
       }
+    }
+
+    if (this.isProfileAutomationPlug(body.func) && row.activated) {
+      await this.syncProfileAutomationsPoller(orgId, integrationId);
     }
 
     if (row.activated && isXAccountActivityWebhooksEnabled()) {
@@ -949,6 +1082,10 @@ export class IntegrationService {
       }
     }
 
+    if (this.isProfileAutomationPlug(updated.plugFunction)) {
+      await this.syncProfileAutomationsPoller(orgId, updated.integrationId);
+    }
+
     return { id: updated.id };
   }
 
@@ -974,7 +1111,9 @@ export class IntegrationService {
     orgId: string,
     integrationId: string,
     subjectUserId?: string,
-    paginationToken?: string
+    paginationToken?: string,
+    username?: string,
+    listType: 'followers' | 'following' = 'followers'
   ) {
     const integration = await this.getIntegrationById(orgId, integrationId);
     if (!integration || integration.providerIdentifier !== 'x') {
@@ -988,24 +1127,46 @@ export class IntegrationService {
       'x'
     ) as XProvider;
 
-    const subject = subjectUserId?.trim() || integration.internalId;
+    let subject = subjectUserId?.trim() || '';
+    if (username?.trim()) {
+      const resolved = await x.resolveUserByUsername(
+        integration,
+        username.trim()
+      );
+      subject = resolved.id;
+    }
+    if (!subject) {
+      subject = integration.internalId || '';
+    }
     if (!subject) {
       throw new HttpException('Missing user id', HttpStatus.BAD_REQUEST);
     }
 
     try {
+      if (listType === 'following') {
+        return await x.listFollowingPage(
+          integration,
+          subject,
+          paginationToken?.trim() || undefined
+        );
+      }
       return await x.listFollowersPage(
         integration,
         subject,
         paginationToken?.trim() || undefined
       );
-    } catch (err: any) {
-      const msg =
-        err?.data?.detail ||
-        err?.data?.title ||
-        err?.message ||
-        'Could not load followers';
-      throw new HttpException(String(msg), HttpStatus.BAD_REQUEST);
+    } catch (err: unknown) {
+      const fallback =
+        listType === 'following'
+          ? 'Could not load following list'
+          : 'Could not load followers';
+      const msg = formatXApiErrorMessage(err, fallback);
+      console.error(
+        `listXFollowers (${listType}) integration=${integrationId} subject=${subject}:`,
+        msg,
+        err
+      );
+      throw new HttpException(msg, HttpStatus.BAD_REQUEST);
     }
   }
 
@@ -1016,6 +1177,25 @@ export class IntegrationService {
     }
 
     return getXFollowRateLimitForIntegration(integrationId);
+  }
+
+  async getXPinnedTweet(orgId: string, integrationId: string) {
+    const integration = await this.getIntegrationById(orgId, integrationId);
+    if (!integration || integration.providerIdentifier !== 'x') {
+      throw new HttpException('Invalid X integration', HttpStatus.BAD_REQUEST);
+    }
+
+    const x = this._integrationManager.getSocialIntegration('x') as XProvider;
+    return x.getPinnedTweetPreview(integration);
+  }
+
+  async getXUnfollowRateLimit(orgId: string, integrationId: string) {
+    const integration = await this.getIntegrationById(orgId, integrationId);
+    if (!integration || integration.providerIdentifier !== 'x') {
+      throw new HttpException('Invalid X integration', HttpStatus.BAD_REQUEST);
+    }
+
+    return getXUnfollowRateLimitForIntegration(integrationId);
   }
 
   async massFollowXUsers(
@@ -1041,7 +1221,7 @@ export class IntegrationService {
     if (rateBefore.limited) {
       throw new HttpException(
         {
-          message: `Follow limit reached (${rateBefore.limit} per ${rateBefore.windowMinutes} minutes). Try again after ${rateBefore.resetsAt}.`,
+          message: formatFollowRateLimitMessage(rateBefore),
           rateLimit: rateBefore,
         },
         HttpStatus.TOO_MANY_REQUESTS
@@ -1056,7 +1236,7 @@ export class IntegrationService {
     if (cappedIds.length === 0) {
       throw new HttpException(
         {
-          message: `Follow limit reached (${rateBefore.limit} per ${rateBefore.windowMinutes} minutes).`,
+          message: formatFollowRateLimitMessage(rateBefore),
           rateLimit: rateBefore,
         },
         HttpStatus.TOO_MANY_REQUESTS
@@ -1080,6 +1260,72 @@ export class IntegrationService {
         err?.data?.title ||
         err?.message ||
         'Follow request failed';
+      throw new HttpException(String(msg), HttpStatus.BAD_REQUEST);
+    }
+  }
+
+  async massUnfollowXUsers(
+    orgId: string,
+    integrationId: string,
+    userIds: string[]
+  ) {
+    const integration = await this.getIntegrationById(orgId, integrationId);
+    if (!integration || integration.providerIdentifier !== 'x') {
+      throw new HttpException('Invalid X integration', HttpStatus.BAD_REQUEST);
+    }
+    if (integration.disabled || integration.deletedAt) {
+      throw new HttpException('Channel is disabled', HttpStatus.BAD_REQUEST);
+    }
+    if (integration.refreshNeeded) {
+      throw new HttpException(
+        'Reconnect this X channel before unfollowing users',
+        HttpStatus.BAD_REQUEST
+      );
+    }
+
+    const rateBefore = await getXUnfollowRateLimitForIntegration(integrationId);
+    if (rateBefore.limited) {
+      throw new HttpException(
+        {
+          message: `Unfollow limit reached (${rateBefore.limit} per ${rateBefore.windowMinutes} minutes). Try again after ${rateBefore.resetsAt}.`,
+          rateLimit: rateBefore,
+        },
+        HttpStatus.TOO_MANY_REQUESTS
+      );
+    }
+
+    const cappedIds = userIds.slice(
+      0,
+      Math.min(X_FOLLOW_BATCH_MAX, rateBefore.remaining)
+    );
+
+    if (cappedIds.length === 0) {
+      throw new HttpException(
+        {
+          message: `Unfollow limit reached (${rateBefore.limit} per ${rateBefore.windowMinutes} minutes).`,
+          rateLimit: rateBefore,
+        },
+        HttpStatus.TOO_MANY_REQUESTS
+      );
+    }
+
+    const x = this._integrationManager.getSocialIntegration(
+      'x'
+    ) as XProvider;
+
+    try {
+      const result = await x.unfollowUsers(integration, cappedIds);
+      const rateLimit = await recordXUnfollowsForIntegration(
+        integrationId,
+        result.succeeded.length
+      );
+      return { ...result, rateLimit };
+    } catch (err: any) {
+      const msg =
+        err?.data?.detail ||
+        err?.data?.title ||
+        err?.message ||
+        'Unfollow request failed';
       throw new HttpException(String(msg), HttpStatus.BAD_REQUEST);
     }
   }

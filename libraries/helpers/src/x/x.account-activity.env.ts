@@ -4,13 +4,13 @@ export function isXAccountActivityWebhooksEnabled(): boolean {
   return v === 'true' || v === '1';
 }
 
-/** When webhooks are on, skip Temporal pollers / scheduled plug runs for webhook-covered plugs. */
+/** When webhooks are on, skip Temporal pollers for webhook-covered plugs (must be explicit). */
 export function isXAccountActivityPollingDisabled(): boolean {
   if (!isXAccountActivityWebhooksEnabled()) {
     return false;
   }
   const v = process.env.X_ACCOUNT_ACTIVITY_DISABLE_POLLING?.trim();
-  return v === 'true' || v === '1' || v === undefined || v === '';
+  return v === 'true' || v === '1';
 }
 
 export function getXAccountActivityWebhookUrl(): string | undefined {

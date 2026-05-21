@@ -340,7 +340,7 @@ export default function DashboardPage() {
       const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        setSettings({ ...DEFAULT_SETTINGS, ...parsed });
+        setSettings({ ...DEFAULT_SETTINGS, ...parsed, longForm: true });
       }
       const draft = localStorage.getItem(DRAFT_STORAGE_KEY);
       if (draft) setComposerText(draft);
@@ -352,7 +352,10 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    localStorage.setItem(
+      SETTINGS_STORAGE_KEY,
+      JSON.stringify({ ...settings, longForm: true })
+    );
   }, [settings, hydrated]);
 
   useEffect(() => {
@@ -494,7 +497,7 @@ export default function DashboardPage() {
   }, [filteredPosts, t]);
 
   const charCount = composerText.length;
-  const charLimit = settings.longForm ? 25000 : 280;
+  const charLimit = 25000;
 
   const submitPost = useCallback(
     async (mode: 'queue' | 'now' | 'draft') => {
@@ -1442,16 +1445,6 @@ export default function DashboardPage() {
                 </span>
               </div>
             </div>
-
-            <label className="flex items-center gap-2 text-newTextColor text-xs cursor-pointer">
-              <input
-                type="checkbox"
-                checked={settings.longForm}
-                onChange={(e) => updateSetting('longForm', e.target.checked)}
-                className="accent-customColor26"
-              />
-              {t('long_form_post_enabled', 'Long form post enabled')}
-            </label>
 
             {/* Hidden per request — kept so it can be re-enabled later.
             <div className="flex flex-col gap-1">

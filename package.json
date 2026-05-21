@@ -23,7 +23,7 @@
     "build:orchestrator": "node -e \"require('fs').rmSync('apps/orchestrator/dist', { recursive: true, force: true })\" && pnpm --filter ./apps/orchestrator run build",
     "build:extension": "node -e \"require('fs').rmSync('apps/extension/dist', { recursive: true, force: true })\" && pnpm --filter ./apps/extension run build",
     "dev:backend": "node -e \"require('fs').rmSync('apps/backend/dist', { recursive: true, force: true })\" && pnpm --filter ./apps/backend run dev",
-    "dev:frontend": "node -e \"require('fs').rmSync('apps/frontend/dist', { recursive: true, force: true })\" && pnpm --filter ./apps/frontend run dev",
+    "dev:frontend": "node -e \"const fs=require('fs');['apps/frontend/dist','apps/frontend/.next'].forEach((p)=>fs.rmSync(p,{recursive:true,force:true}))\" && pnpm --filter ./apps/frontend run dev",
     "dev:orchestrator": "node -e \"require('fs').rmSync('apps/orchestrator/dist', { recursive: true, force: true })\" && pnpm --filter ./apps/orchestrator run dev",
     "start:prod:orchestrator": "pnpm --filter ./apps/orchestrator run start",
     "start:prod:backend": "pnpm --filter ./apps/backend run start",

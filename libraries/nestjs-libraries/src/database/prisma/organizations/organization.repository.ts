@@ -26,6 +26,9 @@ const ADMIN_PLUG_TITLES: Record<string, string> = {
   autoPlugPost: 'Auto-comment when engagement reaches a threshold',
   autoRepostPost: 'Auto-repost when likes reach a threshold',
   autoThreadReply: 'Auto-reply in thread when likes reach a threshold',
+  autoDeleteProfile: 'Auto-delete posts on your profile',
+  autoDeleteReposts: 'Auto-delete reposts after a delay',
+  autoDmPinnedPost: 'Auto-DM engagers on your pinned post',
 };
 
 const ADMIN_PLUG_FIELD_LABELS: Record<string, string> = {

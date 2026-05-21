@@ -197,14 +197,27 @@ export class IntegrationsController {
     @GetOrgFromRequest() org: Organization,
     @Param('id') id: string,
     @Query('userId') userId?: string,
-    @Query('pagination_token') paginationToken?: string
+    @Query('username') username?: string,
+    @Query('pagination_token') paginationToken?: string,
+    @Query('list') list?: 'followers' | 'following'
   ) {
     return this._integrationService.listXFollowers(
       org.id,
       id,
       userId,
-      paginationToken
+      paginationToken,
+      username,
+      list === 'following' ? 'following' : 'followers'
     );
+  }
+
+  @Get('/:id/x-pinned-tweet')
+  @CheckPolicies([AuthorizationActions.Read, Sections.CHANNEL])
+  async getXPinnedTweet(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._integrationService.getXPinnedTweet(org.id, id);
   }
 
   @Get('/:id/x-follow-rate-limit')
@@ -216,6 +229,15 @@ export class IntegrationsController {
     return this._integrationService.getXFollowRateLimit(org.id, id);
   }
 
+  @Get('/:id/x-unfollow-rate-limit')
+  @CheckPolicies([AuthorizationActions.Read, Sections.CHANNEL])
+  async getXUnfollowRateLimit(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._integrationService.getXUnfollowRateLimit(org.id, id);
+  }
+
   @Post('/:id/x-follow')
   @CheckPolicies([AuthorizationActions.Update, Sections.CHANNEL])
   async massFollowXUsers(
@@ -224,6 +246,20 @@ export class IntegrationsController {
     @Body() body: XMassFollowDto
   ) {
     return this._integrationService.massFollowXUsers(
+      org.id,
+      id,
+      body.userIds
+    );
+  }
+
+  @Post('/:id/x-unfollow')
+  @CheckPolicies([AuthorizationActions.Update, Sections.CHANNEL])
+  async massUnfollowXUsers(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: XMassFollowDto
+  ) {
+    return this._integrationService.massUnfollowXUsers(
       org.id,
       id,
       body.userIds

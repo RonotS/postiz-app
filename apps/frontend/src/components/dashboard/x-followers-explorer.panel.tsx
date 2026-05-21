@@ -2,9 +2,11 @@
 
 import {
   FC,
+  ReactNode,
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import clsx from 'clsx';
@@ -24,19 +26,105 @@ import {
   ProfileAutomationsGhostButton,
   ProfileAutomationsPrimaryButton,
 } from '@gitroom/frontend/components/dashboard/profile-automations.ui';
+import { XFollowRateLimitBanner } from '@gitroom/frontend/components/dashboard/x-follow-rate-limit-banner';
+import {
+  useXFollowRateLimit,
+  useXUnfollowRateLimit,
+  X_FOLLOW_BATCH_MAX,
+} from '@gitroom/frontend/components/dashboard/use-x-follow-rate-limit';
+import {
+  EngagementFilter,
+  filterAndSortFollowers,
+  FollowerListFilter,
+  FollowerListSort,
+  FollowerListUser,
+  sortFromColumn,
+  SpreadsheetColumn,
+} from '@gitroom/frontend/components/dashboard/follower-list-filters';
+import {
+  loadExplorerListIds,
+  toggleExplorerListId,
+} from '@gitroom/frontend/components/dashboard/follower-explorer-lists';
+import {
+  applyFollowerPageCap,
+  canLoadMoreFollowers,
+  EXPLORER_MAX_LOADED,
+  EXPLORER_MAX_PAGES,
+  EXPLORER_PAGE_SIZE,
+  explorerPaginationTotalPages,
+  mergeFollowerPages,
+  XFollowersExplorerTable,
+} from '@gitroom/frontend/components/dashboard/x-followers-explorer-table';
 
-type FollowerUser = {
+type FollowerUser = FollowerListUser;
+
+type ListMode = 'followers' | 'following';
+
+function explorerNavButtonClass(active: boolean) {
+  return clsx(
+    '!border !transition-colors',
+    active
+      ? '!border-btnPrimary !bg-btnPrimary/20 !text-btnPrimary font-semibold shadow-sm dark:!bg-btnPrimary/25'
+      : '!border-gray-300 !bg-gray-200 !text-gray-900 dark:!border-newBorder dark:!bg-newBgLineColor dark:!text-newTextColor hover:!bg-gray-300 dark:hover:!bg-boxHover'
+  );
+}
+
+type BreadcrumbItem = {
   id: string;
   name: string;
   username: string;
   picture?: string;
 };
 
-type BreadcrumbItem = {
-  id: string;
-  name: string;
-  username: string;
-};
+function toBreadcrumbItem(user: FollowerUser): BreadcrumbItem {
+  return {
+    id: user.id,
+    name: user.name || user.username,
+    username: user.username,
+    picture: user.picture,
+  };
+}
+
+function SubjectProfileHeader({
+  picture,
+  title,
+  username,
+  meta,
+}: {
+  picture?: string;
+  title: string;
+  username?: string;
+  meta?: ReactNode;
+}) {
+  return (
+    <div className="flex min-w-0 items-center gap-3">
+      <ImageWithFallback
+        fallbackSrc="/no-picture.svg"
+        src={picture || '/no-picture.svg'}
+        className="h-11 w-11 shrink-0 rounded-full border border-newBorder object-cover sm:h-12 sm:w-12"
+        alt=""
+        width={48}
+        height={48}
+      />
+      <div className="min-w-0">
+        <p className="truncate text-sm font-semibold text-newTextColor sm:text-base">
+          {title}
+        </p>
+        {(username || meta) && (
+          <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-newTableText">
+            {username && <span className="truncate">@{username}</span>}
+            {username && meta && (
+              <span className="text-newTableText/50" aria-hidden>
+                Â·
+              </span>
+            )}
+            {meta}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 type FollowersPageResponse = {
   subject: FollowerUser;
@@ -44,97 +132,6 @@ type FollowersPageResponse = {
   nextToken?: string;
 };
 
-function FollowerSkeleton() {
-  return (
-    <div className="rounded-xl border border-newBorder/60 bg-newBgColor/40 p-3 animate-pulse">
-      <div className="flex items-center gap-3">
-        <div className="h-11 w-11 rounded-full bg-newBgLineColor/80" />
-        <div className="flex-1 space-y-2">
-          <div className="h-3 w-24 rounded-md bg-newBgLineColor/80" />
-          <div className="h-2.5 w-16 rounded-md bg-newBgLineColor/60" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function FollowerTile({
-  user,
-  selected,
-  disabled,
-  onToggle,
-  onDrill,
-}: {
-  user: FollowerUser;
-  selected: boolean;
-  disabled: boolean;
-  onToggle: () => void;
-  onDrill: () => void;
-}) {
-  const t = useT();
-
-  return (
-    <article
-      className={clsx(
-        'group relative flex flex-col rounded-xl border transition-all duration-200',
-        'bg-newBgColor/30 hover:bg-boxHover/80',
-        selected
-          ? 'border-btnPrimary/60 ring-2 ring-btnPrimary/25 shadow-sm shadow-btnPrimary/10'
-          : 'border-newBorder/70 hover:border-newBorder'
-      )}
-    >
-      <div className="flex items-start gap-3 p-3 sm:p-3.5">
-        <label className="flex items-center pt-1 cursor-pointer">
-          <input
-            type="checkbox"
-            className="h-4 w-4 rounded border-newBorder text-btnPrimary focus:ring-btnPrimary/30"
-            checked={selected}
-            onChange={onToggle}
-            disabled={disabled}
-            onClick={(e) => e.stopPropagation()}
-          />
-        </label>
-        <button
-          type="button"
-          className="flex min-w-0 flex-1 items-center gap-3 text-start"
-          onClick={onDrill}
-          disabled={disabled}
-        >
-          <ImageWithFallback
-            fallbackSrc="/no-picture.svg"
-            src={user.picture || '/no-picture.svg'}
-            className="h-11 w-11 shrink-0 rounded-full ring-2 ring-newBorder/50"
-            alt=""
-            width={44}
-            height={44}
-          />
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-newTextColor">
-              {user.name}
-            </p>
-            <p className="truncate text-xs text-newTableText">
-              @{user.username}
-            </p>
-          </div>
-        </button>
-      </div>
-      <button
-        type="button"
-        onClick={onDrill}
-        disabled={disabled}
-        className={clsx(
-          'mx-3 mb-3 mt-0 flex w-[calc(100%-1.5rem)] items-center justify-center gap-1 rounded-lg',
-          'border border-dashed border-newBorder/80 py-1.5 text-[11px] font-medium text-newTableText',
-          'transition-colors group-hover:border-btnPrimary/40 group-hover:text-btnPrimary',
-          'disabled:opacity-50'
-        )}
-      >
-        {t('view_their_followers', 'View their followers')}
-        <span aria-hidden>→</span>
-      </button>
-    </article>
-  );
-}
 
 export const XFollowersExplorerPanel: FC = () => {
   const t = useT();
@@ -163,8 +160,177 @@ export const XFollowersExplorerPanel: FC = () => {
   const [nextToken, setNextToken] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const usersRef = useRef<FollowerUser[]>([]);
+  const nextTokenRef = useRef<string | undefined>(undefined);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [following, setFollowing] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [listMode, setListMode] = useState<ListMode>('followers');
+  const [listFilter, setListFilter] = useState<FollowerListFilter>('all');
+  const [listSort, setListSort] = useState<FollowerListSort>('api');
+  const [engagementFilter, setEngagementFilter] =
+    useState<EngagementFilter>('all');
+  const [tableSearch, setTableSearch] = useState('');
+  const [hideWhitelisted, setHideWhitelisted] = useState(true);
+  const [hideBlacklisted, setHideBlacklisted] = useState(true);
+  const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [tablePage, setTablePage] = useState(1);
+  const [sortColumn, setSortColumn] = useState<SpreadsheetColumn | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const [whitelist, setWhitelist] = useState<Set<string>>(new Set());
+  const [blacklist, setBlacklist] = useState<Set<string>>(new Set());
+
+  const {
+    rateLimit: followRateLimit,
+    mutate: mutateFollowRateLimit,
+    countdown: followCountdown,
+    dailyCountdown: followDailyCountdown,
+    atLimit: followAtLimit,
+    remaining: followRemaining,
+    limit: followLimit,
+    windowMinutes: followWindowMinutes,
+    dailyLimit: followDailyLimit,
+    dailyRemaining: followDailyRemaining,
+    limitedBy: followLimitedBy,
+  } = useXFollowRateLimit(integrationId);
+
+  const {
+    rateLimit: unfollowRateLimit,
+    mutate: mutateUnfollowRateLimit,
+    countdown: unfollowCountdown,
+    atLimit: unfollowAtLimit,
+    remaining: unfollowRemaining,
+    limit: unfollowLimit,
+    windowMinutes: unfollowWindowMinutes,
+  } = useXUnfollowRateLimit(integrationId);
+
+  const followSlotsLeft = followAtLimit
+    ? 0
+    : followRateLimit?.daily
+      ? followDailyRemaining
+      : followRemaining;
+  const unfollowSlotsLeft = unfollowAtLimit ? 0 : unfollowRemaining;
+
+  const activeIntegration = useMemo(
+    () => xIntegrations.find((i) => i.id === integrationId),
+    [xIntegrations, integrationId]
+  );
+
+  const ownInternalId = useMemo(() => {
+    const match = activeIntegration as
+      | (XProfilePickerIntegration & { internalId?: string })
+      | undefined;
+    return match?.internalId;
+  }, [activeIntegration]);
+
+  const currentSubject = trail.length ? trail[trail.length - 1] : undefined;
+
+  const viewingOwnFollowers = useMemo(() => {
+    if (!currentSubject || !ownInternalId) return false;
+    return String(currentSubject.id) === String(ownInternalId);
+  }, [currentSubject, ownInternalId]);
+
+  const followerFilterOpts = useMemo(
+    () => ({
+      engagement: engagementFilter,
+      tableSearch,
+      whitelist,
+      blacklist,
+      visibility: { hideWhitelisted, hideBlacklisted },
+    }),
+    [
+      engagementFilter,
+      tableSearch,
+      whitelist,
+      blacklist,
+      hideWhitelisted,
+      hideBlacklisted,
+    ]
+  );
+
+  const displayUsers = useMemo(
+    () => filterAndSortFollowers(users, listFilter, listSort, followerFilterOpts),
+    [users, listFilter, listSort, followerFilterOpts]
+  );
+
+  useEffect(() => {
+    usersRef.current = users;
+  }, [users]);
+
+  useEffect(() => {
+    nextTokenRef.current = nextToken;
+  }, [nextToken]);
+
+  const countDisplayUsers = useCallback(
+    (source: FollowerUser[]) =>
+      filterAndSortFollowers(source, listFilter, listSort, followerFilterOpts)
+        .length,
+    [listFilter, listSort, followerFilterOpts]
+  );
+
+  const tablePageUsers = useMemo(() => {
+    const totalPages = Math.max(
+      1,
+      Math.ceil(displayUsers.length / EXPLORER_PAGE_SIZE)
+    );
+    const safePage = Math.min(tablePage, totalPages);
+    return displayUsers.slice(
+      (safePage - 1) * EXPLORER_PAGE_SIZE,
+      safePage * EXPLORER_PAGE_SIZE
+    );
+  }, [displayUsers, tablePage]);
+
+  useEffect(() => {
+    setTablePage(1);
+  }, [
+    listFilter,
+    listSort,
+    engagementFilter,
+    tableSearch,
+    hideWhitelisted,
+    hideBlacklisted,
+  ]);
+
+  useEffect(() => {
+    if (!integrationId) {
+      setWhitelist(new Set());
+      setBlacklist(new Set());
+      return;
+    }
+    setWhitelist(loadExplorerListIds(integrationId, 'whitelist'));
+    setBlacklist(loadExplorerListIds(integrationId, 'blacklist'));
+  }, [integrationId]);
+
+  const isUnfollowFilter = useMemo(
+    () =>
+      ['i_follow', 'low_engagement', 'inactive', 'low_followers'].includes(
+        listFilter
+      ),
+    [listFilter]
+  );
+
+  const subjectHeader = useMemo(() => {
+    if (!currentSubject) return null;
+    if (viewingOwnFollowers && listMode === 'following' && activeIntegration) {
+      return {
+        picture: activeIntegration.picture,
+        title: t('following_list', 'Following'),
+        username: currentSubject.username,
+      };
+    }
+    if (viewingOwnFollowers && activeIntegration) {
+      return {
+        picture: activeIntegration.picture,
+        title: t('followers_list', 'Followers'),
+        username: currentSubject.username,
+      };
+    }
+    return {
+      picture: currentSubject.picture,
+      title: currentSubject.name,
+      username: currentSubject.username,
+    };
+  }, [currentSubject, viewingOwnFollowers, activeIntegration, listMode, t]);
 
   useEffect(() => {
     if (!xIntegrations.length) {
@@ -186,15 +352,23 @@ export const XFollowersExplorerPanel: FC = () => {
   const loadFollowers = useCallback(
     async (opts: {
       subjectUserId?: string;
+      username?: string;
       paginationToken?: string;
+      listMode?: ListMode;
     }) => {
       if (!integrationId) return;
+      const mode = opts.listMode ?? listMode;
       const params = new URLSearchParams();
-      if (opts.subjectUserId) {
+      if (opts.username?.trim()) {
+        params.set('username', opts.username.trim().replace(/^@+/, ''));
+      } else if (opts.subjectUserId) {
         params.set('userId', opts.subjectUserId);
       }
       if (opts.paginationToken) {
         params.set('pagination_token', opts.paginationToken);
+      }
+      if (mode === 'following') {
+        params.set('list', 'following');
       }
       const qs = params.toString();
       const res = await fetch(
@@ -210,8 +384,17 @@ export const XFollowersExplorerPanel: FC = () => {
       }
       return (await res.json()) as FollowersPageResponse;
     },
-    [integrationId, fetch]
+    [integrationId, fetch, listMode]
   );
+
+  const applyFollowerPage = useCallback((page: FollowersPageResponse) => {
+    const { users: cappedUsers, nextToken: token } = applyFollowerPageCap(
+      page.users,
+      page.nextToken
+    );
+    setUsers(cappedUsers);
+    setNextToken(token);
+  }, []);
 
   const resetAndLoadRoot = useCallback(async () => {
     if (!integrationId) return;
@@ -224,52 +407,69 @@ export const XFollowersExplorerPanel: FC = () => {
       const page = await loadFollowers({});
       if (!page) return;
       const root = page.subject;
-      setTrail([
-        {
-          id: root.id,
-          name: root.name || root.username,
-          username: root.username,
-        },
-      ]);
-      setUsers(page.users);
-      setNextToken(page.nextToken);
+      setTrail([toBreadcrumbItem(root)]);
+      setTablePage(1);
+      applyFollowerPage(page);
     } catch (e: any) {
       toast.show(e?.message || t('load_failed', 'Load failed'), 'warning');
     } finally {
       setLoading(false);
     }
-  }, [integrationId, loadFollowers, t, toast]);
+  }, [integrationId, loadFollowers, applyFollowerPage, t, toast]);
+
+  const searchByUsername = useCallback(async () => {
+    const handle = searchQuery.trim().replace(/^@+/, '');
+    if (!handle || !integrationId) {
+      toast.show(
+        t('enter_x_username', 'Enter an X username to search'),
+        'warning'
+      );
+      return;
+    }
+    setLoading(true);
+    setSelected(new Set());
+    try {
+      const page = await loadFollowers({ username: handle });
+      if (!page) return;
+      const subject = page.subject;
+      setTrail([toBreadcrumbItem(subject)]);
+      setSearchQuery(subject.username || handle);
+      setTablePage(1);
+      applyFollowerPage(page);
+    } catch (e: any) {
+      toast.show(e?.message || t('load_failed', 'Load failed'), 'warning');
+    } finally {
+      setLoading(false);
+    }
+  }, [searchQuery, integrationId, loadFollowers, applyFollowerPage, t, toast]);
 
   useEffect(() => {
     if (integrationId) {
       void resetAndLoadRoot();
     }
-  }, [integrationId]);
+  }, [integrationId, listMode]);
 
   const drillInto = useCallback(
     async (user: FollowerUser) => {
       setLoading(true);
       setSelected(new Set());
       try {
-        const page = await loadFollowers({ subjectUserId: user.id });
+        const page = await loadFollowers({
+          subjectUserId: user.id,
+          listMode: 'followers',
+        });
+        setListMode('followers');
         if (!page) return;
-        setTrail((prev) => [
-          ...prev,
-          {
-            id: user.id,
-            name: user.name || user.username,
-            username: user.username,
-          },
-        ]);
-        setUsers(page.users);
-        setNextToken(page.nextToken);
+        setTrail((prev) => [...prev, toBreadcrumbItem(user)]);
+        setTablePage(1);
+        applyFollowerPage(page);
       } catch (e: any) {
         toast.show(e?.message || t('load_failed', 'Load failed'), 'warning');
       } finally {
         setLoading(false);
       }
     },
-    [loadFollowers, t, toast]
+    [loadFollowers, applyFollowerPage, t, toast]
   );
 
   const goToBreadcrumb = useCallback(
@@ -279,106 +479,722 @@ export const XFollowersExplorerPanel: FC = () => {
       setLoading(true);
       setSelected(new Set());
       try {
-        const page = await loadFollowers({
-          subjectUserId: index === 0 ? undefined : item.id,
-        });
+        const isOwnRoot =
+          index === 0 &&
+          !!ownInternalId &&
+          String(item.id) === String(ownInternalId);
+        const page = await loadFollowers(
+          isOwnRoot ? {} : { subjectUserId: item.id }
+        );
         if (!page) return;
         setTrail(trail.slice(0, index + 1));
-        setUsers(page.users);
-        setNextToken(page.nextToken);
+        setTablePage(1);
+        applyFollowerPage(page);
       } catch (e: any) {
         toast.show(e?.message || t('load_failed', 'Load failed'), 'warning');
       } finally {
         setLoading(false);
       }
     },
-    [trail, loadFollowers, t, toast]
+    [trail, loadFollowers, applyFollowerPage, t, toast, ownInternalId]
   );
 
-  const loadMore = useCallback(async () => {
-    if (!nextToken || !integrationId) return;
-    setLoadingMore(true);
+  const breadcrumbLabel = useCallback(
+    (item: BreadcrumbItem, index: number) => {
+      if (
+        index === 0 &&
+        ownInternalId &&
+        String(item.id) === String(ownInternalId)
+      ) {
+        return t('followers_list', 'Followers');
+      }
+      return `@${item.username || item.name}`;
+    },
+    [ownInternalId, t]
+  );
+
+  const fetchNextExplorerPage = useCallback(async (): Promise<boolean> => {
+    if (
+      !canLoadMoreFollowers(
+        usersRef.current.length,
+        nextTokenRef.current
+      ) ||
+      !integrationId
+    ) {
+      return false;
+    }
     try {
       const page = await loadFollowers({
         subjectUserId: currentSubjectId,
-        paginationToken: nextToken,
+        paginationToken: nextTokenRef.current,
       });
-      if (!page) return;
+      if (!page) return false;
+      let mergedResult: { users: FollowerUser[]; capped: boolean } | null =
+        null;
       setUsers((prev) => {
-        const seen = new Set(prev.map((u) => u.id));
-        const added = page.users.filter((u) => !seen.has(u.id));
-        return [...prev, ...added];
+        mergedResult = mergeFollowerPages(prev, page.users);
+        usersRef.current = mergedResult.users;
+        return mergedResult.users;
       });
-      setNextToken(page.nextToken);
-    } catch (e: any) {
-      toast.show(e?.message || t('load_failed', 'Load failed'), 'warning');
-    } finally {
-      setLoadingMore(false);
-    }
-  }, [nextToken, integrationId, currentSubjectId, loadFollowers, t, toast]);
-
-  const toggleSelect = useCallback((id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }, []);
-
-  const toggleSelectAll = useCallback(() => {
-    setSelected((prev) => {
-      if (prev.size === users.length) return new Set();
-      return new Set(users.map((u) => u.id));
-    });
-  }, [users]);
-
-  const massFollow = useCallback(async () => {
-    if (!integrationId || selected.size === 0) return;
-    setFollowing(true);
-    try {
-      const res = await fetch(`/integrations/${integrationId}/x-follow`, {
-        method: 'POST',
-        body: JSON.stringify({ userIds: [...selected] }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.message || `Failed (${res.status})`);
-      }
-      const ok = (data.succeeded || []).length;
-      const fail = (data.failed || []).length;
-      if (ok > 0) {
+      const hitCap =
+        !!mergedResult &&
+        (mergedResult.capped ||
+          mergedResult.users.length >= EXPLORER_MAX_LOADED);
+      const newToken = hitCap ? undefined : page.nextToken;
+      setNextToken(newToken);
+      nextTokenRef.current = newToken;
+      if (hitCap) {
         toast.show(
-          t('follow_success_count', 'Followed {{count}} account(s)', {
-            count: ok,
-          }),
-          'success'
-        );
-      }
-      if (fail > 0) {
-        toast.show(
-          t('follow_partial_fail', '{{count}} could not be followed', {
-            count: fail,
-          }),
+          t(
+            'explorer_cap_reached',
+            'Loaded the maximum of {{max}} accounts for this view ({{pages}} pages at {{size}} per page).',
+            {
+              max: EXPLORER_MAX_LOADED.toLocaleString(),
+              pages: EXPLORER_MAX_PAGES,
+              size: EXPLORER_PAGE_SIZE,
+            }
+          ),
           'warning'
         );
       }
-      setSelected(new Set());
+      return canLoadMoreFollowers(
+        usersRef.current.length,
+        nextTokenRef.current
+      );
     } catch (e: any) {
-      toast.show(e?.message || t('follow_failed', 'Follow failed'), 'warning');
-    } finally {
-      setFollowing(false);
+      toast.show(e?.message || t('load_failed', 'Load failed'), 'warning');
+      return false;
     }
-  }, [integrationId, selected, fetch, t, toast]);
+  }, [integrationId, currentSubjectId, loadFollowers, t, toast]);
+
+  const handleExplorerPageChange = useCallback(
+    async (targetPage: number) => {
+      if (targetPage < 1) return;
+      if (targetPage === tablePage) return;
+
+      if (targetPage < tablePage) {
+        setTablePage(targetPage);
+        return;
+      }
+
+      setLoadingMore(true);
+      try {
+        const needed = targetPage * EXPLORER_PAGE_SIZE;
+        let iterations = 0;
+        while (
+          countDisplayUsers(usersRef.current) < needed &&
+          canLoadMoreFollowers(
+            usersRef.current.length,
+            nextTokenRef.current
+          ) &&
+          iterations < EXPLORER_MAX_PAGES
+        ) {
+          const loaded = await fetchNextExplorerPage();
+          iterations += 1;
+          if (!loaded) break;
+        }
+        const finalCount = countDisplayUsers(usersRef.current);
+        const maxPage = Math.max(
+          1,
+          Math.ceil(finalCount / EXPLORER_PAGE_SIZE) || 1
+        );
+        setTablePage(Math.min(targetPage, maxPage));
+      } finally {
+        setLoadingMore(false);
+      }
+    },
+    [tablePage, countDisplayUsers, fetchNextExplorerPage]
+  );
+
+  const markAsFollowing = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    setUsers((prev) =>
+      prev.map((u) =>
+        idSet.has(u.id) ? { ...u, alreadyFollowing: true } : u
+      )
+    );
+  }, []);
+
+  const markAsNotFollowing = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    const idSet = new Set(ids);
+    setUsers((prev) =>
+      prev.map((u) =>
+        idSet.has(u.id) ? { ...u, alreadyFollowing: false } : u
+      )
+    );
+  }, []);
+
+  const selectedUsers = useMemo(
+    () => users.filter((u) => selected.has(u.id)),
+    [users, selected]
+  );
+
+  const selectedToFollow = useMemo(
+    () => selectedUsers.filter((u) => !u.alreadyFollowing),
+    [selectedUsers]
+  );
+
+  const selectedToUnfollow = useMemo(
+    () => selectedUsers.filter((u) => u.alreadyFollowing),
+    [selectedUsers]
+  );
+
+  const followableOnPage = useMemo(
+    () => displayUsers.filter((u) => !u.alreadyFollowing),
+    [displayUsers]
+  );
+
+  const unfollowableOnPage = useMemo(
+    () => displayUsers.filter((u) => u.alreadyFollowing),
+    [displayUsers]
+  );
+
+  const maxSelectableForFollow = useMemo(
+    () => Math.min(followSlotsLeft, followableOnPage.length),
+    [followSlotsLeft, followableOnPage.length]
+  );
+
+  const maxSelectableForUnfollow = useMemo(
+    () => Math.min(unfollowSlotsLeft, unfollowableOnPage.length),
+    [unfollowSlotsLeft, unfollowableOnPage.length]
+  );
+
+  const cappedFollowableIds = useMemo(
+    () => followableOnPage.slice(0, maxSelectableForFollow).map((u) => u.id),
+    [followableOnPage, maxSelectableForFollow]
+  );
+
+  const cappedUnfollowableIds = useMemo(
+    () =>
+      unfollowableOnPage.slice(0, maxSelectableForUnfollow).map((u) => u.id),
+    [unfollowableOnPage, maxSelectableForUnfollow]
+  );
+
+  const idsToFollowNow = useMemo(
+    () =>
+      selectedToFollow
+        .map((u) => u.id)
+        .slice(0, Math.min(followSlotsLeft, X_FOLLOW_BATCH_MAX)),
+    [selectedToFollow, followSlotsLeft]
+  );
+
+  const idsToUnfollowNow = useMemo(
+    () =>
+      selectedToUnfollow
+        .map((u) => u.id)
+        .slice(0, Math.min(unfollowSlotsLeft, X_FOLLOW_BATCH_MAX)),
+    [selectedToUnfollow, unfollowSlotsLeft]
+  );
+
+  useEffect(() => {
+    if (followSlotsLeft <= 0) return;
+    setSelected((prev) => {
+      const followSelected = users.filter(
+        (u) => !u.alreadyFollowing && prev.has(u.id)
+      );
+      if (followSelected.length <= followSlotsLeft) return prev;
+      const next = new Set(prev);
+      followSelected.slice(followSlotsLeft).forEach((u) => next.delete(u.id));
+      return next;
+    });
+  }, [followSlotsLeft, users]);
+
+  useEffect(() => {
+    if (unfollowSlotsLeft <= 0) return;
+    setSelected((prev) => {
+      const unfollowSelected = users.filter(
+        (u) => u.alreadyFollowing && prev.has(u.id)
+      );
+      if (unfollowSelected.length <= unfollowSlotsLeft) return prev;
+      const next = new Set(prev);
+      unfollowSelected
+        .slice(unfollowSlotsLeft)
+        .forEach((u) => next.delete(u.id));
+      return next;
+    });
+  }, [unfollowSlotsLeft, users]);
+
+  const toggleSelect = useCallback(
+    (id: string) => {
+      const user = users.find((u) => u.id === id);
+      setSelected((prev) => {
+        if (prev.has(id)) {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        }
+        if (user && !user.alreadyFollowing) {
+          const followSelectedCount = users.filter(
+            (u) => !u.alreadyFollowing && prev.has(u.id)
+          ).length;
+          if (followSelectedCount >= followSlotsLeft) {
+            toast.show(
+              t(
+                'x_follow_select_limit',
+                'You can only select {{remaining}} more to follow today ({{count}}/{{limit}} used in 24h).',
+                {
+                  remaining: followSlotsLeft,
+                  count: followRateLimit?.daily?.count ?? followRateLimit?.count ?? followLimit,
+                  limit: followDailyLimit,
+                }
+              ),
+              'warning'
+            );
+            return prev;
+          }
+        }
+        if (user?.alreadyFollowing) {
+          const unfollowSelectedCount = users.filter(
+            (u) => u.alreadyFollowing && prev.has(u.id)
+          ).length;
+          if (unfollowSelectedCount >= unfollowSlotsLeft) {
+            toast.show(
+              t(
+                'x_unfollow_select_limit',
+                'You can only select {{remaining}} more to unfollow in this {{minutes}}-minute window ({{count}}/{{limit}} used).',
+                {
+                  remaining: unfollowSlotsLeft,
+                  minutes: unfollowWindowMinutes,
+                  count: unfollowRateLimit?.count ?? unfollowLimit,
+                  limit: unfollowLimit,
+                }
+              ),
+              'warning'
+            );
+            return prev;
+          }
+        }
+        const next = new Set(prev);
+        next.add(id);
+        return next;
+      });
+    },
+    [
+      users,
+      followSlotsLeft,
+      unfollowSlotsLeft,
+      toast,
+      t,
+      followWindowMinutes,
+      unfollowWindowMinutes,
+      followRateLimit?.count,
+      followRateLimit?.daily?.count,
+      unfollowRateLimit?.count,
+      followLimit,
+      unfollowLimit,
+      followDailyLimit,
+    ]
+  );
+
+  const toggleSelectAll = useCallback(() => {
+    if (isUnfollowFilter) {
+      const unfollowableIds = unfollowableOnPage.map((u) => u.id);
+      const allCappedSelected =
+        cappedUnfollowableIds.length > 0 &&
+        cappedUnfollowableIds.every((id) => selected.has(id));
+
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (allCappedSelected) {
+          unfollowableIds.forEach((id) => next.delete(id));
+        } else {
+          unfollowableIds.forEach((id) => next.delete(id));
+          cappedUnfollowableIds.forEach((id) => next.add(id));
+        }
+        return next;
+      });
+      return;
+    }
+
+    const followableIds = followableOnPage.map((u) => u.id);
+    const allCappedSelected =
+      cappedFollowableIds.length > 0 &&
+      cappedFollowableIds.every((id) => selected.has(id));
+
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allCappedSelected) {
+        followableIds.forEach((id) => next.delete(id));
+      } else {
+        followableIds.forEach((id) => next.delete(id));
+        cappedFollowableIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  }, [
+    isUnfollowFilter,
+    unfollowableOnPage,
+    cappedUnfollowableIds,
+    followableOnPage,
+    cappedFollowableIds,
+    selected,
+  ]);
+
+  const runBulkAction = useCallback(
+    async (
+      endpoint: 'x-follow' | 'x-unfollow',
+      userIds: string[],
+      onSuccess: (succeeded: string[]) => void,
+      messages: {
+        success: (count: number) => string;
+        partialFail: (count: number) => string;
+        fail: string;
+      }
+    ) => {
+      if (!integrationId || userIds.length === 0) return;
+      setActionLoading(true);
+      try {
+        const res = await fetch(`/integrations/${integrationId}/${endpoint}`, {
+          method: 'POST',
+          body: JSON.stringify({ userIds }),
+        });
+        const data = await res.json().catch(() => ({}));
+        const payload =
+          data?.message && typeof data.message === 'object'
+            ? data.message
+            : data;
+        if (payload?.rateLimit) {
+          if (endpoint === 'x-follow') {
+            void mutateFollowRateLimit(payload.rateLimit, {
+              revalidate: false,
+            });
+          } else {
+            void mutateUnfollowRateLimit(payload.rateLimit, {
+              revalidate: false,
+            });
+          }
+        }
+        if (!res.ok) {
+          const raw = data?.message;
+          const minutes =
+            endpoint === 'x-unfollow'
+              ? unfollowWindowMinutes
+              : followWindowMinutes;
+          const msg =
+            typeof raw === 'string'
+              ? raw
+              : payload?.message ||
+                (res.status === 429
+                  ? endpoint === 'x-unfollow'
+                    ? t(
+                        'x_unfollow_limit_blocked',
+                        'Unfollow limit reached for this {{minutes}}-minute window. Try again when the timer resets.',
+                        { minutes }
+                      )
+                    : typeof payload?.message === 'string'
+                      ? payload.message
+                      : t(
+                          'x_follow_limit_blocked',
+                          'Follow limit reached. Try again when the timer resets.'
+                        )
+                  : `Failed (${res.status})`);
+          throw new Error(String(msg));
+        }
+        const succeededIds: string[] = data.succeeded || [];
+        const fail = (data.failed || []).length;
+        if (succeededIds.length > 0) {
+          onSuccess(succeededIds);
+          toast.show(messages.success(succeededIds.length), 'success');
+        }
+        if (fail > 0) {
+          toast.show(messages.partialFail(fail), 'warning');
+        }
+        setSelected((prev) => {
+          const next = new Set(prev);
+          succeededIds.forEach((id) => next.delete(id));
+          return next;
+        });
+      } catch (e: any) {
+        toast.show(e?.message || messages.fail, 'warning');
+      } finally {
+        setActionLoading(false);
+      }
+    },
+    [
+      integrationId,
+      fetch,
+      toast,
+      mutateFollowRateLimit,
+      mutateUnfollowRateLimit,
+      t,
+      followWindowMinutes,
+      unfollowWindowMinutes,
+    ]
+  );
+
+  const massFollow = useCallback(async () => {
+    if (followSlotsLeft <= 0) {
+      toast.show(
+        followLimitedBy === 'daily'
+          ? t(
+              'x_follow_daily_limit_blocked',
+              'Daily follow limit reached ({{dailyLimit}} per 24 hours). Try again when the daily timer resets.',
+              { dailyLimit: followDailyLimit }
+            )
+          : t(
+              'x_follow_limit_blocked',
+              'Follow limit reached for today ({{dailyLimit}} per 24 hours). Try again when the daily timer resets.',
+              { dailyLimit: followDailyLimit }
+            ),
+        'warning'
+      );
+      return;
+    }
+    const ids = idsToFollowNow;
+    if (!ids.length) return;
+    await runBulkAction('x-follow', ids, markAsFollowing, {
+      success: (count) =>
+        t('follow_success_count', 'Followed {{count}} account(s)', { count }),
+      partialFail: (count) =>
+        t('follow_partial_fail', '{{count}} could not be followed', { count }),
+      fail: t('follow_failed', 'Follow failed'),
+    });
+  }, [
+    idsToFollowNow,
+    followSlotsLeft,
+    runBulkAction,
+    markAsFollowing,
+    t,
+    toast,
+    followLimitedBy,
+    followDailyLimit,
+  ]);
+
+  const massUnfollow = useCallback(async () => {
+    if (unfollowSlotsLeft <= 0) {
+      toast.show(
+        t(
+          'x_unfollow_limit_blocked',
+          'Unfollow limit reached for this {{minutes}}-minute window. Try again when the timer resets.',
+          { minutes: unfollowWindowMinutes }
+        ),
+        'warning'
+      );
+      return;
+    }
+    const ids = idsToUnfollowNow;
+    if (!ids.length) return;
+    await runBulkAction('x-unfollow', ids, markAsNotFollowing, {
+      success: (count) =>
+        t('unfollow_success_count', 'Unfollowed {{count}} account(s)', {
+          count,
+        }),
+      partialFail: (count) =>
+        t('unfollow_partial_fail', '{{count}} could not be unfollowed', {
+          count,
+        }),
+      fail: t('unfollow_failed', 'Unfollow failed'),
+    });
+  }, [
+    idsToUnfollowNow,
+    unfollowSlotsLeft,
+    runBulkAction,
+    markAsNotFollowing,
+    t,
+    toast,
+    unfollowWindowMinutes,
+  ]);
+
+  const unfollowOne = useCallback(
+    async (userId: string) => {
+      await runBulkAction('x-unfollow', [userId], markAsNotFollowing, {
+        success: () => t('unfollowed', 'Unfollowed'),
+        partialFail: () => t('unfollow_failed', 'Unfollow failed'),
+        fail: t('unfollow_failed', 'Unfollow failed'),
+      });
+    },
+    [runBulkAction, markAsNotFollowing, t]
+  );
+
+  const followOne = useCallback(
+    async (userId: string) => {
+      await runBulkAction('x-follow', [userId], markAsFollowing, {
+        success: () => t('followed', 'Followed'),
+        partialFail: () => t('follow_failed', 'Follow failed'),
+        fail: t('follow_failed', 'Follow failed'),
+      });
+    },
+    [runBulkAction, markAsFollowing, t]
+  );
+
+  const handleColumnSort = useCallback(
+    (column: SpreadsheetColumn) => {
+      if (sortColumn === column) {
+        const next = sortDirection === 'asc' ? 'desc' : 'asc';
+        setSortDirection(next);
+        setListSort(sortFromColumn(column, next));
+        return;
+      }
+      setSortColumn(column);
+      setSortDirection('asc');
+      setListSort(sortFromColumn(column, 'asc'));
+    },
+    [sortColumn, sortDirection]
+  );
+
+  const toggleWhitelist = useCallback(
+    (userId: string) => {
+      if (!integrationId) return;
+      setWhitelist((prev) =>
+        toggleExplorerListId(integrationId, 'whitelist', userId, prev)
+      );
+      setBlacklist(loadExplorerListIds(integrationId, 'blacklist'));
+    },
+    [integrationId]
+  );
+
+  const toggleBlacklist = useCallback(
+    (userId: string) => {
+      if (!integrationId) return;
+      setBlacklist((prev) =>
+        toggleExplorerListId(integrationId, 'blacklist', userId, prev)
+      );
+      setWhitelist(loadExplorerListIds(integrationId, 'whitelist'));
+    },
+    [integrationId]
+  );
+
+  const pageFollowable = useMemo(
+    () => tablePageUsers.filter((u) => !u.alreadyFollowing),
+    [tablePageUsers]
+  );
+
+  const pageUnfollowable = useMemo(
+    () => tablePageUsers.filter((u) => u.alreadyFollowing),
+    [tablePageUsers]
+  );
+
+  const canLoadMore = useMemo(
+    () => canLoadMoreFollowers(users.length, nextToken),
+    [users.length, nextToken]
+  );
+
+  const atExplorerLoadCap = users.length >= EXPLORER_MAX_LOADED;
+
+  const explorerTotalPages = useMemo(
+    () =>
+      explorerPaginationTotalPages(
+        displayUsers.length,
+        canLoadMore,
+        tablePage
+      ),
+    [displayUsers.length, canLoadMore, tablePage]
+  );
+
+  const cappedPageFollowableIds = useMemo(
+    () =>
+      pageFollowable
+        .slice(0, Math.min(followSlotsLeft, pageFollowable.length))
+        .map((u) => u.id),
+    [pageFollowable, followSlotsLeft]
+  );
+
+  const cappedPageUnfollowableIds = useMemo(
+    () =>
+      pageUnfollowable
+        .slice(0, Math.min(unfollowSlotsLeft, pageUnfollowable.length))
+        .map((u) => u.id),
+    [pageUnfollowable, unfollowSlotsLeft]
+  );
+
+  const allPageSelected = useMemo(() => {
+    if (isUnfollowFilter) {
+      return (
+        cappedPageUnfollowableIds.length > 0 &&
+        cappedPageUnfollowableIds.every((id) => selected.has(id))
+      );
+    }
+    return (
+      cappedPageFollowableIds.length > 0 &&
+      cappedPageFollowableIds.every((id) => selected.has(id))
+    );
+  }, [
+    isUnfollowFilter,
+    cappedPageUnfollowableIds,
+    cappedPageFollowableIds,
+    selected,
+  ]);
+
+  const toggleSelectPage = useCallback(() => {
+    if (isUnfollowFilter) {
+      const ids = pageUnfollowable.map((u) => u.id);
+      const capped = cappedPageUnfollowableIds;
+      const allSelected =
+        capped.length > 0 && capped.every((id) => selected.has(id));
+      setSelected((prev) => {
+        const next = new Set(prev);
+        ids.forEach((id) => next.delete(id));
+        if (!allSelected) capped.forEach((id) => next.add(id));
+        return next;
+      });
+      return;
+    }
+    const ids = pageFollowable.map((u) => u.id);
+    const capped = cappedPageFollowableIds;
+    const allSelected =
+      capped.length > 0 && capped.every((id) => selected.has(id));
+    setSelected((prev) => {
+      const next = new Set(prev);
+      ids.forEach((id) => next.delete(id));
+      if (!allSelected) capped.forEach((id) => next.add(id));
+      return next;
+    });
+  }, [
+    isUnfollowFilter,
+    pageUnfollowable,
+    pageFollowable,
+    cappedPageUnfollowableIds,
+    cappedPageFollowableIds,
+    selected,
+  ]);
+
+  const activeFilterChips = useMemo(() => {
+    const chips: { key: string; label: string; onClear: () => void }[] = [];
+    if (hideWhitelisted) {
+      chips.push({
+        key: 'whitelist',
+        label: t('filter_hide_whitelist', 'Whitelisted: Hide'),
+        onClear: () => setHideWhitelisted(false),
+      });
+    }
+    if (hideBlacklisted) {
+      chips.push({
+        key: 'blacklist',
+        label: t('filter_hide_blacklist', 'Blacklisted: Hide'),
+        onClear: () => setHideBlacklisted(false),
+      });
+    }
+    if (listFilter !== 'all') {
+      chips.push({
+        key: 'account',
+        label: t('filter_active', 'Account filter active'),
+        onClear: () => setListFilter('all'),
+      });
+    }
+    if (engagementFilter !== 'all') {
+      chips.push({
+        key: 'engagement',
+        label: t('filter_engagement_active', 'Engagement filter active'),
+        onClear: () => setEngagementFilter('all'),
+      });
+    }
+    return chips;
+  }, [hideWhitelisted, hideBlacklisted, listFilter, engagementFilter, t]);
+
+  const clearAllFilters = useCallback(() => {
+    setListFilter('all');
+    setEngagementFilter('all');
+    setTableSearch('');
+    setHideWhitelisted(true);
+    setHideBlacklisted(true);
+  }, []);
 
   if (loadingIntegrations) {
     return (
       <ProfileAutomationsCard>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {Array.from({ length: 6 }).map((_, i) => (
-            <FollowerSkeleton key={i} />
-          ))}
-        </div>
+        <div className="h-48 animate-pulse rounded-xl bg-newBgLineColor/40" />
       </ProfileAutomationsCard>
     );
   }
@@ -401,29 +1217,72 @@ export const XFollowersExplorerPanel: FC = () => {
           integrations={xIntegrations}
           selectedId={integrationId}
           onChange={setIntegrationId}
-          disabled={loading || following}
+          disabled={loading || actionLoading}
         />
       )}
 
+      {(followRateLimit || unfollowRateLimit) && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 min-w-0">
+          {followRateLimit && (
+            <XFollowRateLimitBanner
+              rateLimit={followRateLimit}
+              countdown={followCountdown}
+              dailyCountdown={followDailyCountdown}
+              action="follow"
+              className="h-full"
+            />
+          )}
+          {unfollowRateLimit && (
+            <XFollowRateLimitBanner
+              rateLimit={unfollowRateLimit}
+              countdown={unfollowCountdown}
+              action="unfollow"
+              className="h-full"
+            />
+          )}
+        </div>
+      )}
+
       <ProfileAutomationsCard noPadding className="overflow-hidden">
-        {/* Toolbar */}
-        <div className="sticky top-0 z-10 border-b border-newBorder/80 bg-newBgColorInner/95 backdrop-blur-md px-4 py-3 sm:px-5 sm:py-4">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex flex-wrap items-center gap-2 min-w-0">
-              {trail.length > 0 && (
-                <nav
-                  className="flex flex-wrap items-center gap-1.5"
-                  aria-label="Breadcrumb"
-                >
+        {/* Spreadsheet header & toolbar */}
+        <div className="border-b border-newBorder bg-newBgColorInner px-4 py-4 sm:px-5">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div className="min-w-0 flex-1">
+              {subjectHeader && currentSubject && (
+                <>
+                  <h3 className="text-base sm:text-lg font-semibold text-newTextColor leading-snug">
+                    {t('displaying_followers_title', "Displaying @{{user}}'s {{shown}} followers", {
+                      user: currentSubject.username || currentSubject.name,
+                      shown: displayUsers.length.toLocaleString(),
+                    })}
+                    {canLoadMore ? '+' : ''}
+                    {users.length > displayUsers.length
+                      ? ' (' + t('filtered_from_loaded', '{{loaded}} loaded', {
+                          loaded: users.length.toLocaleString(),
+                        }) + ')'
+                      : ''}
+                  </h3>
+                  <p className="mt-1 text-xs text-newTableText">
+                    {t(
+                      'explorer_subtitle',
+                      'Use Next to load more pages from X ({{size}} per page, up to {{max}}). Sort, filter, and bulk follow or unfollow.',
+                      {
+                        size: EXPLORER_PAGE_SIZE,
+                        max: EXPLORER_MAX_LOADED.toLocaleString(),
+                      }
+                    )}
+                  </p>
+                </>
+              )}
+              {trail.length > 1 && (
+                <nav className="mt-3 flex flex-wrap items-center gap-1.5" aria-label="Breadcrumb">
                   {trail.map((item, index) => (
                     <span key={item.id} className="flex items-center gap-1.5">
-                      {index > 0 && (
-                        <span className="text-newTableText/50 text-xs">/</span>
-                      )}
+                      {index > 0 && <span className="text-newTableText/50 text-xs">/</span>}
                       <button
                         type="button"
                         className={clsx(
-                          'rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                          'inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium transition-colors',
                           index === trail.length - 1
                             ? 'bg-btnPrimary/15 text-btnPrimary'
                             : 'text-newTableText hover:bg-boxHover hover:text-newTextColor'
@@ -431,104 +1290,284 @@ export const XFollowersExplorerPanel: FC = () => {
                         onClick={() => goToBreadcrumb(index)}
                         disabled={loading}
                       >
-                        {index === 0
-                          ? t('your_followers', 'Your followers')
-                          : `@${item.username || item.name}`}
+                        {breadcrumbLabel(item, index)}
                       </button>
                     </span>
                   ))}
                 </nav>
               )}
-              {users.length > 0 && (
-                <span className="rounded-lg bg-newBgColor/80 px-2.5 py-1 text-[11px] font-medium text-newTableText border border-newBorder/60">
-                  {users.length}
-                  {nextToken ? '+' : ''}{' '}
-                  {t('followers_shown', 'shown')}
-                </span>
-              )}
             </div>
-
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
-              {users.length > 0 && (
-                <label className="inline-flex items-center gap-2 rounded-xl border border-newBorder/70 bg-newBgColor/40 px-3 py-2 text-xs text-newTableText cursor-pointer hover:bg-boxHover">
-                  <input
-                    type="checkbox"
-                    className="h-3.5 w-3.5 rounded border-newBorder text-btnPrimary"
-                    checked={
-                      users.length > 0 && selected.size === users.length
-                    }
-                    onChange={toggleSelectAll}
-                    disabled={loading || following}
-                  />
-                  {t('select_all_on_page', 'Select all')}
-                </label>
-              )}
-              {selected.size > 0 && (
-                <ProfileAutomationsPrimaryButton
-                  loading={following}
-                  disabled={loading}
-                  onClick={massFollow}
-                  className="whitespace-nowrap"
-                >
-                  {t('follow_selected', 'Follow ({{count}})', {
-                    count: selected.size,
-                  })}
-                </ProfileAutomationsPrimaryButton>
-              )}
+            <div className="flex flex-wrap gap-2 shrink-0">
+              <ProfileAutomationsGhostButton
+                disabled={loading || actionLoading}
+                onClick={() => {
+                  setSearchQuery('');
+                  setListMode('followers');
+                  void resetAndLoadRoot();
+                }}
+                className={explorerNavButtonClass(false)}
+              >
+                {t('new_search', 'New search')}
+              </ProfileAutomationsGhostButton>
             </div>
           </div>
+
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="relative min-w-0 flex-1 max-w-md">
+              <span className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-newTableText">@</span>
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void searchByUsername();
+                  }
+                }}
+                placeholder={t('username_placeholder', 'username')}
+                disabled={loading || actionLoading}
+                className="w-full rounded-lg border border-newBorder bg-newBgColorInner ps-8 pe-3 py-2 text-sm text-newTextColor outline-none focus:border-btnPrimary/50"
+              />
+            </div>
+            <ProfileAutomationsPrimaryButton
+              disabled={loading || actionLoading || !searchQuery.trim()}
+              onClick={() => void searchByUsername()}
+            >
+              {t('search', 'Search')}
+            </ProfileAutomationsPrimaryButton>
+            <ProfileAutomationsGhostButton
+              disabled={loading || actionLoading}
+              onClick={() => {
+                setSearchQuery('');
+                setListMode('followers');
+                void resetAndLoadRoot();
+              }}
+              className={explorerNavButtonClass(listMode === 'followers')}
+            >
+              {t('followers_list', 'Followers')}
+            </ProfileAutomationsGhostButton>
+            <ProfileAutomationsGhostButton
+              disabled={loading || actionLoading}
+              onClick={() => {
+                setSearchQuery('');
+                setListMode('following');
+              }}
+              className={explorerNavButtonClass(listMode === 'following')}
+            >
+              {t('following_list', 'Following')}
+            </ProfileAutomationsGhostButton>
+          </div>
+
+          {(activeFilterChips.length > 0 || showFilterPanel) && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+              {activeFilterChips.map((chip) => (
+                <span
+                  key={chip.key}
+                  className="inline-flex items-center gap-1 rounded-full border border-newBorder bg-newBgColorInner px-2.5 py-1 text-newTextColor"
+                >
+                  {chip.label}
+                  <button
+                    type="button"
+                    className="text-newTableText hover:text-newTextColor"
+                    onClick={chip.onClear}
+                    aria-label={t('remove_filter', 'Remove filter')}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {activeFilterChips.length > 0 && (
+                <button
+                  type="button"
+                  className="text-btnPrimary hover:underline"
+                  onClick={clearAllFilters}
+                >
+                  {t('clear_all_filters', 'Clear all filters')}
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-col gap-3 border-t border-newBorder pt-4 xl:flex-row xl:items-center xl:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <ProfileAutomationsPrimaryButton
+                className="!px-3 !py-2 text-xs"
+                onClick={() => setShowFilterPanel((v) => !v)}
+              >
+                {t('filters', 'Filters')}
+              </ProfileAutomationsPrimaryButton>
+              <ProfileAutomationsPrimaryButton
+                loading={actionLoading}
+                disabled={loading || followSlotsLeft <= 0 || selectedToFollow.length === 0}
+                onClick={massFollow}
+                className="!px-3 !py-2 text-xs"
+              >
+                {t('follow_selected', 'Follow selected ({{count}})', {
+                  count: selectedToFollow.length,
+                })}
+              </ProfileAutomationsPrimaryButton>
+              <ProfileAutomationsGhostButton
+                disabled={loading || actionLoading || unfollowSlotsLeft <= 0 || selectedToUnfollow.length === 0}
+                onClick={massUnfollow}
+                className="!px-3 !py-2 text-xs border-red-400 bg-red-50 text-red-700 font-semibold hover:bg-red-100 dark:border-red-500/40 dark:bg-transparent dark:text-red-400 dark:hover:bg-red-500/10"
+              >
+                {t('unfollow_selected_short', 'Unfollow selected ({{count}})', {
+                  count: selectedToUnfollow.length,
+                })}
+              </ProfileAutomationsGhostButton>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="search"
+                value={tableSearch}
+                onChange={(e) => setTableSearch(e.target.value)}
+                placeholder={t('table_search', 'Search...')}
+                className="w-full min-w-[160px] rounded-lg border border-newBorder bg-newBgColorInner px-3 py-2 text-sm text-newTextColor outline-none sm:w-48"
+              />
+            </div>
+          </div>
+
+          {showFilterPanel && (
+            <div className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-newBorder bg-newBgColor/40 p-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase text-newTableText">
+                  {t('filter_accounts', 'Account filter')}
+                </label>
+                <select
+                  value={listFilter}
+                  onChange={(e) => setListFilter(e.target.value as FollowerListFilter)}
+                  className="w-full rounded-lg border border-newBorder bg-newBgColorInner px-2 py-2 text-sm"
+                >
+                  <option value="all">{t('filter_all', 'All accounts')}</option>
+                  <option value="i_follow">{t('filter_i_follow', 'Only accounts I follow')}</option>
+                  <option value="low_engagement">{t('filter_low_engagement', 'Low engagement (I follow)')}</option>
+                  <option value="inactive">
+                    {t(
+                      'filter_inactive',
+                      'Inactive (I follow, fewer than 10 posts)'
+                    )}
+                  </option>
+                  <option value="low_followers">{t('filter_low_followers', 'Small accounts (I follow)')}</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase text-newTableText">
+                  {t('filter_engagement', 'Engagement')}
+                </label>
+                <select
+                  value={engagementFilter}
+                  onChange={(e) => setEngagementFilter(e.target.value as EngagementFilter)}
+                  className="w-full rounded-lg border border-newBorder bg-newBgColorInner px-2 py-2 text-sm"
+                >
+                  <option value="all">{t('engagement_all', 'All levels')}</option>
+                  <option value="inactive">{t('engagement_inactive', 'Inactive')}</option>
+                  <option value="low">{t('engagement_low', 'Low active')}</option>
+                  <option value="moderate">{t('engagement_moderate', 'Moderate active')}</option>
+                  <option value="active">{t('engagement_active', 'Active')}</option>
+                  <option value="high">{t('engagement_high', 'Highly active')}</option>
+                </select>
+              </div>
+              <label className="flex items-center gap-2 text-sm text-newTextColor pt-5">
+                <input
+                  type="checkbox"
+                  checked={hideWhitelisted}
+                  onChange={(e) => setHideWhitelisted(e.target.checked)}
+                />
+                {t('hide_whitelisted', 'Hide whitelisted')}
+              </label>
+              <label className="flex items-center gap-2 text-sm text-newTextColor pt-5">
+                <input
+                  type="checkbox"
+                  checked={hideBlacklisted}
+                  onChange={(e) => setHideBlacklisted(e.target.checked)}
+                />
+                {t('hide_blacklisted', 'Hide blacklisted')}
+              </label>
+            </div>
+          )}
         </div>
 
-        {/* Grid */}
-        <div className="p-4 sm:p-5 lg:p-6">
+        <div className="px-2 sm:px-3 pb-4 max-h-[min(70vh,720px)] overflow-auto explorer-scrollbar">
           {loading && users.length === 0 ? (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-              {Array.from({ length: 8 }).map((_, i) => (
-                <FollowerSkeleton key={i} />
-              ))}
-            </div>
+            <XFollowersExplorerTable
+              users={[]}
+              loading
+              selected={selected}
+              whitelist={whitelist}
+              blacklist={blacklist}
+              sortColumn={sortColumn}
+              sortDirection={sortDirection}
+              onSort={handleColumnSort}
+              page={tablePage}
+              totalPages={explorerTotalPages}
+              loadingMore={loadingMore}
+              atLoadCap={atExplorerLoadCap}
+              onPageChange={(p) => void handleExplorerPageChange(p)}
+              actionLoading={actionLoading}
+              listDisabled={loading}
+              followSlotsLeft={followSlotsLeft}
+              unfollowSlotsLeft={unfollowSlotsLeft}
+              allPageSelected={false}
+              onToggleSelectAll={toggleSelectPage}
+              onToggleSelect={toggleSelect}
+              onFollowOne={(id) => void followOne(id)}
+              onUnfollowOne={(id) => void unfollowOne(id)}
+              onDrill={drillInto}
+              onToggleWhitelist={toggleWhitelist}
+              onToggleBlacklist={toggleBlacklist}
+              selectDisabled={(user) =>
+                (!user.alreadyFollowing &&
+                  followSlotsLeft <= 0 &&
+                  !selected.has(user.id)) ||
+                (!!user.alreadyFollowing &&
+                  unfollowSlotsLeft <= 0 &&
+                  !selected.has(user.id))
+              }
+            />
           ) : users.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
-              <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-newBgColor/80 text-2xl border border-newBorder/60">
-                ∅
-              </div>
               <p className="text-sm font-medium text-newTextColor">
                 {t('no_followers_found', 'No followers found')}
-              </p>
-              <p className="mt-1 text-xs text-newTableText max-w-sm">
-                {t(
-                  'no_followers_found_hint',
-                  'This account may have no followers visible to the API, or the list is private.'
-                )}
               </p>
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                {users.map((user) => (
-                  <FollowerTile
-                    key={user.id}
-                    user={user}
-                    selected={selected.has(user.id)}
-                    disabled={loading || following}
-                    onToggle={() => toggleSelect(user.id)}
-                    onDrill={() => drillInto(user)}
-                  />
-                ))}
-              </div>
-
-              {nextToken && (
-                <div className="mt-6 flex justify-center">
-                  <ProfileAutomationsGhostButton
-                    disabled={loadingMore || loading}
-                    onClick={loadMore}
-                  >
-                    {loadingMore
-                      ? t('loading', 'Loading...')
-                      : t('load_more_followers', 'Load more followers')}
-                  </ProfileAutomationsGhostButton>
-                </div>
-              )}
+              <XFollowersExplorerTable
+                users={displayUsers}
+                loading={loading}
+                selected={selected}
+                whitelist={whitelist}
+                blacklist={blacklist}
+                sortColumn={sortColumn}
+                sortDirection={sortDirection}
+                onSort={handleColumnSort}
+                page={tablePage}
+                totalPages={explorerTotalPages}
+                loadingMore={loadingMore}
+                atLoadCap={atExplorerLoadCap}
+                onPageChange={(p) => void handleExplorerPageChange(p)}
+                actionLoading={actionLoading}
+                listDisabled={loading || actionLoading || loadingMore}
+                followSlotsLeft={followSlotsLeft}
+                unfollowSlotsLeft={unfollowSlotsLeft}
+                allPageSelected={allPageSelected}
+                onToggleSelectAll={toggleSelectPage}
+                onToggleSelect={toggleSelect}
+                onFollowOne={(id) => void followOne(id)}
+                onUnfollowOne={(id) => void unfollowOne(id)}
+                onDrill={drillInto}
+                onToggleWhitelist={toggleWhitelist}
+                onToggleBlacklist={toggleBlacklist}
+                selectDisabled={(user) =>
+                  (!user.alreadyFollowing &&
+                    followSlotsLeft <= 0 &&
+                    !selected.has(user.id)) ||
+                  (!!user.alreadyFollowing &&
+                    unfollowSlotsLeft <= 0 &&
+                    !selected.has(user.id))
+                }
+              />
             </>
           )}
         </div>
@@ -542,13 +1581,28 @@ export const XFollowersExplorerPanel: FC = () => {
           <li>
             {t(
               'follow_rate_limit_hint',
-              'X limits how fast you can follow (about 50 per 15 minutes). Each request follows up to 25 accounts with a short delay between them.'
+              'This app enforces a {{dailyLimit}} follows-per-day cap per connected X profile, plus a short-window cap for unfollows. Each click processes up to {{batch}} accounts.',
+              {
+                dailyLimit: followDailyLimit,
+                batch: X_FOLLOW_BATCH_MAX,
+              }
             )}
           </li>
           <li>
             {t(
               'follow_policy_hint',
               'Use mass follow carefully — aggressive following may trigger X restrictions on your account.'
+            )}
+          </li>
+          <li>
+            {t(
+              'explorer_load_cap_hint',
+              'The follower explorer loads at most {{max}} accounts per profile ({{pages}} pages of {{size}}). Use Next on the table to fetch more from X.',
+              {
+                max: EXPLORER_MAX_LOADED.toLocaleString(),
+                pages: EXPLORER_MAX_PAGES,
+                size: EXPLORER_PAGE_SIZE,
+              }
             )}
           </li>
         </ul>

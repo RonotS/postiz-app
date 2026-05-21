@@ -49,7 +49,7 @@ function ProfileAvatars({
                 src={integration.picture || '/no-picture.svg'}
                 className={clsx(
                   'rounded-full min-w-[40px] min-h-[40px] border',
-                  selected ? 'border-[#000]' : 'border-transparent'
+                  selected ? 'border-btnPrimary' : 'border-transparent'
                 )}
                 alt={integration.name}
                 width={40}
@@ -153,7 +153,7 @@ export const XProfileSingleSelect: FC<{
   }
 
   return (
-    <div className="w-full min-w-0 rounded-2xl border border-newBorder/80 bg-newBgColorInner/80 p-4 sm:p-5 ring-1 ring-white/5">
+    <div className="w-full min-w-0 rounded-2xl border border-newBorder bg-newBgColorInner p-4 sm:p-5">
       <div className="text-sm font-semibold text-newTextColor mb-1">
         {t('choose_x_profile', 'Choose X profile')}
       </div>

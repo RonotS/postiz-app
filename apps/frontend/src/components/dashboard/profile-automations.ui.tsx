@@ -3,7 +3,7 @@
 import { FC, ReactNode } from 'react';
 import clsx from 'clsx';
 
-/** Full-width page shell for Profile automations. */
+/** Full-width page shell for dashboard automation pages. */
 export const ProfileAutomationsPageShell: FC<{ children: ReactNode }> = ({
   children,
 }) => (
@@ -20,7 +20,7 @@ export const ProfileAutomationsHero: FC<{
   icon?: ReactNode;
 }> = ({ title, description, icon }) => (
   <header className="w-full min-w-0 mb-8 sm:mb-10">
-    <div className="relative w-full overflow-hidden rounded-2xl border border-newBorder/80 bg-gradient-to-br from-newBgColorInner via-newBgColorInner to-btnPrimary/5 p-6 sm:p-8 shadow-[0_1px_0_0_rgba(255,255,255,0.04)_inset]">
+    <div className="relative w-full overflow-hidden rounded-2xl border border-newBorder bg-newBgColorInner p-6 sm:p-8">
       <div
         className="pointer-events-none absolute -end-16 -top-16 h-48 w-48 rounded-full bg-btnPrimary/10 blur-3xl"
         aria-hidden
@@ -31,13 +31,13 @@ export const ProfileAutomationsHero: FC<{
       />
       <div className="relative z-[1] flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between sm:gap-6">
         {icon && (
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-newBorder/80 bg-newBgColorInner text-textItemFocused shadow-sm">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-newBorder bg-newBgColor text-newTextColor">
             {icon}
           </div>
         )}
         <div className="min-w-0 flex-1">
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-btnPrimary mb-2">
-            X · Automations
+            X · Follow
           </p>
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-newTextColor">
             {title}
@@ -85,11 +85,12 @@ export const ProfileAutomationsCard: FC<{
   children: ReactNode;
   className?: string;
   noPadding?: boolean;
-}> = ({ children, className, noPadding }) => (
+  borderless?: boolean;
+}> = ({ children, className, noPadding, borderless }) => (
   <div
     className={clsx(
-      'w-full min-w-0 rounded-2xl border border-newBorder/80 bg-newBgColorInner/90 shadow-sm',
-      'ring-1 ring-white/5 dark:ring-white/[0.02]',
+      'w-full min-w-0 rounded-2xl bg-newBgColorInner',
+      !borderless && 'border border-newBorder',
       !noPadding && 'p-4 sm:p-5 lg:p-6',
       className
     )}
@@ -107,7 +108,7 @@ export const ProfileAutomationsEmpty: FC<{
       'w-full rounded-2xl border px-4 py-4 sm:px-6 sm:py-5 text-sm leading-relaxed',
       variant === 'warning'
         ? 'border-customColor19/40 bg-customColor19/10 text-newTextColor'
-        : 'border-newBorder/80 bg-newBgColorInner/50 text-newTableText'
+        : 'border-newBorder bg-newBgColorInner text-newTableText'
     )}
   >
     {children}
@@ -136,6 +137,66 @@ export const ProfileAutomationsPrimaryButton: FC<
   </button>
 );
 
+export const ProfileAutomationsToggle: FC<{
+  enabled: boolean;
+  onChange: (v: boolean) => void;
+  disabled?: boolean;
+}> = ({ enabled, onChange, disabled }) => (
+  <button
+    type="button"
+    onClick={() => !disabled && onChange(!enabled)}
+    disabled={disabled}
+    className={clsx(
+      'relative h-8 w-14 shrink-0 rounded-full transition-all duration-200',
+      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-btnPrimary/50',
+      enabled
+        ? 'bg-btnPrimary border-2 border-btnPrimary shadow-lg shadow-btnPrimary/30'
+        : 'bg-gray-200 border-2 border-gray-400 dark:bg-newBgLineColor dark:border-gray-500',
+      disabled && 'opacity-50 cursor-not-allowed'
+    )}
+    aria-pressed={enabled}
+  >
+    <span
+      className={clsx(
+        'absolute top-0.5 left-0.5 h-6 w-6 rounded-full border-2 bg-white transition-transform duration-200',
+        enabled ? 'translate-x-6 border-white' : 'border-gray-500'
+      )}
+    />
+  </button>
+);
+
+export const ProfileAutomationsInfoIcon: FC<{ title?: string }> = ({
+  title,
+}) => (
+  <span
+    className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-gray-400 text-[10px] font-bold text-gray-500 dark:border-newBorder dark:text-newTableText"
+    title={title}
+    aria-label={title}
+  >
+    i
+  </span>
+);
+
+export const ProfileAutomationsInnerBox: FC<{
+  title: string;
+  children: ReactNode;
+  className?: string;
+  borderless?: boolean;
+}> = ({ title, children, className, borderless }) => (
+  <div
+    className={clsx(
+      'rounded-xl p-4',
+      borderless
+        ? 'bg-newBgColorInner/40'
+        : 'border border-gray-200 bg-gray-50/80 dark:border-newBorder dark:bg-newBgColor/40',
+      className
+    )}
+  >
+    <p className="mb-3 text-xs font-semibold text-newTextColor">{title}</p>
+    {children}
+  </div>
+);
+
 export const ProfileAutomationsGhostButton: FC<
   React.ButtonHTMLAttributes<HTMLButtonElement>
 > = ({ className, children, ...props }) => (
@@ -143,8 +204,9 @@ export const ProfileAutomationsGhostButton: FC<
     type="button"
     className={clsx(
       'inline-flex items-center justify-center rounded-xl px-3 py-2 text-sm font-medium',
-      'border border-newBorder/80 bg-newBgColor/50 text-newTextColor',
-      'hover:bg-boxHover active:scale-[0.98] transition-all',
+      'border border-gray-300 bg-gray-100 text-newTextColor',
+      'dark:border-newBorder dark:bg-newBgColorInner',
+      'hover:bg-gray-200 dark:hover:bg-boxHover active:scale-[0.98] transition-all',
       'disabled:opacity-50',
       className
     )}

@@ -185,6 +185,40 @@ export class XAccountActivityHandler {
     return String(user.id_str ?? user.id ?? '').trim() || undefined;
   }
 
+  private async tryPinnedPostDm(
+    xProvider: XProvider,
+    integration: Integration,
+    orgId: string,
+    integrationId: string,
+    tweetId: string,
+    engagerUserId: string,
+    eventType: 'like' | 'retweet' | 'reply',
+    pinnedTweetId: string | undefined
+  ) {
+    if (!pinnedTweetId || tweetId !== pinnedTweetId) return;
+    const pinnedPlug =
+      await this._integrationRepository.getActivePlugByFunction(
+        orgId,
+        integrationId,
+        'autoDmPinnedPost'
+      );
+    if (!pinnedPlug) return;
+    const fields = this.parsePlugFields(pinnedPlug.data);
+    const ctx = this.buildEngagementPlugContext(
+      'autoDmPinnedPost',
+      integrationId,
+      pinnedTweetId
+    );
+    await xProvider.webhookPinnedPostDm(
+      integration,
+      pinnedTweetId,
+      engagerUserId,
+      eventType,
+      fields as any,
+      ctx
+    );
+  }
+
   private async dispatchForIntegration(
     xProvider: XProvider,
     integration: Integration,
@@ -192,12 +226,24 @@ export class XAccountActivityHandler {
   ) {
     const orgId = integration.organizationId;
     const integrationId = integration.id;
+    const pinnedTweetId = await xProvider.resolvePinnedTweetId(integration);
 
     const favorites = (payload.favorite_events as any[]) || [];
     for (const ev of favorites) {
       const tweetId = this.tweetIdFromStatus(ev.favorited_status);
       const likerId = this.userIdFromUser(ev.user);
       if (!tweetId || !likerId) continue;
+
+      await this.tryPinnedPostDm(
+        xProvider,
+        integration,
+        orgId,
+        integrationId,
+        tweetId,
+        likerId,
+        'like',
+        pinnedTweetId
+      );
 
       const postSettings = await this.loadPostSettings(integrationId, tweetId);
       const dmPlug = await this._integrationRepository.getActivePlugByFunction(
@@ -276,6 +322,18 @@ export class XAccountActivityHandler {
       if (rtStatus) {
         const originalId = this.tweetIdFromStatus(rtStatus);
         if (!originalId) continue;
+
+        await this.tryPinnedPostDm(
+          xProvider,
+          integration,
+          orgId,
+          integrationId,
+          originalId,
+          authorId,
+          'retweet',
+          pinnedTweetId
+        );
+
         const postSettings = await this.loadPostSettings(
           integrationId,
           originalId
@@ -310,6 +368,17 @@ export class XAccountActivityHandler {
         tw.in_reply_to_status_id_str ?? tw.in_reply_to_status_id ?? ''
       ).trim();
       if (replyToId) {
+        await this.tryPinnedPostDm(
+          xProvider,
+          integration,
+          orgId,
+          integrationId,
+          replyToId,
+          authorId,
+          'reply',
+          pinnedTweetId
+        );
+
         const postSettings = await this.loadPostSettings(
           integrationId,
           replyToId
