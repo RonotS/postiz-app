@@ -238,6 +238,15 @@ export class IntegrationsController {
     return this._integrationService.getXUnfollowRateLimit(org.id, id);
   }
 
+  @Get('/:id/x-plug-batch-rate-limit')
+  @CheckPolicies([AuthorizationActions.Read, Sections.CHANNEL])
+  async getXPlugBatchRateLimit(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._integrationService.getXPlugBatchRateLimit(org.id, id);
+  }
+
   @Post('/:id/x-follow')
   @CheckPolicies([AuthorizationActions.Update, Sections.CHANNEL])
   async massFollowXUsers(

@@ -190,7 +190,7 @@ export function AdminHubBillingPage() {
       <AdminHero
         eyebrow="Commerce"
         title="Billing & subscriptions"
-        description="Set package prices (STANDARD, PRO, TEAM, ULTIMATE), run Stripe tests, and manage promotion codes. Paid subscription amounts must be at least $0.50 USD (Stripe minimum)."
+        description="Set /subscribe prices (Core, Pro, Enterprise), run Stripe tests, and manage promotion codes. All subscribers get a 7-day trial; Stripe charges when it ends."
       />
 
       <AdminHubPlanPricesPanel isSuper={isSuper} />

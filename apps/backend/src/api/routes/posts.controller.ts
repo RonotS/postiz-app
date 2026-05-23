@@ -24,6 +24,7 @@ import { Response } from 'express';
 import { GetUserFromRequest } from '@gitroom/nestjs-libraries/user/user.from.request';
 import { ShortLinkService } from '@gitroom/nestjs-libraries/short-linking/short.link.service';
 import { CreateTagDto } from '@gitroom/nestjs-libraries/dtos/posts/create.tag.dto';
+import { AttachPublishedTweetDto } from '@gitroom/nestjs-libraries/dtos/posts/attach.published.tweet.dto';
 import {
   AuthorizationActions,
   Sections,
@@ -165,6 +166,15 @@ export class PostsController {
   @Get('/:id')
   getPost(@GetOrgFromRequest() org: Organization, @Param('id') id: string) {
     return this._postsService.getPost(org.id, id);
+  }
+
+  @Post('/attach-published-tweet')
+  @CheckPolicies([AuthorizationActions.Create, Sections.POSTS_PER_MONTH])
+  async attachPublishedTweet(
+    @GetOrgFromRequest() org: Organization,
+    @Body() body: AttachPublishedTweetDto
+  ) {
+    return this._postsService.attachPublishedTweetAutomations(org.id, body);
   }
 
   @Post('/')

@@ -20,7 +20,7 @@ export const GlobalSettings = () => {
     <div className="flex flex-col">
       <h3 className="text-[20px]">{t('global_settings', 'Global Settings')}</h3>
       <MetricComponent />
-      <div className="my-[16px] bg-sixth border-fifth border rounded-[4px] p-[24px] flex flex-col gap-[16px]">
+      <div className="my-[16px] bg-sixth border-fifth border rounded-[4px] p-4 sm:p-6 flex flex-col gap-[16px] min-w-0">
         <div className="text-[16px] font-[600]">{t('language', 'Language')}</div>
         <div className="text-[13px] text-newTableText">
           {t('select_language', 'Choose your preferred language for the interface.')}

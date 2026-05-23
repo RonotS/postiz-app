@@ -73,6 +73,12 @@ export const SelectCurrent: FC = () => {
   const contentRef = useRef<HTMLDivElement>(null);
   const hasScroll = useHasScroll(contentRef);
 
+  const hideEditorForSettings = useCallback(() => {
+    if (typeof window !== 'undefined' && window.matchMedia('(min-width: 1026px)').matches) {
+      setHide(true);
+    }
+  }, [setHide]);
+
   const removeSocial = useCallback(
     (sIntegration: Integrations) => async (e: any) => {
       e.stopPropagation();
@@ -104,7 +110,7 @@ export const SelectCurrent: FC = () => {
         >
           <div
             onClick={() => {
-              setHide(true);
+              hideEditorForSettings();
               setCurrent('global');
             }}
             className={clsx(
@@ -121,7 +127,7 @@ export const SelectCurrent: FC = () => {
           {selectedIntegrations.map(({ integration }) => (
             <div
               onClick={() => {
-                setHide(true);
+                hideEditorForSettings();
                 setCurrent(integration.id);
               }}
               key={integration.id}

@@ -20,48 +20,20 @@ import {
 } from 'react';
 import useSWR from 'swr';
 import { usePathname } from 'next/navigation';
+import clsx from 'clsx';
+import { useModals } from '@gitroom/frontend/components/layout/new-modal';
+import { AttachExistingPostModalContent } from '@gitroom/frontend/components/dashboard/attach-existing-post.modal';
+import {
+  automationEnabledSummary,
+  buildXPostSettings,
+  ComposerSettings,
+  DEFAULT_COMPOSER_SETTINGS,
+  useComposerSettingsUpdater,
+  XAutomationOptionsPanel,
+} from '@gitroom/frontend/components/dashboard/dashboard-composer.shared';
 
 const SETTINGS_STORAGE_KEY = 'dashboard-composer-settings';
 const DRAFT_STORAGE_KEY = 'dashboard-composer-draft';
-
-type ComposerSettings = {
-  longForm: boolean;
-  autoRetweet: boolean;
-  autoRetweetInterval: number; // hours between retweets
-  autoRetweetTimes: number; // total number of times to retweet
-  autoDm: boolean;
-  autoDmMessage: string;
-  autoDmTargetLikes: boolean;
-  autoDmTargetRetweets: boolean;
-  autoDmTargetReplies: boolean;
-  /** Auto thread reply — chains tweet replies once the post hits a like threshold. */
-  autoThreadReply: boolean;
-  autoThreadReplyLikes: number;
-  autoThreadReplyText: string;
-  threadDelay: boolean;
-  linkedinPublish: boolean;
-  generateBlog: boolean;
-  paidPartnership: boolean;
-};
-
-const DEFAULT_SETTINGS: ComposerSettings = {
-  longForm: true,
-  autoRetweet: false,
-  autoRetweetInterval: 6,
-  autoRetweetTimes: 1,
-  autoDm: false,
-  autoDmMessage: '',
-  autoDmTargetLikes: true,
-  autoDmTargetRetweets: false,
-  autoDmTargetReplies: false,
-  autoThreadReply: false,
-  autoThreadReplyLikes: 5,
-  autoThreadReplyText: '',
-  threadDelay: false,
-  linkedinPublish: false,
-  generateBlog: false,
-  paidPartnership: false,
-};
 
 type IntegrationItem = {
   id: string;
@@ -86,6 +58,8 @@ type PostItem = {
     providerIdentifier?: string;
     name?: string;
   };
+  releaseURL?: string;
+  releaseId?: string;
 };
 
 /** Browser URL for uploaded media paths (full CDN URL, absolute /uploads, or filename). */
@@ -184,49 +158,6 @@ function queueCardStatus(
   return postQueueStatus(post.state, t);
 }
 
-const Toggle: FC<{
-  enabled: boolean;
-  onChange: (v: boolean) => void;
-}> = ({ enabled, onChange }) => (
-  <button
-    type="button"
-    onClick={() => onChange(!enabled)}
-    className={`relative w-[36px] h-[20px] rounded-full transition-colors flex-shrink-0 ${
-      enabled ? 'bg-btnPrimary' : 'bg-newBgLineColor'
-    }`}
-    aria-pressed={enabled}
-  >
-    <span
-      className={`absolute top-[2px] left-[2px] w-[16px] h-[16px] bg-white rounded-full transition-transform ${
-        enabled ? 'translate-x-[16px]' : 'translate-x-0'
-      }`}
-    />
-  </button>
-);
-
-const SettingRow: FC<{
-  icon?: string;
-  label: string;
-  enabled: boolean;
-  onChange: (v: boolean) => void;
-  trailing?: React.ReactNode;
-  hint?: React.ReactNode;
-}> = ({ icon, label, enabled, onChange, trailing, hint }) => (
-  <div className="flex flex-col gap-1 py-2">
-    <div className="flex items-center gap-3">
-      {icon && (
-        <span className="text-newTableText text-sm w-4 text-center">
-          {icon}
-        </span>
-      )}
-      <span className="flex-1 text-newTextColor text-sm">{label}</span>
-      {trailing}
-      <Toggle enabled={enabled} onChange={onChange} />
-    </div>
-    {hint && <div className="text-newTableText text-xs ml-7">{hint}</div>}
-  </div>
-);
-
 const useDashboardPosts = (startDate: string, endDate: string) => {
   const fetch = useFetch();
   return useSWR(
@@ -315,7 +246,22 @@ export default function DashboardPage() {
   // collapse the panel to give the queue full width; a small re-open button
   // appears on the right edge so they can bring it back.
   const [composerCollapsed, setComposerCollapsed] = useState(false);
-  const [settings, setSettings] = useState<ComposerSettings>(DEFAULT_SETTINGS);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const sync = () => {
+      if (!mq.matches) {
+        setComposerCollapsed(true);
+      }
+    };
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+  const [settings, setSettings] = useState<ComposerSettings>(
+    DEFAULT_COMPOSER_SETTINGS
+  );
+  const modal = useModals();
   const [composerText, setComposerText] = useState('');
   const [hydrated, setHydrated] = useState(false);
   // Attached media (images/videos) for the current draft. Each entry has the
@@ -340,7 +286,7 @@ export default function DashboardPage() {
       const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        setSettings({ ...DEFAULT_SETTINGS, ...parsed, longForm: true });
+        setSettings({ ...DEFAULT_COMPOSER_SETTINGS, ...parsed, longForm: true });
       }
       const draft = localStorage.getItem(DRAFT_STORAGE_KEY);
       if (draft) setComposerText(draft);
@@ -363,12 +309,7 @@ export default function DashboardPage() {
     localStorage.setItem(DRAFT_STORAGE_KEY, composerText);
   }, [composerText, hydrated]);
 
-  const updateSetting = useCallback(
-    <K extends keyof ComposerSettings>(key: K, value: ComposerSettings[K]) => {
-      setSettings((s) => ({ ...s, [key]: value }));
-    },
-    []
-  );
+  const updateSetting = useComposerSettingsUpdater(setSettings);
 
   // Home: fetch posts from today back through the prior 10 days (11 calendar days).
   const startDate = useMemo(
@@ -401,7 +342,6 @@ export default function DashboardPage() {
   const [editingPost, setEditingPost] = useState<PostItem | null>(null);
   // datetime-local string in user's local TZ ("YYYY-MM-DDTHH:mm")
   const [scheduledAt, setScheduledAt] = useState<string>('');
-
   // Default the schedule input to the next free slot when one is found,
   // unless the user has already picked a custom time.
   const [userTouchedDate, setUserTouchedDate] = useState(false);
@@ -608,37 +548,7 @@ export default function DashboardPage() {
           ? 'draft'
           : 'schedule';
 
-        const xPostSettings = {
-          __type: 'x' as const,
-          who_can_reply_post: 'everyone' as const,
-          made_with_ai: false,
-          paid_partnership: settings.paidPartnership,
-          ...(settings.autoRetweet
-            ? {
-                auto_retweet_enabled: true,
-                auto_retweet_interval_hours: settings.autoRetweetInterval,
-                auto_retweet_times: settings.autoRetweetTimes,
-              }
-            : { auto_retweet_enabled: false }),
-          ...(settings.autoDm
-            ? {
-                auto_dm_enabled: true,
-                auto_dm_message: settings.autoDmMessage,
-                auto_dm_targets: {
-                  likes: settings.autoDmTargetLikes,
-                  retweets: settings.autoDmTargetRetweets,
-                  replies: settings.autoDmTargetReplies,
-                },
-              }
-            : { auto_dm_enabled: false }),
-          ...(settings.autoThreadReply
-            ? {
-                auto_thread_reply_enabled: true,
-                auto_thread_reply_likes: settings.autoThreadReplyLikes,
-                auto_thread_reply_text: settings.autoThreadReplyText,
-              }
-            : { auto_thread_reply_enabled: false }),
-        };
+        const xPostSettings = buildXPostSettings(settings);
 
         const payload = {
           type,
@@ -907,6 +817,37 @@ export default function DashboardPage() {
     }
   }, []);
 
+  const openAttachExistingPostModal = useCallback(() => {
+    const defaultProfileId =
+      selectedXProfileIds.length === 1 ? selectedXProfileIds[0] : undefined;
+
+    modal.openModal({
+      id: 'attach-existing-post-modal',
+      removeLayout: true,
+      closeOnClickOutside: true,
+      closeOnEscape: true,
+      size: 560,
+      children: (close) => (
+        <AttachExistingPostModalContent
+          close={close}
+          xIntegrations={xIntegrations as any}
+          initialSettings={settings}
+          defaultProfileId={defaultProfileId}
+          onSuccess={() => {
+            void mutatePosts();
+            setActiveTab('Sent');
+          }}
+        />
+      ),
+    });
+  }, [
+    modal,
+    xIntegrations,
+    settings,
+    selectedXProfileIds,
+    mutatePosts,
+  ]);
+
   const cancelEdit = useCallback(() => {
     setEditingPost(null);
     setComposerText('');
@@ -969,7 +910,12 @@ export default function DashboardPage() {
 
       <div className="flex flex-1 min-h-0 flex-col lg:flex-row w-full">
         {/* Left Section: Queue */}
-        <div className="flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 lg:p-8 border-b lg:border-b-0 lg:border-r border-newBorder custom-scrollbar">
+        <div
+          className={clsx(
+            'flex-1 min-w-0 overflow-y-auto p-4 sm:p-6 lg:p-8 border-b lg:border-b-0 lg:border-r border-newBorder custom-scrollbar',
+            composerCollapsed && 'pb-[76px] lg:pb-0'
+          )}
+        >
           <header className="mb-6">
             <h1 className="text-2xl font-bold text-newTextColor mb-4">
               {queuePageTitle}
@@ -1146,8 +1092,7 @@ export default function DashboardPage() {
           )}
         </div>
 
-        {/* Floating re-open tab — visible only when the composer is collapsed
-            on lg+ screens. Mobile keeps the composer stacked below the queue. */}
+        {/* Desktop: collapsed composer re-open tab */}
         {composerCollapsed && (
           <button
             type="button"
@@ -1160,21 +1105,71 @@ export default function DashboardPage() {
           </button>
         )}
 
+        {/* Mobile: sticky collapsed composer bar */}
+        {composerCollapsed && (
+          <button
+            type="button"
+            onClick={() => setComposerCollapsed(false)}
+            title={t('expand_composer', 'Show composer')}
+            aria-label={t('expand_composer', 'Show composer')}
+            className="lg:hidden fixed bottom-0 left-0 right-0 z-30 flex items-center justify-between gap-3 px-4 py-3 pb-[max(12px,env(safe-area-inset-bottom))] bg-newBgColorInner border-t border-newBorder shadow-[0_-8px_24px_rgba(0,0,0,0.35)]"
+          >
+            <span className="text-sm font-semibold text-newTextColor">
+              {activeTab === 'Compose'
+                ? t('compose', 'Compose')
+                : activeTab}
+            </span>
+            <span className="text-xs text-customColor26 font-medium">
+              {t('tap_to_expand', 'Tap to expand')} ↑
+            </span>
+          </button>
+        )}
+
+        {/* Mobile: backdrop when composer sheet is open */}
+        {!composerCollapsed && (
+          <button
+            type="button"
+            aria-label={t('collapse_composer', 'Hide composer')}
+            className="lg:hidden fixed inset-0 z-30 bg-black/50 backdrop-blur-[2px]"
+            onClick={() => setComposerCollapsed(true)}
+          />
+        )}
+
         {/* Right Section: Composer */}
         <div
-          className={`w-full lg:w-[420px] lg:flex-shrink-0 flex-col bg-newBgColorInner lg:border-l border-newBorder overflow-y-auto custom-scrollbar flex ${
-            composerCollapsed ? 'lg:hidden' : ''
-          }`}
+          className={clsx(
+            'flex-col bg-newBgColorInner border-newBorder overflow-y-auto custom-scrollbar flex',
+            composerCollapsed ? 'hidden' : 'flex',
+            'fixed inset-x-0 bottom-0 z-40 max-h-[min(92dvh,100%)] border-t shadow-[0_-12px_40px_rgba(0,0,0,0.4)]',
+            'lg:relative lg:inset-auto lg:bottom-auto lg:z-auto lg:max-h-none lg:w-[420px] lg:flex-shrink-0 lg:border-t-0 lg:border-l lg:shadow-none'
+          )}
         >
-          <div className="p-3 border-b border-newBorder flex justify-end gap-1">
+          <div className="p-3 border-b border-newBorder flex justify-between items-center gap-1 shrink-0">
+            <span className="lg:hidden text-sm font-semibold text-newTextColor">
+              {t('composer', 'Composer')}
+            </span>
             <button
               type="button"
               onClick={() => setComposerCollapsed(true)}
               title={t('collapse_composer', 'Hide composer')}
               aria-label={t('collapse_composer', 'Hide composer')}
-              className="p-2 hover:bg-boxHover rounded-lg text-newTableText hover:text-newTextColor transition-colors"
+              className="p-2 hover:bg-boxHover rounded-lg text-newTableText hover:text-newTextColor transition-colors ml-auto"
             >
-              ⇥
+              <span className="lg:hidden text-xs font-medium">
+                {t('collapse', 'Collapse')} ↓
+              </span>
+              <span className="hidden lg:inline">⇥</span>
+            </button>
+          </div>
+
+          <div className="border-b border-newBorder px-4 py-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={openAttachExistingPostModal}
+              disabled={xIntegrations.length === 0}
+              className="w-full py-2 rounded-lg text-sm font-medium border border-customColor26/50 text-customColor26 hover:bg-customColor26/10 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {t('automate_existing_post', 'Automate existing post')}…
             </button>
           </div>
 
@@ -1546,18 +1541,7 @@ export default function DashboardPage() {
                   </span>
                   <span className="text-newTableText text-[11px]">
                     {t('enabled_label', 'enabled:')}{' '}
-                    {[
-                      settings.autoDm && 'auto-dm',
-                      settings.autoRetweet && 'auto-retweet',
-                      settings.autoThreadReply && 'thread-reply',
-                      settings.threadDelay && 'thread-delay',
-                      // Hidden per request:
-                      // settings.linkedinPublish && 'linkedin',
-                      // settings.generateBlog && 'blog',
-                      // settings.paidPartnership && 'paid-partnership',
-                    ]
-                      .filter(Boolean)
-                      .join(', ') || '—'}
+                    {automationEnabledSummary(settings)}
                   </span>
                 </div>
                 <span className="text-newTableText text-sm">
@@ -1567,164 +1551,9 @@ export default function DashboardPage() {
 
               {advancedOpen && (
                 <div className="border-t border-newBorder p-4 flex flex-col gap-1">
-                  <div className="bg-customColor26/10 border border-customColor26/20 rounded-lg px-3 py-2 text-customColor26 text-xs flex items-center gap-2 mb-2">
-                    <span>ⓘ</span>
-                    {t(
-                      'affect_only_this_tweet',
-                      'These settings will affect this tweet only.'
-                    )}
-                  </div>
-
-                  <SettingRow
-                    icon="↻"
-                    label={t('auto_retweet', 'Auto retweet')}
-                    enabled={settings.autoRetweet}
-                    onChange={(v) => updateSetting('autoRetweet', v)}
-                  />
-
-                  {settings.autoRetweet && (
-                    <div className="ml-7 mb-2 mt-1 flex flex-col gap-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-newTableText text-xs">
-                          {t('interval', 'Interval')}
-                        </span>
-                        <select
-                          value={settings.autoRetweetInterval}
-                          onChange={(e) =>
-                            updateSetting(
-                              'autoRetweetInterval',
-                              parseInt(e.target.value) || 6
-                            )
-                          }
-                          className="bg-newBgColor border border-newBorder rounded-lg px-2 py-1 text-xs text-newTextColor outline-none min-w-[120px]"
-                        >
-                          <option value={1}>1 hour</option>
-                          <option value={3}>3 hours</option>
-                          <option value={6}>6 hours</option>
-                          <option value={12}>12 hours</option>
-                          <option value={24}>24 hours</option>
-                          <option value={48}>2 days</option>
-                          <option value={168}>1 week</option>
-                        </select>
-                      </div>
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="text-newTableText text-xs">
-                          {t('number_of_times', '# of times')}
-                        </span>
-                        <select
-                          value={settings.autoRetweetTimes}
-                          onChange={(e) =>
-                            updateSetting(
-                              'autoRetweetTimes',
-                              parseInt(e.target.value) || 1
-                            )
-                          }
-                          className="bg-newBgColor border border-newBorder rounded-lg px-2 py-1 text-xs text-newTextColor outline-none min-w-[120px]"
-                        >
-                          <option value={1}>1 time</option>
-                          <option value={2}>2 times</option>
-                          <option value={3}>3 times</option>
-                          <option value={5}>5 times</option>
-                          <option value={10}>10 times</option>
-                        </select>
-                      </div>
-                    </div>
-                  )}
-
-                  <SettingRow
-                    icon="✉"
-                    label={t('auto_dm', 'Auto DM')}
-                    enabled={settings.autoDm}
-                    onChange={(v) => updateSetting('autoDm', v)}
-                  />
-
-                  {settings.autoDm && (
-                    <div className="ml-7 mb-2 mt-1 flex flex-col gap-1">
-                      <SettingRow
-                        icon="♥"
-                        label={t('dm_likers', 'DM users who liked')}
-                        enabled={settings.autoDmTargetLikes}
-                        onChange={(v) => updateSetting('autoDmTargetLikes', v)}
-                      />
-                      <SettingRow
-                        icon="↻"
-                        label={t('dm_retweeters', 'DM users who retweeted')}
-                        enabled={settings.autoDmTargetRetweets}
-                        onChange={(v) => updateSetting('autoDmTargetRetweets', v)}
-                      />
-                      <SettingRow
-                        icon="💬"
-                        label={t('dm_repliers', 'DM users who commented')}
-                        enabled={settings.autoDmTargetReplies}
-                        onChange={(v) => updateSetting('autoDmTargetReplies', v)}
-                      />
-                      <textarea
-                        placeholder={t(
-                          'dm_message_placeholder',
-                          'Custom DM message for this tweet (leave empty for a short default)'
-                        )}
-                        value={settings.autoDmMessage}
-                        onChange={(e) =>
-                          updateSetting('autoDmMessage', e.target.value)
-                        }
-                        className="w-full bg-newBgColor border border-newBorder rounded-lg px-3 py-2 text-xs text-newTextColor outline-none resize-none focus:border-newSep min-h-[70px] mt-2"
-                      />
-                    </div>
-                  )}
-
-                  <SettingRow
-                    icon="🔌"
-                    label={t('auto_plug', 'Auto plug')}
-                    enabled={settings.autoThreadReply}
-                    onChange={(v) => updateSetting('autoThreadReply', v)}
-                    trailing={
-                      <div className="flex items-center gap-1 mr-1">
-                        <input
-                          type="number"
-                          min={1}
-                          value={settings.autoThreadReplyLikes}
-                          onChange={(e) =>
-                            updateSetting(
-                              'autoThreadReplyLikes',
-                              parseInt(e.target.value) || 1
-                            )
-                          }
-                          className="w-[44px] bg-newBgColor border border-newBorder rounded px-2 py-0.5 text-xs text-newTextColor text-center outline-none focus:border-newSep"
-                        />
-                        <span className="text-newTableText text-xs">
-                          {t('likes', 'likes')}
-                        </span>
-                      </div>
-                    }
-                  />
-
-                  {settings.autoThreadReply && (
-                    <div className="ml-7 mb-2 mt-1 flex flex-col gap-1">
-                      <p className="text-newTableText text-[11px] leading-snug">
-                        {t(
-                          'auto_thread_reply_hint',
-                          'Once this tweet reaches the like threshold, the text below is posted as a chained reply thread. Separate tweets in the thread with three blank lines (same as the main composer).'
-                        )}
-                      </p>
-                      <textarea
-                        placeholder={t(
-                          'auto_thread_reply_placeholder',
-                          'Thread content — separate tweets with three blank lines'
-                        )}
-                        value={settings.autoThreadReplyText}
-                        onChange={(e) =>
-                          updateSetting('autoThreadReplyText', e.target.value)
-                        }
-                        className="w-full bg-newBgColor border border-newBorder rounded-lg px-3 py-2 text-xs text-newTextColor outline-none resize-y focus:border-newSep min-h-[90px] mt-1"
-                      />
-                    </div>
-                  )}
-
-                  <SettingRow
-                    icon="⏱"
-                    label={t('thread_delay', 'Thread Delay')}
-                    enabled={settings.threadDelay}
-                    onChange={(v) => updateSetting('threadDelay', v)}
+                  <XAutomationOptionsPanel
+                    settings={settings}
+                    updateSetting={updateSetting}
                   />
 
                   {/* Hidden per request — kept so they can be re-enabled later.

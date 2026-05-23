@@ -4,6 +4,7 @@ import {
   HttpStatus,
   Inject,
   Injectable,
+  OnModuleInit,
 } from '@nestjs/common';
 import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
@@ -28,11 +29,23 @@ import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integration
 import { TemporalService } from 'nestjs-temporal-core';
 import {
   xFollowerDmPollerWorkflowId,
-  X_FOLLOWER_DM_DEFAULT_POLL_INTERVAL_MS,
+  xEngagementPollerWorkflowId,
   xProfileAutomationsPollerWorkflowId,
+  X_ENGAGEMENT_PLUG_FUNCTIONS,
   X_PROFILE_AUTOMATION_PLUG_FUNCTIONS,
+  type XEngagementPlugFunction,
   type XProfileAutomationPlugFunction,
 } from '@gitroom/nestjs-libraries/temporal/x.follower.dm.constants';
+import { resolveXPollIntervalMs } from '@gitroom/helpers/x/x.poll-interval.env';
+import {
+  X_ENGAGEMENT_MAX_POSTS_PER_TICK,
+} from '@gitroom/nestjs-libraries/integrations/social/x-plug-batch-rate-limit';
+import {
+  addQueuedEstimate,
+  buildXPlugBatchRateLimitStatus,
+  createDmBatchGate,
+  decayQueuedEstimate,
+} from '@gitroom/nestjs-libraries/integrations/social/x-plug-batch-rate-limit.store';
 import { XAccountActivityService } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.service';
 import { XAccountActivityHandler } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.handler';
 import {
@@ -58,7 +71,7 @@ import {
 dayjs.extend(utc);
 
 @Injectable()
-export class IntegrationService {
+export class IntegrationService implements OnModuleInit {
   private storage = UploadFactory.createStorage();
   constructor(
     private _integrationRepository: IntegrationRepository,
@@ -71,6 +84,14 @@ export class IntegrationService {
     private _xAccountActivity: XAccountActivityService,
     private _xAccountActivityHandler: XAccountActivityHandler
   ) { }
+
+  async onModuleInit(): Promise<void> {
+    if (process.env.RUN_CRON) {
+      void this.bootstrapXPlugPollers().catch((err) =>
+        console.error('bootstrapXPlugPollers:', err)
+      );
+    }
+  }
 
   async changeActiveCron(orgId: string) {
     const data = await this._autopostsRepository.getAutoposts(orgId);
@@ -633,7 +654,21 @@ export class IntegrationService {
     const integrationId = getPlugById.integration.id;
     const followerBaselineKey = '__fdm_baseline_v1__';
 
-    const engagementPlugContext = {
+    const dmGate =
+      getPlugById.integration.providerIdentifier === 'x'
+        ? createDmBatchGate(integrationId)
+        : null;
+
+    const mergeDmBatchGate = <T extends Record<string, unknown>>(ctx: T) =>
+      dmGate
+        ? {
+            ...ctx,
+            tryReserveDm: dmGate.tryReserveDm,
+            confirmDmSent: dmGate.confirmDmSent,
+          }
+        : ctx;
+
+    const engagementPlugContext = mergeDmBatchGate({
       // Returns the subset of `userIds` that have ALREADY been recorded for
       // this post (i.e., already DM'd in a prior run). Caller filters them out
       // before sending DMs.
@@ -661,9 +696,9 @@ export class IntegrationService {
           values
         );
       },
-    };
+    });
 
-    const followerPlugContext = {
+    const followerPlugContext = mergeDmBatchGate({
       loadDmdUserIds: async (userIds: string[]): Promise<Set<string>> => {
         if (userIds.length === 0) return new Set();
         const candidates = userIds.map((uid) => `fdm:${uid}`);
@@ -725,7 +760,7 @@ export class IntegrationService {
           values
         );
       },
-    };
+    });
 
     let engagementReleaseId = data.postId;
     if (getPlugById.plugFunction === 'autoDmPinnedPost') {
@@ -738,7 +773,7 @@ export class IntegrationService {
       }
     }
 
-    const pinnedEngagementPlugContext = {
+    const pinnedEngagementPlugContext = mergeDmBatchGate({
       loadDmdUserIds: async (userIds: string[]): Promise<Set<string>> => {
         if (userIds.length === 0) return new Set();
         const candidates = userIds.map(
@@ -767,7 +802,7 @@ export class IntegrationService {
           values
         );
       },
-    };
+    });
 
     const plugContext =
       getPlugById.plugFunction === 'autoDmFollowers'
@@ -887,6 +922,8 @@ export class IntegrationService {
         'autoThreadReply'
       );
     }
+
+    await this.syncEngagementPoller(organizationId, integrationId);
   }
 
   private async startXFollowerDmPollerWorkflow(
@@ -900,15 +937,8 @@ export class IntegrationService {
     const raw = this._temporalService.client?.getRawClient();
     if (!raw) return;
     const workflowId = xFollowerDmPollerWorkflowId(integrationId);
-    const fromEnv = Number(process.env.X_FOLLOWER_DM_POLL_INTERVAL_MS);
-    const pollIntervalMs = Math.max(
-      30_000,
-      Math.min(
-        3_600_000,
-        Number.isFinite(fromEnv) && fromEnv > 0
-          ? fromEnv
-          : X_FOLLOWER_DM_DEFAULT_POLL_INTERVAL_MS
-      )
+    const pollIntervalMs = resolveXPollIntervalMs(
+      'X_FOLLOWER_DM_POLL_INTERVAL_MS'
     );
     try {
       await raw.workflow.start('xFollowerDmPollerWorkflow', {
@@ -972,13 +1002,8 @@ export class IntegrationService {
     const raw = this._temporalService.client?.getRawClient();
     if (!raw) return;
     const workflowId = xProfileAutomationsPollerWorkflowId(integrationId);
-    const fromEnv = Number(process.env.X_PROFILE_AUTOMATIONS_POLL_INTERVAL_MS);
-    const pollIntervalMs = Math.max(
-      30_000,
-      Math.min(
-        3_600_000,
-        Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 30_000
-      )
+    const pollIntervalMs = resolveXPollIntervalMs(
+      'X_PROFILE_AUTOMATIONS_POLL_INTERVAL_MS'
     );
     try {
       await raw.workflow.start('xProfileAutomationsPollerWorkflow', {
@@ -1020,6 +1045,249 @@ export class IntegrationService {
     }
   }
 
+  private isEngagementPlug(func: string): func is XEngagementPlugFunction {
+    return (X_ENGAGEMENT_PLUG_FUNCTIONS as readonly string[]).includes(func);
+  }
+
+  async hasActiveXEngagementPlugs(integrationId: string): Promise<boolean> {
+    const rows =
+      await this._integrationRepository.listActiveEngagementPlugIds(
+        integrationId
+      );
+    return rows.length > 0;
+  }
+
+  /**
+   * Start a forever poller only when it is not already RUNNING.
+   * Avoids TERMINATE_EXISTING on every plug upsert (attach flow), which caused
+   * Temporal "Workflow task not found" warnings and reset the poll timer.
+   */
+  private async startForeverPollerIfNotRunning(
+    workflowType: string,
+    workflowId: string,
+    args: unknown[]
+  ): Promise<void> {
+    const raw = this._temporalService.client?.getRawClient();
+    if (!raw) {
+      return;
+    }
+
+    try {
+      const handle = raw.workflow.getHandle(workflowId);
+      const description = await handle.describe();
+      if (description.status.name === 'RUNNING') {
+        return;
+      }
+    } catch {
+      /* workflow does not exist yet */
+    }
+
+    try {
+      await raw.workflow.start(workflowType, {
+        taskQueue: 'main',
+        workflowId,
+        workflowIdConflictPolicy: 'USE_EXISTING',
+        args,
+      });
+    } catch (err: unknown) {
+      const name = (err as { name?: string })?.name;
+      if (name === 'WorkflowExecutionAlreadyStartedError') {
+        return;
+      }
+      console.error(`startForeverPollerIfNotRunning ${workflowType}:`, err);
+    }
+  }
+
+  private async startXEngagementPollerWorkflow(
+    organizationId: string,
+    integrationId: string
+  ): Promise<void> {
+    if (isXAccountActivityPollingDisabled()) {
+      return;
+    }
+    const pollIntervalMs = resolveXPollIntervalMs(
+      'X_ENGAGEMENT_POLL_INTERVAL_MS'
+    );
+    await this.startForeverPollerIfNotRunning(
+      'xEngagementPollerWorkflow',
+      xEngagementPollerWorkflowId(integrationId),
+      [{ organizationId, integrationId, pollIntervalMs }]
+    );
+  }
+
+  private async stopXEngagementPollerWorkflow(
+    integrationId: string
+  ): Promise<void> {
+    try {
+      await this._temporalService.terminateWorkflow(
+        xEngagementPollerWorkflowId(integrationId)
+      );
+    } catch {
+      /* workflow may not exist */
+    }
+  }
+
+  private async syncEngagementPoller(
+    organizationId: string,
+    integrationId: string
+  ): Promise<void> {
+    const active = await this.hasActiveXEngagementPlugs(integrationId);
+    if (active) {
+      await this.startXEngagementPollerWorkflow(organizationId, integrationId);
+    } else {
+      await this.stopXEngagementPollerWorkflow(integrationId);
+    }
+  }
+
+  /**
+   * One 5-minute (default) engagement poller tick: run post-bound plugs on recent
+   * published tweets, respecting DM batch caps (defer to next tick when limited).
+   */
+  /** Run engagement plugs for one tweet id (e.g. right after attach-published-tweet). */
+  async runEngagementPlugsForReleaseId(
+    organizationId: string,
+    integrationId: string,
+    releaseId: string,
+    postSettings?: Record<string, unknown>
+  ): Promise<void> {
+    const status = await buildXPlugBatchRateLimitStatus(integrationId);
+    if (status.limited) {
+      return;
+    }
+
+    const plugs =
+      await this._integrationRepository.listActiveEngagementPlugIds(
+        integrationId
+      );
+    if (!plugs.length || !releaseId?.trim()) {
+      return;
+    }
+
+    const enabledFuncs = new Set<string>();
+    if (postSettings?.auto_dm_enabled === true) {
+      enabledFuncs.add('autoDmEngagers');
+    }
+    if (postSettings?.auto_retweet_enabled === true) {
+      enabledFuncs.add('autoRepostPost');
+    }
+    if (postSettings?.auto_thread_reply_enabled === true) {
+      enabledFuncs.add('autoThreadReply');
+    }
+
+    for (const plug of plugs) {
+      if (enabledFuncs.size > 0 && !enabledFuncs.has(plug.plugFunction)) {
+        continue;
+      }
+      try {
+        await this.processPlugs({
+          plugId: plug.id,
+          postId: releaseId,
+          delay: 0,
+          totalRuns: 1,
+          currentRun: 1,
+        });
+      } catch (err) {
+        console.error(
+          `runEngagementPlugsForReleaseId plug=${plug.plugFunction} release=${releaseId}:`,
+          err
+        );
+      }
+    }
+  }
+
+  async runXEngagementPollerTick(
+    organizationId: string,
+    integrationId: string
+  ): Promise<void> {
+    const status = await buildXPlugBatchRateLimitStatus(integrationId);
+    if (status.limited) {
+      return;
+    }
+
+    const plugs =
+      await this._integrationRepository.listActiveEngagementPlugIds(
+        integrationId
+      );
+    if (!plugs.length) {
+      return;
+    }
+
+    const posts =
+      await this._integrationRepository.listPublishedPostReleaseIds(
+        integrationId,
+        100
+      );
+    const releaseIds = posts
+      .map((p) => p.releaseId)
+      .filter((id): id is string => !!id && id.trim().length > 0);
+
+    const toProcess = releaseIds.slice(0, X_ENGAGEMENT_MAX_POSTS_PER_TICK);
+    const skippedPosts = Math.max(0, releaseIds.length - toProcess.length);
+    if (skippedPosts > 0) {
+      await addQueuedEstimate(integrationId, skippedPosts * plugs.length);
+    }
+
+    for (const releaseId of toProcess) {
+      for (const plug of plugs) {
+        try {
+          await this.processPlugs({
+            plugId: plug.id,
+            postId: releaseId,
+            delay: 0,
+            totalRuns: 1,
+            currentRun: 1,
+          });
+        } catch (err) {
+          console.error(
+            `runXEngagementPollerTick plug=${plug.plugFunction} release=${releaseId}:`,
+            err
+          );
+        }
+      }
+      await decayQueuedEstimate(integrationId, plugs.length);
+    }
+  }
+
+  async getXPlugBatchRateLimit(orgId: string, integrationId: string) {
+    const integration = await this.getIntegrationById(orgId, integrationId);
+    if (!integration || integration.providerIdentifier !== 'x') {
+      throw new HttpException('Invalid X integration', HttpStatus.BAD_REQUEST);
+    }
+    return buildXPlugBatchRateLimitStatus(integrationId);
+  }
+
+  /** Restarts forever X plug pollers at the current default interval (5 min). */
+  async bootstrapXPlugPollers(): Promise<void> {
+    if (isXAccountActivityPollingDisabled()) {
+      return;
+    }
+
+    const engagement =
+      await this._integrationRepository.listXIntegrationsWithActiveEngagementPlugs();
+    for (const row of engagement) {
+      await this.syncEngagementPoller(row.organizationId, row.integrationId);
+    }
+
+    const followerPlugs =
+      await this._integrationRepository.listActiveFollowerDmPlugs();
+    for (const plug of followerPlugs) {
+      await this.startXFollowerDmPollerWorkflow(
+        plug.organizationId,
+        plug.integrationId,
+        plug.id
+      );
+    }
+
+    const profile =
+      await this._integrationRepository.listXIntegrationsWithActiveProfileAutomationPlugs();
+    for (const row of profile) {
+      await this.syncProfileAutomationsPoller(
+        row.organizationId,
+        row.integrationId
+      );
+    }
+  }
+
   async createOrUpdatePlug(
     orgId: string,
     integrationId: string,
@@ -1039,6 +1307,10 @@ export class IntegrationService {
 
     if (this.isProfileAutomationPlug(body.func) && row.activated) {
       await this.syncProfileAutomationsPoller(orgId, integrationId);
+    }
+
+    if (this.isEngagementPlug(body.func)) {
+      await this.syncEngagementPoller(orgId, integrationId);
     }
 
     if (row.activated && isXAccountActivityWebhooksEnabled()) {
@@ -1084,6 +1356,10 @@ export class IntegrationService {
 
     if (this.isProfileAutomationPlug(updated.plugFunction)) {
       await this.syncProfileAutomationsPoller(orgId, updated.integrationId);
+    }
+
+    if (this.isEngagementPlug(updated.plugFunction)) {
+      await this.syncEngagementPoller(orgId, updated.integrationId);
     }
 
     return { id: updated.id };

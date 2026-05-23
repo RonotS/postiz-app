@@ -19,7 +19,7 @@ const { processPlug, listActiveProfileAutomationPlugIds } =
 export async function xProfileAutomationsPollerWorkflow({
   organizationId: _organizationId,
   integrationId,
-  pollIntervalMs = 30_000,
+  pollIntervalMs = 300_000,
 }: {
   organizationId: string;
   integrationId: string;

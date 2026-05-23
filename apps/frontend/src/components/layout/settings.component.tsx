@@ -137,31 +137,47 @@ export const SettingsPopup: FC<{
     loadProfile();
   }, []);
 
+  const tabButtons = list.map(({ tab: tabKey, label }) => (
+    <button
+      key={tabKey}
+      type="button"
+      className={clsx(
+        'shrink-0 rounded-lg px-3 py-2 text-sm font-medium transition-colors whitespace-nowrap',
+        tabKey === tab
+          ? 'bg-boxHover text-newTextColor'
+          : 'text-newTableText hover:text-newTextColor hover:bg-boxHover/60'
+      )}
+      onClick={() => setTab(tabKey)}
+    >
+      {label}
+    </button>
+  ));
+
+  const sidebarNav = list.map(({ tab: tabKey, label }) => (
+    <div
+      key={tabKey}
+      className={clsx(
+        'cursor-pointer flex items-center gap-[12px] group/profile hover:bg-boxHover rounded-e-[8px]',
+        tabKey === tab && 'bg-boxHover'
+      )}
+      onClick={() => setTab(tabKey)}
+    >
+      <div
+        className={clsx(
+          'h-full w-[4px] rounded-s-[3px] opacity-0 group-hover/profile:opacity-100 transition-opacity',
+          tabKey === tab && 'opacity-100'
+        )}
+      >
+        <SVGLine />
+      </div>
+      {label}
+    </div>
+  ));
+
   return (
-    <>
-      <div className="bg-newBgColorInner p-[20px] flex flex-col transition-all w-[260px]">
-        <div className="flex flex-1 flex-col gap-[15px]">
-          {list.map(({ tab: tabKey, label }) => (
-            <div
-              key={tabKey}
-              className={clsx(
-                'cursor-pointer flex items-center gap-[12px] group/profile hover:bg-boxHover rounded-e-[8px]',
-                tabKey === tab && 'bg-boxHover'
-              )}
-              onClick={() => setTab(tabKey)}
-            >
-              <div
-                className={clsx(
-                  'h-full w-[4px] rounded-s-[3px] opacity-0 group-hover/profile:opacity-100 transition-opacity',
-                  tabKey === tab && 'opacity-100'
-                )}
-              >
-                <SVGLine />
-              </div>
-              {label}
-            </div>
-          ))}
-        </div>
+    <div className="flex flex-1 min-h-0 min-w-0 w-full flex-col lg:flex-row">
+      <aside className="hidden lg:flex bg-newBgColorInner p-[20px] flex-col transition-all w-[260px] shrink-0">
+        <div className="flex flex-1 flex-col gap-[15px]">{sidebarNav}</div>
         <div>
           {showLogout && (
             <div className="mt-4">
@@ -169,8 +185,16 @@ export const SettingsPopup: FC<{
             </div>
           )}
         </div>
+      </aside>
+
+      <div className="lg:hidden shrink-0 border-b border-newBorder bg-newBgColorInner px-3 py-2.5">
+        <div className="flex gap-2 overflow-x-auto scrollbar-none -mx-1 px-1">
+          {tabButtons}
+        </div>
       </div>
-      <div className="bg-newBgColorInner flex-1 flex-col flex p-[20px] gap-[12px]">
+
+      <div className="bg-newBgColorInner flex-1 min-w-0 flex flex-col min-h-0">
+        <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 sm:p-5 lg:p-[20px] pb-28 lg:pb-[20px]">
         <FormProvider {...form}>
           <form onSubmit={form.handleSubmit(submit)}>
             {!!getRef && (
@@ -178,7 +202,7 @@ export const SettingsPopup: FC<{
             )}
             <div
               className={clsx(
-                'w-full mx-auto gap-[24px] flex flex-col relative',
+                'w-full mx-auto gap-[24px] flex flex-col relative min-w-0',
                 !getRef && 'rounded-[4px]'
               )}
             >
@@ -234,8 +258,15 @@ export const SettingsPopup: FC<{
             </div>
           </form>
         </FormProvider>
+        </div>
+
+        {showLogout && (
+          <div className="lg:hidden shrink-0 border-t border-newBorder bg-newBgColorInner px-4 py-4 pb-[max(16px,env(safe-area-inset-bottom))]">
+            <LogoutComponent />
+          </div>
+        )}
       </div>
-    </>
+    </div>
   );
 };
 export const SettingsComponent = () => {

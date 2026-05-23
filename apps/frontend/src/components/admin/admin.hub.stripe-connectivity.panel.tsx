@@ -29,6 +29,7 @@ export type PingResult = {
 
 export type PricingRow = {
   tier: string;
+  planName?: string;
   monthUsd: number;
   yearUsd: number;
   monthCents: number;
@@ -277,7 +278,18 @@ export function AdminStripeConnectivityPanel({
                 <tbody>
                   {pricing.tiers.map((row) => (
                     <tr key={row.tier} className={adminTr}>
-                      <td className={adminTd}>{row.tier}</td>
+                      <td className={adminTd}>
+                        {row.planName ? (
+                          <>
+                            {row.planName}{' '}
+                            <span className="text-textItemBlur font-mono text-[11px]">
+                              ({row.tier})
+                            </span>
+                          </>
+                        ) : (
+                          row.tier
+                        )}
+                      </td>
                       <td className={adminTd}>{row.monthUsd}</td>
                       <td className={adminTd}>{row.monthCents}</td>
                       <td className={adminTd}>

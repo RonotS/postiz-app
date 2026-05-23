@@ -5,15 +5,17 @@ import {
   PricingInnerInterface,
   PricingInterface,
 } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/pricing';
+import {
+  SUBSCRIBE_BILLING_TIERS,
+  SUBSCRIBE_PLANS,
+  subscribePlanByBilling,
+  type SubscribeBillingTier,
+} from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscribe-plans.config';
 
-export const EDITABLE_BILLING_TIERS = [
-  'STANDARD',
-  'PRO',
-  'TEAM',
-  'ULTIMATE',
-] as const;
+/** Same tiers as /subscribe — admin pricing edits these only. */
+export const EDITABLE_BILLING_TIERS = SUBSCRIBE_BILLING_TIERS;
 
-export type EditableBillingTier = (typeof EDITABLE_BILLING_TIERS)[number];
+export type EditableBillingTier = SubscribeBillingTier;
 
 export type PlanPriceRow = {
   month_price: number;
@@ -140,8 +142,11 @@ export function adminPlanPricesPayload(overrides: PlanPriceOverrides) {
     const def = defaults[tier]!;
     const saved = overrides[tier];
     const effective = saved ?? def;
+    const meta = subscribePlanByBilling(tier);
     return {
       tier,
+      planId: meta?.id ?? tier,
+      planName: meta?.name ?? tier,
       month_price: effective.month_price,
       year_price: effective.year_price,
       default_month_price: def.month_price,
@@ -151,6 +156,7 @@ export function adminPlanPricesPayload(overrides: PlanPriceOverrides) {
   });
   return {
     tiers,
+    plans: SUBSCRIBE_PLANS,
     storagePath: resolveFilePath(),
     editableTiers: [...EDITABLE_BILLING_TIERS],
   };
@@ -171,5 +177,17 @@ export function publicPlanPricesPayload(overrides: PlanPriceOverrides) {
       year_price: pricing.FREE.year_price,
     };
   }
-  return { prices };
+  return {
+    prices,
+    plans: SUBSCRIBE_PLANS.map((plan) => ({
+      id: plan.id,
+      name: plan.name,
+      billing: plan.billing,
+      defaultMonthPrice: plan.defaultMonthPrice,
+      description: plan.description,
+      features: plan.features,
+      featured: plan.featured ?? false,
+      accent: plan.accent ?? 'white',
+    })),
+  };
 }

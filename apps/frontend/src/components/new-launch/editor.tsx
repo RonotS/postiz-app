@@ -360,8 +360,7 @@ export const EditorWrapper: FC<{
   return (
     <div
       className={clsx(
-        'relative flex-col gap-[20px] flex-1',
-        (items.length === 1 || !canEdit || !comments) && 'flex',
+        'relative flex flex-col gap-[20px] flex-1 w-full min-h-0',
         ((!canEdit && !isCreateSet) || !comments) &&
           'bg-newSettings rounded-[12px]'
       )}
@@ -419,15 +418,15 @@ export const EditorWrapper: FC<{
         <div
           key={g.id}
           className={clsx(
-            'relative flex flex-col gap-[20px] flex-1 bg-newSettings',
+            'relative flex flex-col gap-[20px] flex-1 w-full min-h-0 bg-newSettings',
             index === 0 && 'rounded-t-[12px]',
             (index === items.length - 1 || !comments) && 'rounded-b-[12px]',
             !canEdit && !isCreateSet && 'blur-s',
             ((!canEdit && index > 0) || (!comments && index > 0)) && 'hidden'
           )}
         >
-          <div className="flex gap-[5px] flex-1 w-full">
-            <div className="flex-1 flex w-full">
+          <div className="flex gap-[5px] flex-1 w-full min-h-0">
+            <div className="flex-1 flex flex-col w-full min-h-0">
               {index > 0 && (
                 <div className="flex justify-center pl-[12px] text-newSep">
                   <ConnectionLineIcon />
@@ -695,16 +694,16 @@ export const Editor: FC<{
   }
 
   return (
-    <div className="flex flex-col gap-[20px] flex-1">
+    <div className="flex flex-col gap-[20px] flex-1 w-full min-h-0">
       <div
         className={clsx(
-          'relative flex-1 px-[12px] pt-[12px] pb-[12px] flex flex-col',
+          'relative flex-1 min-h-0 px-[12px] pt-[12px] pb-[12px] flex flex-col',
           num > 0 && '!rounded-bs-[0]'
         )}
         id={id}
       >
-        <div className="relative cursor-text flex flex-1 flex-col">
-          <div {...getRootProps()} className="flex flex-1 flex-col">
+        <div className="relative cursor-text flex flex-1 flex-col min-h-0">
+          <div {...getRootProps()} className="flex flex-1 flex-col min-h-0">
             <div
               className={clsx(
                 'absolute left-0 top-0 w-full h-full bg-black/70 z-[300] transition-all items-center justify-center flex text-white text-sm',
@@ -723,7 +722,7 @@ export const Editor: FC<{
               />
             </div>
             <div
-              className="bg-newBgColorInner flex-1"
+              className="bg-newBgColorInner flex-1 min-h-0"
               onClick={() => {
                 if (editorRef?.current?.editor?.isFocused) {
                   return;

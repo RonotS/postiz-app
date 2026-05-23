@@ -136,6 +136,9 @@ module.exports = {
         newMessages: 'newMessages 1s ease-in-out 4s forwards',
         marqueeUp: 'marquee-up 100s linear infinite',
         marqueeDown: 'marquee-down 100s linear infinite',
+        authHeroEnter:
+          'authHeroEnter 0.9s cubic-bezier(0.22, 1, 0.36, 1) both',
+        authHeroFloat: 'authHeroFloat 6s ease-in-out 1.1s infinite',
       },
       boxShadow: {
         yellow: '0 0 60px 20px #6b6237',
@@ -245,6 +248,26 @@ module.exports = {
           '100%': {
             backgroundColor: 'var(--color-third)',
             fontWeight: 'normal',
+          },
+        },
+        authHeroEnter: {
+          '0%': {
+            opacity: '0',
+            transform: 'translateY(36px) scale(0.96)',
+            filter: 'blur(6px)',
+          },
+          '100%': {
+            opacity: '1',
+            transform: 'translateY(0) scale(1)',
+            filter: 'blur(0)',
+          },
+        },
+        authHeroFloat: {
+          '0%, 100%': {
+            transform: 'translateY(0)',
+          },
+          '50%': {
+            transform: 'translateY(-12px)',
           },
         },
       }),

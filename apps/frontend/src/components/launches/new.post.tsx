@@ -113,7 +113,7 @@ export const NewPost = () => {
   return (
     <button
       onClick={createAPost}
-      className="text-white flex-1 pt-[12px] pb-[14px] ps-[16px] pe-[20px] group-[.sidebar]:p-0 min-h-[44px] max-h-[44px] rounded-md bg-btnPrimary flex justify-center items-center gap-[5px] outline-none"
+      className="text-white flex-1 pt-[12px] pb-[14px] ps-[16px] pe-[20px] group-[.sidebar]:p-0 min-h-[44px] max-h-[44px] mobile:min-h-[34px] mobile:max-h-[34px] mobile:pt-0 mobile:pb-0 mobile:ps-[10px] mobile:pe-[12px] mobile:gap-1 mobile:rounded-[6px] rounded-md bg-btnPrimary flex justify-center items-center gap-[5px] outline-none shrink-0"
     >
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -121,7 +121,7 @@ export const NewPost = () => {
         height="20"
         viewBox="0 0 21 20"
         fill="none"
-        className="min-w-[21px] min-h-[20px]"
+        className="min-w-[21px] min-h-[20px] mobile:min-w-[16px] mobile:min-h-[16px]"
       >
         <path
           d="M10.5001 4.16699V15.8337M4.66675 10.0003H16.3334"
@@ -131,7 +131,7 @@ export const NewPost = () => {
           strokeLinejoin="round"
         />
       </svg>
-      <div className="flex-1 text-start text-[14px] group-[.sidebar]:hidden">
+      <div className="flex-1 text-start text-[14px] mobile:text-[12px] group-[.sidebar]:hidden whitespace-nowrap">
         {t('create_new_post', 'Create Post')}
       </div>
     </button>

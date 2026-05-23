@@ -497,10 +497,13 @@ export const LaunchesComponent = () => {
     <DNDProvider>
       <Onboarding />
       <CalendarWeekProvider integrations={sortedIntegrations}>
+        <div className="flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
         <div
           className={clsx(
-            'hidden md:flex relative flex-col',
-            collapseMenu === '1' ? 'group sidebar w-[100px]' : 'w-[260px]'
+            'hidden lg:flex relative flex-col shrink-0',
+            collapseMenu === '1'
+              ? 'group sidebar w-[88px] xl:w-[100px]'
+              : 'w-[200px] xl:w-[260px]'
           )}
         >
           <div
@@ -594,11 +597,18 @@ export const LaunchesComponent = () => {
             </div>
           </div>
         </div>
-        <div className="bg-newBgColorInner flex-1 flex-col flex p-[10px] md:p-[20px] gap-[12px] min-w-0 overflow-hidden">
+        <div className="bg-newBgColorInner flex-1 flex-col flex min-w-0 overflow-hidden">
+          <div className="lg:hidden shrink-0 flex flex-nowrap items-center gap-1.5 px-2 py-1.5 border-b border-newBorder">
+            <AddProviderButton update={() => update(true)} />
+            {sortedIntegrations?.length > 0 && <NewPost />}
+          </div>
+          <div className="p-2 md:p-[20px] flex flex-col gap-2 md:gap-[12px] flex-1 min-h-0 min-w-0">
           <Filters />
           <div className="flex-1 flex overflow-x-auto overflow-y-hidden min-w-0">
             <Calendar />
           </div>
+          </div>
+        </div>
         </div>
       </CalendarWeekProvider>
     </DNDProvider>

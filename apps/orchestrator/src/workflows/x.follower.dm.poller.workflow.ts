@@ -20,7 +20,7 @@ export async function xFollowerDmPollerWorkflow({
   organizationId: _organizationId,
   integrationId: _integrationId,
   plugId,
-  pollIntervalMs = 30_000,
+  pollIntervalMs = 300_000,
 }: {
   organizationId: string;
   integrationId: string;

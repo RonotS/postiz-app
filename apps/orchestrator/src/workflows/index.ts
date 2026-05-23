@@ -8,3 +8,4 @@ export * from './refresh.token.workflow';
 export * from './streak.workflow';
 export * from './x.follower.dm.poller.workflow';
 export * from './x.profile-automations.poller.workflow';
+export * from './x.engagement.poller.workflow';

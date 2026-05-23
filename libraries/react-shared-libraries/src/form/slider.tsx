@@ -14,10 +14,12 @@ export const Slider: FC<{
   return (
     <div
       className={clsx(
-        'w-[57px] h-[34px] p-[4px] border-fifth border rounded-[100px]',
+        'shrink-0 w-[57px] min-w-[57px] h-[34px] p-[4px] border-fifth border rounded-[100px] cursor-pointer',
         value === 'on' && fill && 'bg-customColor4'
       )}
       onClick={change}
+      role="switch"
+      aria-checked={value === 'on'}
     >
       <div className="w-full h-full relative rounded-[100px]">
         <div

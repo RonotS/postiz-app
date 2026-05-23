@@ -27,6 +27,8 @@ import {
   ProfileAutomationsPrimaryButton,
 } from '@gitroom/frontend/components/dashboard/profile-automations.ui';
 import { XFollowRateLimitBanner } from '@gitroom/frontend/components/dashboard/x-follow-rate-limit-banner';
+import { useXPlugBatchRateLimit } from '@gitroom/frontend/components/dashboard/use-x-plug-batch-rate-limit';
+import { XPlugBatchRateLimitBanner } from '@gitroom/frontend/components/dashboard/x-plug-batch-rate-limit-banner';
 import {
   useXFollowRateLimit,
   useXUnfollowRateLimit,
@@ -47,11 +49,13 @@ import {
 } from '@gitroom/frontend/components/dashboard/follower-explorer-lists';
 import {
   applyFollowerPageCap,
+  canGoToExplorerPage,
   canLoadMoreFollowers,
   EXPLORER_MAX_LOADED,
   EXPLORER_MAX_PAGES,
   EXPLORER_PAGE_SIZE,
-  explorerPaginationTotalPages,
+  explorerListCountFromSubject,
+  explorerTotalPagesFromListCount,
   mergeFollowerPages,
   XFollowersExplorerTable,
 } from '@gitroom/frontend/components/dashboard/x-followers-explorer-table';
@@ -74,6 +78,7 @@ type BreadcrumbItem = {
   name: string;
   username: string;
   picture?: string;
+  publicMetrics?: FollowerUser['publicMetrics'];
 };
 
 function toBreadcrumbItem(user: FollowerUser): BreadcrumbItem {
@@ -82,6 +87,7 @@ function toBreadcrumbItem(user: FollowerUser): BreadcrumbItem {
     name: user.name || user.username,
     username: user.username,
     picture: user.picture,
+    publicMetrics: user.publicMetrics,
   };
 }
 
@@ -204,6 +210,12 @@ export const XFollowersExplorerPanel: FC = () => {
     windowMinutes: unfollowWindowMinutes,
   } = useXUnfollowRateLimit(integrationId);
 
+  const {
+    rateLimit: plugBatchLimit,
+    countdown: plugBatchCountdown,
+    pollMinutes: plugPollMinutes,
+  } = useXPlugBatchRateLimit(integrationId);
+
   const followSlotsLeft = followAtLimit
     ? 0
     : followRateLimit?.daily
@@ -260,13 +272,6 @@ export const XFollowersExplorerPanel: FC = () => {
   useEffect(() => {
     nextTokenRef.current = nextToken;
   }, [nextToken]);
-
-  const countDisplayUsers = useCallback(
-    (source: FollowerUser[]) =>
-      filterAndSortFollowers(source, listFilter, listSort, followerFilterOpts)
-        .length,
-    [listFilter, listSort, followerFilterOpts]
-  );
 
   const tablePageUsers = useMemo(() => {
     const totalPages = Math.max(
@@ -394,6 +399,24 @@ export const XFollowersExplorerPanel: FC = () => {
     );
     setUsers(cappedUsers);
     setNextToken(token);
+    const subjectItem = toBreadcrumbItem({
+      ...page.subject,
+      name: page.subject.name,
+      username: page.subject.username,
+      id: page.subject.id,
+      picture: page.subject.picture,
+      publicMetrics: page.subject.publicMetrics,
+    } as FollowerUser);
+    setTrail((prev) => {
+      if (prev.length === 0) {
+        return [subjectItem];
+      }
+      const last = prev[prev.length - 1];
+      if (last?.id === subjectItem.id) {
+        return [...prev.slice(0, -1), subjectItem];
+      }
+      return prev;
+    });
   }, []);
 
   const resetAndLoadRoot = useCallback(async () => {
@@ -567,6 +590,27 @@ export const XFollowersExplorerPanel: FC = () => {
     }
   }, [integrationId, currentSubjectId, loadFollowers, t, toast]);
 
+  const subjectListCount = useMemo(
+    () => explorerListCountFromSubject(currentSubject, listMode),
+    [currentSubject, listMode]
+  );
+
+  const explorerTotalPages = useMemo(
+    () => explorerTotalPagesFromListCount(subjectListCount),
+    [subjectListCount]
+  );
+
+  const canGoNextExplorerPage = useMemo(
+    () =>
+      canGoToExplorerPage(
+        tablePage + 1,
+        explorerTotalPages,
+        users.length,
+        nextToken
+      ),
+    [tablePage, explorerTotalPages, users.length, nextToken]
+  );
+
   const handleExplorerPageChange = useCallback(
     async (targetPage: number) => {
       if (targetPage < 1) return;
@@ -577,33 +621,36 @@ export const XFollowersExplorerPanel: FC = () => {
         return;
       }
 
+      if (
+        !canGoToExplorerPage(
+          targetPage,
+          explorerTotalPages,
+          usersRef.current.length,
+          nextTokenRef.current
+        )
+      ) {
+        return;
+      }
+
+      const needed = targetPage * EXPLORER_PAGE_SIZE;
+      if (usersRef.current.length >= needed) {
+        setTablePage(targetPage);
+        return;
+      }
+
       setLoadingMore(true);
       try {
-        const needed = targetPage * EXPLORER_PAGE_SIZE;
-        let iterations = 0;
-        while (
-          countDisplayUsers(usersRef.current) < needed &&
-          canLoadMoreFollowers(
-            usersRef.current.length,
-            nextTokenRef.current
-          ) &&
-          iterations < EXPLORER_MAX_PAGES
-        ) {
-          const loaded = await fetchNextExplorerPage();
-          iterations += 1;
-          if (!loaded) break;
-        }
-        const finalCount = countDisplayUsers(usersRef.current);
-        const maxPage = Math.max(
+        await fetchNextExplorerPage();
+        const maxLoadedPage = Math.max(
           1,
-          Math.ceil(finalCount / EXPLORER_PAGE_SIZE) || 1
+          Math.ceil(usersRef.current.length / EXPLORER_PAGE_SIZE) || 1
         );
-        setTablePage(Math.min(targetPage, maxPage));
+        setTablePage(Math.min(targetPage, maxLoadedPage));
       } finally {
         setLoadingMore(false);
       }
     },
-    [tablePage, countDisplayUsers, fetchNextExplorerPage]
+    [tablePage, explorerTotalPages, fetchNextExplorerPage]
   );
 
   const markAsFollowing = useCallback((ids: string[]) => {
@@ -1066,22 +1113,7 @@ export const XFollowersExplorerPanel: FC = () => {
     [tablePageUsers]
   );
 
-  const canLoadMore = useMemo(
-    () => canLoadMoreFollowers(users.length, nextToken),
-    [users.length, nextToken]
-  );
-
   const atExplorerLoadCap = users.length >= EXPLORER_MAX_LOADED;
-
-  const explorerTotalPages = useMemo(
-    () =>
-      explorerPaginationTotalPages(
-        displayUsers.length,
-        canLoadMore,
-        tablePage
-      ),
-    [displayUsers.length, canLoadMore, tablePage]
-  );
 
   const cappedPageFollowableIds = useMemo(
     () =>
@@ -1243,6 +1275,14 @@ export const XFollowersExplorerPanel: FC = () => {
         </div>
       )}
 
+      {integrationId ? (
+        <XPlugBatchRateLimitBanner
+          rateLimit={plugBatchLimit}
+          countdown={plugBatchCountdown}
+          pollMinutes={plugPollMinutes}
+        />
+      ) : null}
+
       <ProfileAutomationsCard noPadding className="overflow-hidden">
         {/* Spreadsheet header & toolbar */}
         <div className="border-b border-newBorder bg-newBgColorInner px-4 py-4 sm:px-5">
@@ -1251,16 +1291,45 @@ export const XFollowersExplorerPanel: FC = () => {
               {subjectHeader && currentSubject && (
                 <>
                   <h3 className="text-base sm:text-lg font-semibold text-newTextColor leading-snug">
-                    {t('displaying_followers_title', "Displaying @{{user}}'s {{shown}} followers", {
-                      user: currentSubject.username || currentSubject.name,
-                      shown: displayUsers.length.toLocaleString(),
-                    })}
-                    {canLoadMore ? '+' : ''}
-                    {users.length > displayUsers.length
-                      ? ' (' + t('filtered_from_loaded', '{{loaded}} loaded', {
-                          loaded: users.length.toLocaleString(),
-                        }) + ')'
-                      : ''}
+                    {subjectListCount != null
+                      ? listMode === 'following'
+                        ? t(
+                            'displaying_following_with_total',
+                            "@{{user}} — {{shown}} shown · {{loaded}} loaded of ~{{total}} following",
+                            {
+                              user:
+                                currentSubject.username || currentSubject.name,
+                              shown: displayUsers.length.toLocaleString(),
+                              loaded: users.length.toLocaleString(),
+                              total: Math.min(
+                                subjectListCount,
+                                EXPLORER_MAX_LOADED
+                              ).toLocaleString(),
+                            }
+                          )
+                        : t(
+                            'displaying_followers_with_total',
+                            "@{{user}} — {{shown}} shown · {{loaded}} loaded of ~{{total}} followers",
+                            {
+                              user:
+                                currentSubject.username || currentSubject.name,
+                              shown: displayUsers.length.toLocaleString(),
+                              loaded: users.length.toLocaleString(),
+                              total: Math.min(
+                                subjectListCount,
+                                EXPLORER_MAX_LOADED
+                              ).toLocaleString(),
+                            }
+                          )
+                      : t(
+                          'displaying_followers_title',
+                          "Displaying @{{user}}'s {{shown}} followers",
+                          {
+                            user:
+                              currentSubject.username || currentSubject.name,
+                            shown: displayUsers.length.toLocaleString(),
+                          }
+                        )}
                   </h3>
                   <p className="mt-1 text-xs text-newTableText">
                     {t(
@@ -1501,6 +1570,8 @@ export const XFollowersExplorerPanel: FC = () => {
               onSort={handleColumnSort}
               page={tablePage}
               totalPages={explorerTotalPages}
+              listTotal={subjectListCount}
+              canGoNext={canGoNextExplorerPage}
               loadingMore={loadingMore}
               atLoadCap={atExplorerLoadCap}
               onPageChange={(p) => void handleExplorerPageChange(p)}
@@ -1544,6 +1615,8 @@ export const XFollowersExplorerPanel: FC = () => {
                 onSort={handleColumnSort}
                 page={tablePage}
                 totalPages={explorerTotalPages}
+                listTotal={subjectListCount}
+                canGoNext={canGoNextExplorerPage}
                 loadingMore={loadingMore}
                 atLoadCap={atExplorerLoadCap}
                 onPageChange={(p) => void handleExplorerPageChange(p)}

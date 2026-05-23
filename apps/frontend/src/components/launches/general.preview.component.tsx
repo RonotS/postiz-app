@@ -49,18 +49,18 @@ export const GeneralPreviewComponent: FC<{
   });
 
   return (
-    <div className={clsx('w-full p-[15px]')}>
-      <div className="w-full h-full relative flex flex-col">
+    <div className={clsx('w-full p-[10px] sm:p-[15px] min-w-0 max-w-full overflow-hidden')}>
+      <div className="w-full h-full relative flex flex-col min-w-0">
         {renderContent.map((value, index) => (
           <div
             key={`tweet_${index}`}
             style={{}}
             className={clsx(
-              `flex gap-[8px] relative`,
+              `flex gap-[6px] sm:gap-[8px] relative min-w-0`,
               index === renderContent.length - 1 ? 'pb-[12px]' : 'pb-[24px]'
             )}
           >
-            <div className="min-w-[40px] h-[40px] min-h-[40px] w-[40px] flex flex-col items-center">
+            <div className="min-w-[32px] w-[32px] sm:min-w-[40px] sm:w-[40px] h-[32px] sm:h-[40px] sm:min-h-[40px] flex flex-col items-center shrink-0">
               <div className="relative">
                 <img
                   src={
@@ -86,12 +86,12 @@ export const GeneralPreviewComponent: FC<{
                 <div className="flex-1 w-[2px] h-[calc(100%-10px)] bg-customColor25 absolute top-[10px] z-[1]" />
               )}
             </div>
-            <div className="flex-1 flex flex-col gap-[4px]">
-              <div className="flex">
-                <div className="h-[22px] text-[15px] font-[700]">
+            <div className="flex-1 flex flex-col gap-[4px] min-w-0 overflow-hidden">
+              <div className="flex flex-wrap items-center gap-x-1 gap-y-0 min-w-0">
+                <div className="text-[13px] sm:text-[15px] font-[700] truncate max-w-full leading-tight">
                   {current === 'global' ? 'Global Edit' : integration?.name}
                 </div>
-                <div className="text-[15px] text-customColor26 mt-[1px] ms-[2px]">
+                <div className="text-[13px] sm:text-[15px] text-customColor26 mt-[1px] ms-[2px] shrink-0">
                   <svg
                     viewBox="0 0 22 22"
                     aria-label="Verified account"
@@ -104,14 +104,17 @@ export const GeneralPreviewComponent: FC<{
                     </g>
                   </svg>
                 </div>
-                <div className="text-[15px] font-[400] text-customColor27 ms-[4px]">
+                <div className="text-[12px] sm:text-[15px] font-[400] text-customColor27 ms-[2px] sm:ms-[4px] truncate max-w-full">
                   {current === 'global'
                     ? ''
                     : integration?.display || '@username'}
                 </div>
               </div>
               <div
-                className={clsx('text-wrap whitespace-pre', 'preview')}
+                className={clsx(
+                  'text-wrap whitespace-pre-wrap break-words [overflow-wrap:anywhere] min-w-0 text-[14px] sm:text-[15px]',
+                  'preview'
+                )}
                 dangerouslySetInnerHTML={{
                   __html: value.text,
                 }}
@@ -119,10 +122,10 @@ export const GeneralPreviewComponent: FC<{
               {!!value?.images?.length && (
                 <div
                   className={clsx(
-                    'w-full rounded-[16px] overflow-hidden mt-[12px]',
+                    'w-full max-w-full rounded-[16px] overflow-hidden mt-[12px] min-w-0',
                     value?.images?.length > 3
                       ? 'grid grid-cols-2 gap-[4px]'
-                      : 'flex gap-[4px]'
+                      : 'flex flex-col sm:flex-row gap-[4px]'
                   )}
                 >
                   {value.images.map((image, index) => (

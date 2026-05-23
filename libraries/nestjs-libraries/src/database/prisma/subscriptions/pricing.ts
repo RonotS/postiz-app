@@ -116,7 +116,7 @@ export const pricing: PricingInterface = {
   PRO: {
     current: 'PRO',
     ...(() => {
-      const { month_price, year_price } = withUsdOverride(49, 470);
+      const { month_price, year_price } = withUsdOverride(199, 1910);
       return { month_price, year_price };
     })(),
     channel: 30,

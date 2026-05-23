@@ -7,9 +7,14 @@ import {
   pricing,
   PricingInterface,
 } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/pricing';
+import {
+  SUBSCRIBE_PLANS,
+  type SubscribePlanConfig,
+} from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscribe-plans.config';
 
 type PlanPricesResponse = {
   prices: Record<string, { month_price: number; year_price: number }>;
+  plans?: SubscribePlanConfig[];
 };
 
 export function usePlanPrices() {
@@ -36,5 +41,12 @@ export function usePlanPrices() {
     return merged;
   }, [data]);
 
-  return { effectivePricing, loaded: !!data };
+  const subscribePlans = useMemo((): SubscribePlanConfig[] => {
+    if (data?.plans?.length) {
+      return data.plans;
+    }
+    return SUBSCRIBE_PLANS;
+  }, [data?.plans]);
+
+  return { effectivePricing, subscribePlans, loaded: !!data };
 }

@@ -24,6 +24,12 @@ import { uniqBy } from 'lodash';
 import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
 import { XDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/x.dto';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
+import { markPlugBatchLimitedFromError } from '@gitroom/nestjs-libraries/integrations/social/x-plug-batch-rate-limit.store';
+
+type XPlugDmBatchContext = {
+  tryReserveDm?: () => Promise<boolean>;
+  confirmDmSent?: () => Promise<void>;
+};
 
 @Rules(
   'X can have maximum 4 pictures, or maximum one video, it can also be without attachments'
@@ -427,6 +433,39 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     return false;
   }
 
+  private async sendDmWithBatchGate(
+    integration: Integration,
+    client: TwitterApi,
+    targetUserId: string,
+    dmText: string,
+    plugContext?: XPlugDmBatchContext,
+    delayMs = 2000
+  ): Promise<boolean> {
+    if (plugContext?.tryReserveDm) {
+      const allowed = await plugContext.tryReserveDm();
+      if (!allowed) {
+        return false;
+      }
+    }
+    try {
+      if (delayMs > 0) {
+        await timer(delayMs);
+      }
+      await client.v2.sendDmToParticipant(targetUserId, { text: dmText });
+      if (plugContext?.confirmDmSent) {
+        await plugContext.confirmDmSent();
+      }
+      return true;
+    } catch (dmErr: any) {
+      await markPlugBatchLimitedFromError(integration.id, dmErr);
+      console.error(
+        `X AUTO DM ERROR for user ${targetUserId}:`,
+        dmErr?.data || dmErr
+      );
+      return false;
+    }
+  }
+
   // Fetch user IDs of accounts that LIKED a tweet.
   // Returns up to 100 user IDs (X V2 API page size).
   private async fetchLikers(client: TwitterApi, tweetId: string): Promise<string[]> {
@@ -580,7 +619,10 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         ids.forEach((uid) => userIdSet.add(uid));
       }
 
-      const allUserIds = Array.from(userIdSet);
+      const ownerId = String(integration.internalId || '').trim();
+      const allUserIds = Array.from(userIdSet).filter(
+        (uid) => !ownerId || uid !== ownerId
+      );
       if (allUserIds.length === 0) {
         return false;
       }
@@ -610,15 +652,15 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
       const successfullyDmd: string[] = [];
       for (const userId of userIds) {
-        try {
-          await timer(2000); // 2s delay to avoid aggressive rate limits
-          await client.v2.sendDmToParticipant(userId, { text: dmText });
+        const sent = await this.sendDmWithBatchGate(
+          integration,
+          client,
+          userId,
+          dmText,
+          plugContext as XPlugDmBatchContext | undefined
+        );
+        if (sent) {
           successfullyDmd.push(userId);
-        } catch (dmErr: any) {
-          console.error(
-            `X AUTO DM ERROR for user ${userId}:`,
-            dmErr?.data || dmErr
-          );
         }
       }
 
@@ -868,17 +910,17 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       const snapshotAdds: string[] = [];
 
       for (const userId of toWelcome) {
-        try {
-          await timer(2000);
-          await client.v2.sendDmToParticipant(userId, { text: dmText });
+        const sent = await this.sendDmWithBatchGate(
+          integration,
+          client,
+          userId,
+          dmText,
+          plugContext as XPlugDmBatchContext | undefined
+        );
+        if (sent) {
           successfullyDmd.push(userId);
           snapshotAdds.push(userId);
           dmSent = true;
-        } catch (dmErr: any) {
-          console.error(
-            `X AUTO DM FOLLOWERS ERROR for user ${userId}:`,
-            dmErr?.data || dmErr
-          );
         }
       }
 
@@ -1366,16 +1408,16 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       let sent = false;
       const success: string[] = [];
       for (const userId of toDm) {
-        try {
-          await timer(2000);
-          await client.v2.sendDmToParticipant(userId, { text: dmText });
+        const ok = await this.sendDmWithBatchGate(
+          integration,
+          client,
+          userId,
+          dmText,
+          plugContext as XPlugDmBatchContext | undefined
+        );
+        if (ok) {
           success.push(userId);
           sent = true;
-        } catch (dmErr: any) {
-          console.error(
-            `X PINNED AUTO DM ERROR for user ${userId}:`,
-            dmErr?.data || dmErr
-          );
         }
       }
       if (success.length) {
@@ -2259,6 +2301,44 @@ export class XProvider extends SocialAbstract implements SocialProvider {
   }
 
   /**
+   * Resolve a published tweet for dashboard "attach automations" flow.
+   * Ensures the tweet exists and belongs to the connected account.
+   */
+  async lookupPublishedTweet(
+    accessToken: string,
+    tweetId: string,
+    expectedAuthorId: string
+  ): Promise<{ text: string; createdAt?: string }> {
+    const [accessTokenSplit, accessSecretSplit] = accessToken.split(':');
+    const client = this.buildTwitterApi({
+      appKey: process.env.X_API_KEY!,
+      appSecret: process.env.X_API_SECRET!,
+      accessToken: accessTokenSplit,
+      accessSecret: accessSecretSplit,
+    });
+
+    const tweet = await client.v2.singleTweet(tweetId, {
+      'tweet.fields': ['created_at', 'author_id', 'text'],
+    });
+
+    const data = tweet?.data;
+    if (!data?.id) {
+      throw new Error('Tweet not found or not accessible with this X account');
+    }
+
+    if (String(data.author_id) !== String(expectedAuthorId)) {
+      throw new Error(
+        'This tweet was not posted by the selected connected X account'
+      );
+    }
+
+    return {
+      text: (data.text || '').trim(),
+      createdAt: data.created_at,
+    };
+  }
+
+  /**
    * Batch-fetch public_metrics for tweet IDs (dashboard queue). Up to 100 ids
    * per X API request. OAuth user context; each connected account has its own limits.
    */
@@ -2415,20 +2495,18 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       accessSecret: accessSecretSplit,
     });
 
-    try {
-      await timer(500);
-      await client.v2.sendDmToParticipant(engagerUserId, { text: dmText });
-      if (plugContext?.saveDmdUserIds) {
-        await plugContext.saveDmdUserIds([engagerUserId]);
-      }
-      return true;
-    } catch (dmErr: any) {
-      console.error(
-        `X WEBHOOK AUTO DM (${eventType}) user ${engagerUserId}:`,
-        dmErr?.data || dmErr
-      );
-      return false;
+    const sent = await this.sendDmWithBatchGate(
+      integration,
+      client,
+      engagerUserId,
+      dmText,
+      plugContext as XPlugDmBatchContext | undefined,
+      500
+    );
+    if (sent && plugContext?.saveDmdUserIds) {
+      await plugContext.saveDmdUserIds([engagerUserId]);
     }
+    return sent;
   }
 
   /** Account Activity: DM engagers on the account's pinned tweet only. */
@@ -2474,20 +2552,18 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     }
 
     const client = this.buildClientForIntegration(integration);
-    try {
-      await timer(500);
-      await client.v2.sendDmToParticipant(engagerUserId, { text: dmText });
-      if (plugContext?.saveDmdUserIds) {
-        await plugContext.saveDmdUserIds([engagerUserId]);
-      }
-      return true;
-    } catch (dmErr: any) {
-      console.error(
-        `X PINNED WEBHOOK DM (${eventType}) user ${engagerUserId}:`,
-        dmErr?.data || dmErr
-      );
-      return false;
+    const sent = await this.sendDmWithBatchGate(
+      integration,
+      client,
+      engagerUserId,
+      dmText,
+      plugContext as XPlugDmBatchContext | undefined,
+      500
+    );
+    if (sent && plugContext?.saveDmdUserIds) {
+      await plugContext.saveDmdUserIds([engagerUserId]);
     }
+    return sent;
   }
 
   /**
@@ -2557,19 +2633,19 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       accessSecret: accessSecretSplit,
     });
 
-    try {
-      await timer(500);
-      await client.v2.sendDmToParticipant(followerUserId, { text: dmText });
+    const sent = await this.sendDmWithBatchGate(
+      integration,
+      client,
+      followerUserId,
+      dmText,
+      plugContext as XPlugDmBatchContext | undefined,
+      500
+    );
+    if (sent) {
       await plugContext.saveDmdUserIds([followerUserId]);
       await plugContext.saveFollowerSnapshotIds([followerUserId]);
-      return true;
-    } catch (dmErr: any) {
-      console.error(
-        `X WEBHOOK AUTO DM FOLLOWERS user ${followerUserId}:`,
-        dmErr?.data || dmErr
-      );
-      return false;
     }
+    return sent;
   }
 
   /**
@@ -2795,6 +2871,66 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     'verified',
   ] as const;
 
+  private readonly subjectUserFields = [
+    'profile_image_url',
+    'name',
+    'username',
+    'public_metrics',
+  ] as const;
+
+  private async resolveSubjectMeta(
+    client: TwitterApi,
+    subjectId: string,
+    integration: Integration
+  ): Promise<{
+    id: string;
+    name: string;
+    username: string;
+    picture?: string;
+    publicMetrics?: {
+      followersCount: number;
+      followingCount: number;
+      tweetCount: number;
+      listedCount?: number;
+    };
+  }> {
+    const fallback = {
+      id: subjectId,
+      name: integration.name || '',
+      username: integration.profile || '',
+      picture: integration.picture || undefined,
+    };
+    try {
+      const lookup = await client.v2.user(subjectId, {
+        'user.fields': [...this.subjectUserFields],
+      });
+      const u = lookup?.data;
+      if (!u?.id) {
+        return fallback;
+      }
+      const metrics = u.public_metrics;
+      return {
+        id: String(u.id),
+        name: u.name || fallback.name,
+        username: u.username || fallback.username,
+        picture: u.profile_image_url || fallback.picture,
+        ...(metrics
+          ? {
+              publicMetrics: {
+                followersCount: metrics.followers_count ?? 0,
+                followingCount: metrics.following_count ?? 0,
+                tweetCount: metrics.tweet_count ?? 0,
+                listedCount: metrics.listed_count,
+              },
+            }
+          : {}),
+      };
+    } catch (err) {
+      console.warn('X resolveSubjectMeta:', err);
+      return fallback;
+    }
+  }
+
   /** Follow automations: paginated follower list for any X user id. */
   async listFollowersPage(
     integration: Integration,
@@ -2807,6 +2943,12 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       name: string;
       username: string;
       picture?: string;
+      publicMetrics?: {
+        followersCount: number;
+        followingCount: number;
+        tweetCount: number;
+        listedCount?: number;
+      };
     };
     users: Array<{
       id: string;
@@ -2828,31 +2970,11 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const client = this.clientForIntegration(integration);
     const subjectId = String(subjectUserId || integration.internalId);
 
-    let subjectMeta = {
-      id: subjectId,
-      name: integration.name || '',
-      username: integration.profile || '',
-      picture: integration.picture || undefined,
-    };
-
-    if (subjectId !== integration.internalId) {
-      try {
-        const lookup = await client.v2.user(subjectId, {
-          'user.fields': ['profile_image_url', 'name', 'username'],
-        });
-        const u = lookup?.data;
-        if (u?.id) {
-          subjectMeta = {
-            id: String(u.id),
-            name: u.name || subjectMeta.name,
-            username: u.username || subjectMeta.username,
-            picture: u.profile_image_url || subjectMeta.picture,
-          };
-        }
-      } catch (err) {
-        console.warn('X listFollowersPage subject lookup:', err);
-      }
-    }
+    const subjectMeta = await this.resolveSubjectMeta(
+      client,
+      subjectId,
+      integration
+    );
 
     const res: any = await client.v2.followers(subjectId, {
       max_results: 100,
@@ -2886,6 +3008,12 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       name: string;
       username: string;
       picture?: string;
+      publicMetrics?: {
+        followersCount: number;
+        followingCount: number;
+        tweetCount: number;
+        listedCount?: number;
+      };
     };
     users: Array<{
       id: string;
@@ -2907,31 +3035,11 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const client = this.clientForIntegration(integration);
     const subjectId = String(subjectUserId || integration.internalId);
 
-    let subjectMeta = {
-      id: subjectId,
-      name: integration.name || '',
-      username: integration.profile || '',
-      picture: integration.picture || undefined,
-    };
-
-    if (subjectId !== integration.internalId) {
-      try {
-        const lookup = await client.v2.user(subjectId, {
-          'user.fields': ['profile_image_url', 'name', 'username'],
-        });
-        const u = lookup?.data;
-        if (u?.id) {
-          subjectMeta = {
-            id: String(u.id),
-            name: u.name || subjectMeta.name,
-            username: u.username || subjectMeta.username,
-            picture: u.profile_image_url || subjectMeta.picture,
-          };
-        }
-      } catch (err) {
-        console.warn('X listFollowingPage subject lookup:', err);
-      }
-    }
+    const subjectMeta = await this.resolveSubjectMeta(
+      client,
+      subjectId,
+      integration
+    );
 
     const res: any = await client.v2.following(subjectId, {
       max_results: 100,

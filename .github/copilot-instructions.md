@@ -17,6 +17,7 @@
 - Test: `pnpm test` (Jest, coverage enabled)
 - Individual app scripts are in each app's `package.json` (e.g., `pnpm --filter ./apps/backend run dev`).
 - Prisma DB commands: `pnpm run prisma-generate`, `pnpm run prisma-db-push`, `pnpm run prisma-reset`.
+- Production `pnpm run pm2` skips `db push` by default (Mastra tables). Use `pnpm run pm2-run:with-db-push` only after changing `schema.prisma`.
 - Docker: `docker compose -f ./docker-compose.dev.yaml up -d`
 
 ## Conventions & Patterns

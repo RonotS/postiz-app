@@ -40,6 +40,9 @@ export const Title = () => {
     if (path?.startsWith('/adminisamazing')) {
       return 'Admin';
     }
+    if (path === '/dashboard' || path === '/') {
+      return 'Dashboard';
+    }
     return menuItems.find((item) => path === item.path || (item.path !== '/' && item.path !== '/dashboard' && path.startsWith(item.path)))?.name;
   }, [path]);
 

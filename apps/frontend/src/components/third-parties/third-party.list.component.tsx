@@ -126,7 +126,7 @@ export const ThirdPartyListComponent: FC<{ reload: () => void }> = (props) => {
   );
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-[10px] justify-items-center justify-center">
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-[10px] justify-items-stretch w-full min-w-0">
       {data?.map((p: any) => (
         <div
           onClick={addApiKey(p.title, p.identifier)}

@@ -84,7 +84,7 @@ export class BillingController {
       org.id,
       user.id,
       body,
-      org.allowTrial && !body.skipTrial
+      org.allowTrial
     );
   }
 
@@ -101,7 +101,7 @@ export class BillingController {
       org.id,
       user.id,
       body,
-      org.allowTrial && !body.skipTrial
+      org.allowTrial
     );
   }
 

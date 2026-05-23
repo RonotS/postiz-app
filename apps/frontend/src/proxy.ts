@@ -59,11 +59,9 @@ export async function proxy(request: NextRequest) {
     return topResponse;
   }
 
-  // If the URL is logout, delete the cookie and redirect to login
+  // If the URL is logout, delete the cookie and redirect to auth (register/login hub)
   if (nextUrl.href.indexOf('/auth/logout') > -1) {
-    const response = NextResponse.redirect(
-      new URL('/auth/login', nextUrl.href)
-    );
+    const response = NextResponse.redirect(new URL('/auth', nextUrl.href));
     response.cookies.set('auth', '', {
       path: '/',
       ...(!process.env.NOT_SECURED

@@ -29,7 +29,7 @@ export const ShowNotification: FC<{
   return (
     <div
       className={clsx(
-        `text-textColor px-[16px] py-[10px] border-b border-tableBorder last:border-b-0 transition-colors overflow-hidden text-ellipsis`,
+        'text-textColor px-[16px] py-[10px] border-b border-tableBorder last:border-b-0 transition-colors break-words [overflow-wrap:anywhere]',
         newNotification && 'font-bold bg-seventh animate-newMessages'
       )}
       dangerouslySetInnerHTML={{
@@ -49,7 +49,11 @@ export const NotificationOpenComponent = () => {
   return (
     <div
       id="notification-popup"
-      className="opacity-0 animate-normalFadeDown mt-[10px] absolute w-[420px] min-h-[200px] top-[100%] end-0 bg-third text-textColor rounded-[16px] flex flex-col border border-tableBorder z-[600]"
+      className={clsx(
+        'opacity-0 animate-normalFadeDown z-[600] bg-third text-textColor rounded-[16px] flex flex-col border border-tableBorder shadow-xl min-h-[200px]',
+        'absolute top-[calc(100%+10px)] end-0 w-[min(420px,calc(100vw-32px))] max-h-[min(70vh,520px)] overflow-y-auto',
+        'max-md:fixed max-md:top-[80px] max-md:end-3 max-md:start-3 max-md:w-auto max-md:max-h-[min(70vh,480px)]'
+      )}
     >
       <div
         className={`p-[16px] border-b border-tableBorder font-bold`}

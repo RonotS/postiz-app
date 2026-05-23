@@ -72,12 +72,12 @@ const ShortlinkPreferenceComponent = () => {
   }
 
   return (
-    <div className="my-[16px] mt-[16px] bg-sixth border-fifth border rounded-[4px] p-[24px] flex flex-col gap-[24px]">
+    <div className="my-[16px] mt-[16px] bg-sixth border-fifth border rounded-[4px] p-4 sm:p-6 flex flex-col gap-[24px] min-w-0">
       <div className="mt-[4px]">
         {t('shortlink_settings', 'Shortlink Settings')}
       </div>
-      <div className="flex items-center justify-between gap-[24px]">
-        <div className="flex flex-col flex-1">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 min-w-0">
+        <div className="flex flex-col flex-1 min-w-0">
           <div className="text-[14px]">
             {t('shortlink_preference', 'Shortlink Preference')}
           </div>
@@ -88,7 +88,7 @@ const ShortlinkPreferenceComponent = () => {
             )}
           </div>
         </div>
-        <div className="w-[200px]">
+        <div className="w-full sm:w-[200px] shrink-0">
           <Select
             name="shortlink"
             label=""

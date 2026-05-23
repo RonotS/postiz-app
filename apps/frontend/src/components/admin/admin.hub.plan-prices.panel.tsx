@@ -9,6 +9,8 @@ import { AdminSurface } from '@gitroom/frontend/components/admin/admin.hub.ui';
 
 type TierRow = {
   tier: string;
+  planId: string;
+  planName: string;
   month_price: number;
   year_price: number;
   default_month_price: number;
@@ -58,7 +60,7 @@ export function AdminHubPlanPricesPanel({ isSuper }: { isSuper: boolean }) {
       const month = Number(r.month);
       const year = Number(r.year);
       if (!Number.isFinite(month) || !Number.isFinite(year)) {
-        toast.show(`${t.tier}: enter valid monthly and yearly USD amounts`, 'warning');
+        toast.show(`${t.planName}: enter valid monthly and yearly USD amounts`, 'warning');
         return;
       }
       body[t.tier] = { month_price: month, year_price: year };
@@ -78,7 +80,10 @@ export function AdminHubPlanPricesPanel({ isSuper }: { isSuper: boolean }) {
         );
         return;
       }
-      toast.show('Package prices saved — Stripe Checkout uses these amounts', 'success');
+      toast.show(
+        'Prices saved — /subscribe and Stripe Checkout use these amounts',
+        'success'
+      );
       await mutate();
     } finally {
       setSaving(false);
@@ -91,15 +96,16 @@ export function AdminHubPlanPricesPanel({ isSuper }: { isSuper: boolean }) {
     <AdminSurface className="mt-6 flex flex-col gap-4" padding>
       <div>
         <h2 className="text-[16px] font-semibold text-newTextColor">
-          Package prices (USD)
+          Subscribe page prices (USD)
         </h2>
         <p className="text-[13px] text-textItemBlur mt-1 leading-relaxed">
-          Set monthly and yearly prices for each plan. These apply on the subscriber billing
-          page and when creating Stripe subscription prices. Paid amounts must be at least{' '}
-          <strong className="text-newTextColor">$0.50</strong> (Stripe minimum) or{' '}
-          <strong className="text-newTextColor">$0</strong> for free tiers. Saved to{' '}
-          <code className="text-[11px]">.data/billing-plan-prices.json</code> on the API server
-          (override with <code className="text-[11px]">BILLING_PLAN_PRICES_FILE</code>).
+          Same plans as <strong className="text-newTextColor">/subscribe</strong>: Core,
+          Pro, and Enterprise. Monthly prices are charged after each customer&apos;s{' '}
+          <strong className="text-newTextColor">7-day free trial</strong> ends (Stripe
+          handles billing). Paid amounts must be at least{' '}
+          <strong className="text-newTextColor">$0.50</strong> (Stripe minimum). Saved to{' '}
+          <code className="text-[11px]">.data/billing-plan-prices.json</code> on the API
+          server.
         </p>
       </div>
       {data?.storagePath && (
@@ -114,7 +120,12 @@ export function AdminHubPlanPricesPanel({ isSuper }: { isSuper: boolean }) {
             className="rounded-xl border border-newBorder bg-newBgColorInner/50 p-4 flex flex-col gap-3"
           >
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[14px] font-semibold text-newTextColor">{t.tier}</span>
+              <span className="text-[14px] font-semibold text-newTextColor">
+                {t.planName}
+              </span>
+              <span className="text-[11px] text-textItemBlur font-mono">
+                ({t.tier})
+              </span>
               {t.isCustom ? (
                 <span className="text-[11px] rounded-full bg-violet-500/20 text-violet-200 px-2 py-0.5">
                   Custom
@@ -125,7 +136,7 @@ export function AdminHubPlanPricesPanel({ isSuper }: { isSuper: boolean }) {
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="flex flex-col gap-1 text-[12px] text-textItemBlur">
-                Monthly (USD)
+                Monthly (USD) — shown on /subscribe
                 <input
                   className="rounded-lg border border-newBorder bg-newBgColorInner px-3 py-2 text-[14px] text-newTextColor"
                   value={rows[t.tier]?.month ?? ''}
@@ -170,7 +181,7 @@ export function AdminHubPlanPricesPanel({ isSuper }: { isSuper: boolean }) {
         ))}
       </div>
       <Button loading={saving} onClick={save}>
-        Save package prices
+        Save subscribe prices
       </Button>
     </AdminSurface>
   );

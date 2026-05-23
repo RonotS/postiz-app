@@ -5,6 +5,12 @@ import {
 } from '@nestjs/common';
 import { PostsRepository } from '@gitroom/nestjs-libraries/database/prisma/posts/posts.repository';
 import { CreatePostDto } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
+import { AttachPublishedTweetDto } from '@gitroom/nestjs-libraries/dtos/posts/attach.published.tweet.dto';
+import {
+  parseXTweetIdFromUrl,
+  xTweetPermalink,
+} from '@gitroom/nestjs-libraries/helpers/x/parse-tweet-url';
+import { XProvider } from '@gitroom/nestjs-libraries/integrations/social/x.provider';
 import dayjs from 'dayjs';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import { Integration, Post, Media, From, State } from '@prisma/client';
@@ -33,7 +39,6 @@ import {
   postId as postIdSearchParam,
 } from '@gitroom/nestjs-libraries/temporal/temporal.search.attribute';
 import { AnalyticsData } from '@gitroom/nestjs-libraries/integrations/social/social.integrations.interface';
-import { isXAccountActivityPollingDisabled } from '@gitroom/helpers/x/x.account-activity.env';
 import { timer } from '@gitroom/helpers/utils/timer';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { RefreshToken } from '@gitroom/nestjs-libraries/integrations/social.abstract';
@@ -745,7 +750,7 @@ export class PostsService {
 
     const currentPlug = loadAllPlugs.find((p) => p.identifier === providerName);
 
-    const xWebhookPlugFns = new Set([
+    const xEngagementPollPlugFns = new Set([
       'autoDmEngagers',
       'autoRepostPost',
       'autoPlugPost',
@@ -764,17 +769,12 @@ export class PostsService {
         (plug) =>
           !plug.plugFunction || !xProfilePollPlugFns.has(plug.plugFunction)
       )
-      .filter((plug) => {
-        if (
-          providerName === 'x' &&
-          plug.plugFunction &&
-          xWebhookPlugFns.has(plug.plugFunction) &&
-          isXAccountActivityPollingDisabled()
-        ) {
-          return false;
-        }
-        return true;
-      })
+      .filter(
+        (plug) =>
+          providerName !== 'x' ||
+          !plug.plugFunction ||
+          !xEngagementPollPlugFns.has(plug.plugFunction)
+      )
       .filter((plug) => {
         return currentPlug?.plugs?.some(
           (p: any) => p.methodName === plug.plugFunction
@@ -981,6 +981,148 @@ export class PostsService {
     }
 
     return postList;
+  }
+
+  /**
+   * Attach auto-DM / auto plug / auto retweet workers to a tweet already on X.
+   * Creates or updates a PUBLISHED Post row and syncs homepage X plugs.
+   */
+  async attachPublishedTweetAutomations(
+    orgId: string,
+    body: AttachPublishedTweetDto
+  ) {
+    const tweetId = parseXTweetIdFromUrl(body.tweetUrl);
+    if (!tweetId) {
+      throw new BadRequestException(
+        'Invalid X post URL. Paste a link like https://x.com/you/status/123…'
+      );
+    }
+
+    const settings = body.settings || {};
+    if ((settings as { __type?: string }).__type !== 'x') {
+      throw new BadRequestException('X post settings are required');
+    }
+
+    const s = settings as Record<string, unknown>;
+    const hasAutomation =
+      s.auto_dm_enabled === true ||
+      s.auto_retweet_enabled === true ||
+      s.auto_thread_reply_enabled === true;
+
+    if (!hasAutomation) {
+      throw new BadRequestException(
+        'Enable at least one automation (Auto DM, Auto retweet, or Auto plug) in Advanced Options'
+      );
+    }
+
+    if (
+      s.auto_thread_reply_enabled === true &&
+      (typeof s.auto_thread_reply_text !== 'string' ||
+        (s.auto_thread_reply_text as string).trim().length < 3)
+    ) {
+      throw new BadRequestException(
+        'Auto plug thread text must be at least 3 characters when enabled'
+      );
+    }
+
+    const integration = await this._integrationService.getIntegrationById(
+      orgId,
+      body.integrationId
+    );
+
+    if (!integration || integration.providerIdentifier !== 'x') {
+      throw new BadRequestException('Select a connected X account');
+    }
+
+    if (integration.disabled || integration.refreshNeeded) {
+      throw new BadRequestException(
+        'This X account needs to be reconnected before attaching automations'
+      );
+    }
+
+    let token = integration.token;
+    if (dayjs(integration.tokenExpiration).isBefore(dayjs())) {
+      const refreshed = await this._refreshIntegrationService.refresh(
+        integration
+      );
+      if (!refreshed || !refreshed.accessToken) {
+        throw new BadRequestException(
+          'Could not refresh X token. Reconnect the account and try again.'
+        );
+      }
+      token = refreshed.accessToken;
+    }
+
+    const xProvider = this._integrationManager.getSocialIntegration(
+      'x'
+    ) as XProvider;
+
+    let tweetMeta: { text: string; createdAt?: string };
+    try {
+      tweetMeta = await xProvider.lookupPublishedTweet(
+        token,
+        tweetId,
+        integration.internalId
+      );
+    } catch (err: any) {
+      const msg =
+        typeof err?.message === 'string'
+          ? err.message
+          : 'Could not load this tweet from X';
+      throw new BadRequestException(msg);
+    }
+
+    const existing = await this._postRepository.findByIntegrationReleaseId(
+      orgId,
+      body.integrationId,
+      tweetId
+    );
+
+    // Use "now" so the engagement poller prioritizes this row (it scans newest
+    // by updatedAt). Old tweets attached for automations would otherwise sit
+    // behind newer published posts and never get DM ticks.
+    const publishDate = dayjs().toDate();
+
+    const content =
+      tweetMeta.text ||
+      `[External X post](${xTweetPermalink(tweetId)})`;
+
+    const post = await this._postRepository.upsertPublishedTweetForAutomations({
+      orgId,
+      integrationId: body.integrationId,
+      releaseId: tweetId,
+      releaseURL: xTweetPermalink(tweetId),
+      content,
+      publishDate,
+      settingsJson: JSON.stringify(settings),
+      existingPostId: existing?.id,
+    });
+
+    await this._integrationService.ensureXHomepageAutomaticPlugs(
+      orgId,
+      body.integrationId,
+      settings
+    );
+
+    if (hasAutomation) {
+      this._integrationService
+        .runEngagementPlugsForReleaseId(
+          orgId,
+          body.integrationId,
+          tweetId,
+          s
+        )
+        .catch((err) =>
+          console.error('attachPublishedTweet: immediate engagement run:', err)
+        );
+    }
+
+    return {
+      id: post.id,
+      releaseId: tweetId,
+      releaseURL: xTweetPermalink(tweetId),
+      updated: !!existing?.id,
+    };
   }
 
   async separatePosts(content: string, len: number) {

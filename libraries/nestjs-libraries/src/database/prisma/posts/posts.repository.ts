@@ -434,6 +434,67 @@ export class PostsRepository {
     });
   }
 
+  findByIntegrationReleaseId(
+    orgId: string,
+    integrationId: string,
+    releaseId: string
+  ) {
+    return this._post.model.post.findFirst({
+      where: {
+        organizationId: orgId,
+        integrationId,
+        releaseId,
+        deletedAt: null,
+      },
+      select: { id: true },
+    });
+  }
+
+  /** Link an already-published X tweet to Postiz for engagement automations. */
+  upsertPublishedTweetForAutomations(params: {
+    orgId: string;
+    integrationId: string;
+    releaseId: string;
+    releaseURL: string;
+    content: string;
+    publishDate: Date;
+    settingsJson: string;
+    existingPostId?: string | null;
+  }) {
+    const baseData = {
+      state: 'PUBLISHED' as const,
+      releaseId: params.releaseId,
+      releaseURL: params.releaseURL,
+      content: params.content,
+      publishDate: params.publishDate,
+      settings: params.settingsJson,
+      deletedAt: null,
+      error: null,
+    };
+
+    if (params.existingPostId) {
+      return this._post.model.post.update({
+        where: {
+          id: params.existingPostId,
+          organizationId: params.orgId,
+        },
+        data: baseData,
+      });
+    }
+
+    return this._post.model.post.create({
+      data: {
+        ...baseData,
+        organizationId: params.orgId,
+        integrationId: params.integrationId,
+        group: uuidv4(),
+        delay: 0,
+        image: '[]',
+        approvedSubmitForOrder: APPROVED_SUBMIT_FOR_ORDER.NO,
+      },
+    });
+  }
+
   async changeState(id: string, state: State, err?: any, body?: any) {
     const update = await this._post.model.post.update({
       where: {

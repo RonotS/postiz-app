@@ -59,6 +59,29 @@ export function canLoadMoreFollowers(
 
 export const EXPLORER_MAX_PAGES = EXPLORER_MAX_LOADED / EXPLORER_PAGE_SIZE;
 
+/** Total UI pages from X public follower/following count (capped at 2,500 = 25 pages). */
+export function explorerTotalPagesFromListCount(
+  listCount: number | undefined
+): number {
+  if (listCount == null || !Number.isFinite(listCount) || listCount <= 0) {
+    return 1;
+  }
+  const capped = Math.min(Math.floor(listCount), EXPLORER_MAX_LOADED);
+  return Math.max(1, Math.ceil(capped / EXPLORER_PAGE_SIZE));
+}
+
+export function explorerListCountFromSubject(
+  subject: { publicMetrics?: { followersCount: number; followingCount: number } } | null | undefined,
+  listMode: 'followers' | 'following'
+): number | undefined {
+  const metrics = subject?.publicMetrics;
+  if (!metrics) return undefined;
+  const raw =
+    listMode === 'following' ? metrics.followingCount : metrics.followersCount;
+  return Number.isFinite(raw) && raw >= 0 ? raw : undefined;
+}
+
+/** @deprecated Use explorerTotalPagesFromListCount when subject list size is known. */
 export function explorerPaginationTotalPages(
   displayCount: number,
   canLoadMore: boolean,
@@ -77,10 +100,32 @@ export function explorerPaginationTotalPages(
   );
 }
 
+export function canGoToExplorerPage(
+  targetPage: number,
+  totalPages: number,
+  loadedUserCount: number,
+  nextToken?: string
+): boolean {
+  if (targetPage < 1 || targetPage > totalPages) {
+    return false;
+  }
+  const rawNeeded = targetPage * EXPLORER_PAGE_SIZE;
+  if (loadedUserCount >= rawNeeded) {
+    return true;
+  }
+  return (
+    !!nextToken &&
+    loadedUserCount < EXPLORER_MAX_LOADED &&
+    targetPage <= totalPages
+  );
+}
+
 export const XFollowersExplorerPagination: FC<{
   page: number;
   totalPages: number;
   itemCount: number;
+  listTotal?: number;
+  canGoNext?: boolean;
   loadingMore?: boolean;
   atLoadCap?: boolean;
   onPageChange: (page: number) => void;
@@ -89,6 +134,8 @@ export const XFollowersExplorerPagination: FC<{
   page,
   totalPages,
   itemCount,
+  listTotal,
+  canGoNext,
   loadingMore,
   atLoadCap,
   onPageChange,
@@ -114,16 +161,28 @@ export const XFollowersExplorerPagination: FC<{
       <span className="me-auto text-newTableText/80">
         {loadingMore
           ? t('loading_page', 'Loading page…')
-          : t(
-              'page_range',
-              '{{from}}–{{to}} of {{total}} ({{size}} per page)',
-              {
-                from,
-                to,
-                total: itemCount.toLocaleString(),
-                size: EXPLORER_PAGE_SIZE,
-              }
-            )}
+          : listTotal != null && listTotal > 0
+            ? t(
+                'page_range_with_list_total',
+                '{{from}}–{{to}} shown · {{loaded}} loaded of ~{{total}} ({{size}} per page)',
+                {
+                  from,
+                  to,
+                  loaded: itemCount.toLocaleString(),
+                  total: Math.min(listTotal, EXPLORER_MAX_LOADED).toLocaleString(),
+                  size: EXPLORER_PAGE_SIZE,
+                }
+              )
+            : t(
+                'page_range',
+                '{{from}}–{{to}} of {{total}} ({{size}} per page)',
+                {
+                  from,
+                  to,
+                  total: itemCount.toLocaleString(),
+                  size: EXPLORER_PAGE_SIZE,
+                }
+              )}
       </span>
       <span>
         {t('page_of', 'Page {{page}} / {{total}}', {
@@ -142,7 +201,11 @@ export const XFollowersExplorerPagination: FC<{
       </button>
       <button
         type="button"
-        disabled={safePage >= totalPages || loadingMore}
+        disabled={
+          loadingMore ||
+          safePage >= totalPages ||
+          (canGoNext === false && safePage < totalPages)
+        }
         onClick={() => onPageChange(safePage + 1)}
         className="rounded border border-newBorder px-2 py-1 hover:bg-boxHover disabled:opacity-40"
         aria-label={t('next_page', 'Next page')}
@@ -289,6 +352,8 @@ export const XFollowersExplorerTable: FC<{
   onToggleBlacklist: (id: string) => void;
   selectDisabled?: (user: FollowerListUser) => boolean;
   totalPages: number;
+  listTotal?: number;
+  canGoNext?: boolean;
   loadingMore?: boolean;
   atLoadCap?: boolean;
 }> = ({
@@ -316,6 +381,8 @@ export const XFollowersExplorerTable: FC<{
   onToggleBlacklist,
   selectDisabled,
   totalPages,
+  listTotal,
+  canGoNext,
   loadingMore,
   atLoadCap,
 }) => {
@@ -332,6 +399,8 @@ export const XFollowersExplorerTable: FC<{
         page={page}
         totalPages={totalPages}
         itemCount={users.length}
+        listTotal={listTotal}
+        canGoNext={canGoNext}
         loadingMore={loadingMore}
         atLoadCap={atLoadCap}
         onPageChange={onPageChange}
@@ -634,6 +703,8 @@ export const XFollowersExplorerTable: FC<{
         page={page}
         totalPages={totalPages}
         itemCount={users.length}
+        listTotal={listTotal}
+        canGoNext={canGoNext}
         loadingMore={loadingMore}
         atLoadCap={atLoadCap}
         onPageChange={onPageChange}

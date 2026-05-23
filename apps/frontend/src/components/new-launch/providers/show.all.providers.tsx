@@ -207,7 +207,7 @@ export const ShowAllProviders = forwardRef((props, ref) => {
   }));
 
   return (
-    <div className="w-full flex flex-col flex-1">
+    <div className="w-full flex flex-col flex-1 min-w-0 max-w-full">
       {current === 'global' && (
         <IntegrationContext.Provider
           value={{
@@ -230,7 +230,7 @@ export const ShowAllProviders = forwardRef((props, ref) => {
               )}
             </div>
           ) : (
-            <div className="border border-borderPreview rounded-[12px] shadow-previewShadow">
+            <div className="border border-borderPreview rounded-[12px] shadow-previewShadow min-w-0 max-w-full overflow-hidden">
               <GeneralPreviewComponent maximumCharacters={100000000} />
             </div>
           )}

@@ -117,8 +117,10 @@ export const ThirdPartyComponent = () => {
     <GrayedOutContent className="flex flex-1 min-h-0 min-w-0">
       <div
         className={clsx(
-          'bg-newBgColorInner p-[20px] hidden md:flex flex-col gap-[15px] transition-all flex-shrink-0',
-          collapseMenu === '1' ? 'group sidebar w-[100px]' : 'w-[260px]'
+          'bg-newBgColorInner p-[20px] hidden lg:flex flex-col gap-[15px] transition-all shrink-0',
+          collapseMenu === '1'
+            ? 'group sidebar w-[88px] xl:w-[100px]'
+            : 'w-[200px] xl:w-[260px]'
         )}
       >
         <div className="flex gap-[12px] flex-col">
@@ -201,8 +203,36 @@ export const ThirdPartyComponent = () => {
           </div>
         </div>
       </div>
-      <div className="bg-newBgColorInner flex-1 flex-col flex p-[10px] md:p-[20px] gap-[12px] min-w-0 overflow-x-hidden">
-        <ThirdPartyListComponent reload={mutate} />
+      <div className="bg-newBgColorInner flex-1 flex-col flex min-w-0 overflow-hidden">
+        {!isLoading && !!data?.length && (
+          <div className="lg:hidden shrink-0 border-b border-newBorder px-3 py-3">
+            <p className="text-sm font-medium text-newTextColor mb-2">
+              {t('your_integrations', 'Your integrations')}
+            </p>
+            <div className="flex gap-3 overflow-x-auto scrollbar-none pb-1">
+              {data.map((p: any) => (
+                <div
+                  key={p.id}
+                  className="flex items-center gap-2 shrink-0 rounded-lg border border-newBorder bg-newBgColor px-3 py-2 min-w-[140px] max-w-[200px]"
+                >
+                  <ImageWithFallback
+                    fallbackSrc={`/icons/third-party/${p.identifier}.png`}
+                    src={`/icons/third-party/${p.identifier}.png`}
+                    className="rounded-full shrink-0"
+                    alt={p.title}
+                    width={28}
+                    height={28}
+                  />
+                  <span className="text-xs truncate flex-1">{p.name}</span>
+                  <ThirdPartyMenuComponent reload={mutate} tParty={p} />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        <div className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto p-[10px] md:p-[20px]">
+          <ThirdPartyListComponent reload={mutate} />
+        </div>
       </div>
     </GrayedOutContent>
   );

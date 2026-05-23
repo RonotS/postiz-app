@@ -22,18 +22,6 @@ export class UpdateBillingPlanPricesDto {
   @IsObject()
   @ValidateNested()
   @Type(() => PlanPriceRowDto)
-  STANDARD?: PlanPriceRowDto;
-
-  @IsOptional()
-  @IsObject()
-  @ValidateNested()
-  @Type(() => PlanPriceRowDto)
-  PRO?: PlanPriceRowDto;
-
-  @IsOptional()
-  @IsObject()
-  @ValidateNested()
-  @Type(() => PlanPriceRowDto)
   TEAM?: PlanPriceRowDto;
 
   @IsOptional()
@@ -41,4 +29,10 @@ export class UpdateBillingPlanPricesDto {
   @ValidateNested()
   @Type(() => PlanPriceRowDto)
   ULTIMATE?: PlanPriceRowDto;
+
+  @IsOptional()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => PlanPriceRowDto)
+  PRO?: PlanPriceRowDto;
 }

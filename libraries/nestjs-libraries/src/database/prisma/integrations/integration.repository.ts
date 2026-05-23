@@ -698,6 +698,107 @@ export class IntegrationRepository {
       .then((rows) => rows.map((r) => r.id));
   }
 
+  listActiveEngagementPlugIds(integrationId: string) {
+    return this._plugs.model.plugs
+      .findMany({
+        where: {
+          integrationId,
+          activated: true,
+          plugFunction: {
+            in: [
+              'autoDmEngagers',
+              'autoRepostPost',
+              'autoPlugPost',
+              'autoThreadReply',
+            ],
+          },
+        },
+        select: { id: true, plugFunction: true },
+      })
+      .then((rows) => rows.map((r) => ({ id: r.id, plugFunction: r.plugFunction })));
+  }
+
+  /** Published X posts with a platform tweet id (newest first). */
+  listPublishedPostReleaseIds(integrationId: string, take = 100) {
+    return this._posts.model.post.findMany({
+      where: {
+        integrationId,
+        deletedAt: null,
+        state: 'PUBLISHED',
+        releaseId: { not: null },
+      },
+      orderBy: [{ updatedAt: 'desc' }, { publishDate: 'desc' }],
+      take,
+      select: { releaseId: true },
+    });
+  }
+
+  listActiveFollowerDmPlugs() {
+    return this._plugs.model.plugs.findMany({
+      where: {
+        activated: true,
+        plugFunction: 'autoDmFollowers',
+        integration: {
+          providerIdentifier: 'x',
+          deletedAt: null,
+          disabled: false,
+        },
+      },
+      select: {
+        id: true,
+        integrationId: true,
+        organizationId: true,
+      },
+    });
+  }
+
+  listXIntegrationsWithActiveProfileAutomationPlugs() {
+    return this._plugs.model.plugs.findMany({
+      where: {
+        activated: true,
+        plugFunction: {
+          in: ['autoDeleteProfile', 'autoDeleteReposts', 'autoDmPinnedPost'],
+        },
+        integration: {
+          providerIdentifier: 'x',
+          deletedAt: null,
+          disabled: false,
+        },
+      },
+      select: {
+        integrationId: true,
+        organizationId: true,
+      },
+      distinct: ['integrationId'],
+    });
+  }
+
+  listXIntegrationsWithActiveEngagementPlugs() {
+    return this._plugs.model.plugs.findMany({
+      where: {
+        activated: true,
+        plugFunction: {
+          in: [
+            'autoDmEngagers',
+            'autoRepostPost',
+            'autoPlugPost',
+            'autoThreadReply',
+          ],
+        },
+        integration: {
+          providerIdentifier: 'x',
+          deletedAt: null,
+          disabled: false,
+        },
+      },
+      select: {
+        integrationId: true,
+        organizationId: true,
+      },
+      distinct: ['integrationId'],
+    });
+  }
+
   /** Bump per-post auto-DM counter stored in Post.settings JSON (dashboard queue). */
   async incrementAutoDmSentCountForPost(
     integrationId: string,

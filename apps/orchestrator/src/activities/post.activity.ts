@@ -369,6 +369,22 @@ export class PostActivity {
   }
 
   @ActivityMethod()
+  async hasActiveXEngagementPlugs(integrationId: string): Promise<boolean> {
+    return this._integrationService.hasActiveXEngagementPlugs(integrationId);
+  }
+
+  @ActivityMethod()
+  async runXEngagementPollerTick(
+    organizationId: string,
+    integrationId: string
+  ): Promise<void> {
+    return this._integrationService.runXEngagementPollerTick(
+      organizationId,
+      integrationId
+    );
+  }
+
+  @ActivityMethod()
   async processInternalPlug(data: {
     post: string;
     originalIntegration: string;

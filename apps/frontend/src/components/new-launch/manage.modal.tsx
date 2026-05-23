@@ -61,7 +61,105 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
   const toaster = useToaster();
   const modal = useModals();
   const [showSettings, setShowSettings] = useState(false);
+  const [showCopilot, setShowCopilot] = useState(false);
+  const [isMobileLayout, setIsMobileLayout] = useState(false);
   const { data: shortlinkPreferenceData } = useShortlinkPreference();
+
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1026px)');
+    const sync = () => setShowCopilot(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 1025px)');
+    const sync = () => setIsMobileLayout(mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
+
+  const scrollCreatePostModal = useCallback((direction: 'left' | 'right') => {
+    const scroller = document.getElementById('add-edit-modal');
+    if (!scroller) {
+      return;
+    }
+    const step = direction === 'left' ? -420 : 420;
+    scroller.scrollBy({ left: step, behavior: 'smooth' });
+  }, []);
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 1025px)');
+    if (!mq.matches) {
+      return;
+    }
+
+    const scroller = document.getElementById('add-edit-modal');
+    if (!scroller) {
+      return;
+    }
+
+    let startX = 0;
+    let startY = 0;
+    let scrollLeft = 0;
+    let tracking = false;
+    let lockHorizontal: boolean | null = null;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) {
+        return;
+      }
+      tracking = true;
+      lockHorizontal = null;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      scrollLeft = scroller.scrollLeft;
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!tracking || e.touches.length !== 1) {
+        return;
+      }
+
+      const dx = startX - e.touches[0].clientX;
+      const dy = startY - e.touches[0].clientY;
+
+      if (lockHorizontal === null) {
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) {
+          return;
+        }
+        lockHorizontal = Math.abs(dx) > Math.abs(dy);
+      }
+
+      if (lockHorizontal) {
+        scroller.scrollLeft = scrollLeft + dx;
+        if (e.cancelable) {
+          e.preventDefault();
+        }
+      }
+    };
+
+    const onTouchEnd = () => {
+      tracking = false;
+      lockHorizontal = null;
+    };
+
+    const moveOpts: AddEventListenerOptions = { passive: false, capture: true };
+
+    scroller.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
+    scroller.addEventListener('touchmove', onTouchMove, moveOpts);
+    scroller.addEventListener('touchend', onTouchEnd, { passive: true, capture: true });
+    scroller.addEventListener('touchcancel', onTouchEnd, { passive: true, capture: true });
+
+    return () => {
+      scroller.removeEventListener('touchstart', onTouchStart, { capture: true });
+      scroller.removeEventListener('touchmove', onTouchMove, moveOpts);
+      scroller.removeEventListener('touchend', onTouchEnd, { capture: true });
+      scroller.removeEventListener('touchcancel', onTouchEnd, { capture: true });
+    };
+  }, []);
 
   const { addEditSets, mutate, customClose, dummy } = props;
 
@@ -443,53 +541,102 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
   );
 
   return (
-    <div className="w-full h-full flex-1 p-[40px] flex relative">
-      <div className="flex flex-1 bg-newBgColorInner rounded-[20px] flex-col">
-        <div className="flex-1 flex">
-          <div className="flex flex-col flex-1 border-e border-newBorder">
-            <div className="bg-newBgColor h-[65px] rounded-s-[20px] !rounded-b-[0] flex items-center px-[20px] text-[20px] font-[600]">
-              {t('create_post_title', 'Create Post')}
-            </div>
-            <div className="flex-1 flex flex-col gap-[16px]">
+    <div
+      id="add-edit-modal"
+      data-create-post-shell
+      className="w-full h-full flex-1 flex flex-col relative min-h-0 mobile:h-[100dvh] mobile:max-h-[100dvh] mobile:max-w-none mobile:shrink-0 mobile:p-0 lg:p-[40px]"
+    >
+      <div className="flex flex-1 flex-col bg-newBgColorInner mobile:rounded-none lg:rounded-[20px] min-h-0 mobile:w-[1400px] mobile:min-w-[1400px] mobile:max-w-[1400px] mobile:shrink-0 lg:min-w-0 lg:w-full lg:max-w-full overflow-hidden">
+        <div
+          data-create-post-hscroll
+          className="flex-1 min-h-0 min-w-0 lg:overflow-x-hidden"
+        >
+          <div
+            data-create-post-desktop-box
+            className="flex h-full min-h-0 w-full min-w-0 flex-col lg:min-w-0"
+          >
+            <div
+              data-create-post-layout
+              className="flex flex-1 flex-row min-h-0 min-w-0 overflow-hidden"
+            >
               <div
-                className={clsx('flex-1 relative', showSettings && 'hidden')}
+                data-create-post-compose
+                className="flex flex-col flex-1 min-h-0 min-w-0 mobile:w-[820px] mobile:min-w-[820px] mobile:max-w-[820px] mobile:flex-none mobile:shrink-0 border-e border-newBorder"
+              >
+            <div className="bg-newBgColor h-[65px] lg:rounded-s-[20px] !rounded-b-[0] flex items-center px-[20px] text-[20px] font-[600] shrink-0">
+              <span className="flex-1">{t('create_post_title', 'Create Post')}</span>
+              {isMobileLayout && (
+                <div className="flex items-center gap-1 shrink-0 me-2">
+                  <button
+                    type="button"
+                    className="h-[32px] px-2 rounded-[6px] bg-newBgLineColor text-[12px] font-[600]"
+                    onClick={() => scrollCreatePostModal('left')}
+                  >
+                    ←
+                  </button>
+                  <button
+                    type="button"
+                    className="h-[32px] px-2 rounded-[6px] bg-newBgLineColor text-[12px] font-[600]"
+                    onClick={() => scrollCreatePostModal('right')}
+                  >
+                    →
+                  </button>
+                </div>
+              )}
+              <button
+                type="button"
+                className="lg:hidden shrink-0 p-1"
+                aria-label={t('close', 'Close')}
+                onClick={askClose}
+              >
+                <CloseIcon className="text-[#A3A3A3]" />
+              </button>
+            </div>
+            <div
+              data-create-post-compose-scroll
+              className="flex-1 flex flex-col gap-[12px] min-h-0 min-w-0 overflow-y-auto"
+            >
+              <div
+                className={clsx(
+                  'relative min-h-0 min-w-0 flex-1',
+                  showSettings && 'hidden'
+                )}
               >
                 <div
                   id="social-content"
-                  className="gap-[32px] flex flex-col pe-[8px] pt-[20px] ps-[20px] absolute top-0 left-0 w-full h-full overflow-x-hidden overflow-y-scroll scrollbar scrollbar-thumb-newColColor scrollbar-track-newBgColorInner"
+                  className="gap-[32px] flex flex-col pe-[8px] pt-[20px] ps-[20px] overflow-x-hidden overflow-y-auto scrollbar scrollbar-thumb-newColColor scrollbar-track-newBgColorInner absolute top-0 left-0 w-full h-full min-h-0"
                 >
-                  <div className="flex w-full flex-col gap-2">
+                  <div className="flex w-full flex-col gap-3 min-w-0">
                     <p className="text-xs text-newTableText px-1">
                       {t(
                         'pick_channels_hint',
                         'Choose one or more channels. The same content is sent to each selected profile.'
                       )}
                     </p>
-                    <div className="flex w-full">
-                    <div className="flex flex-1">
-                      <PicksSocialsComponent toolTip={true} />
-                    </div>
-                    <div>
-                      {!dummy && (
-                        <SelectCustomer
-                          onChange={changeCustomer}
-                          integrations={integrations}
-                        />
-                      )}
+                    <div className="flex w-full min-w-0">
+                      <div className="flex flex-1 min-w-0 overflow-hidden">
+                        <PicksSocialsComponent toolTip={true} />
+                      </div>
+                      <div className="shrink-0">
+                        {!dummy && (
+                          <SelectCustomer
+                            onChange={changeCustomer}
+                            integrations={integrations}
+                          />
+                        )}
+                      </div>
                     </div>
                   </div>
-                  </div>
-                  <div className="flex flex-1 gap-[6px] flex-col">
-                    <div>{!existingData.integration && <SelectCurrent />}</div>
-                    <div className="flex-1 flex">
+                  <div className="flex flex-col gap-3 min-w-0">
+                    <div className="min-w-0 overflow-x-auto">
+                      {!existingData.integration && <SelectCurrent />}
+                    </div>
+                    <div className="flex flex-1 flex-col min-h-[120px]">
                       {!hide && <EditorWrapper totalPosts={1} value="" />}
                     </div>
                     <div
                       id="social-empty"
-                      className={clsx(
-                        'pb-[16px]'
-                        // current !== 'global' && 'hidden'
-                      )}
+                      className="pb-[8px] lg:pb-[16px]"
                     />
                   </div>
                 </div>
@@ -539,26 +686,29 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                 </div>
               </div>
             </div>
-          </div>
-          <div className="w-[580px] flex flex-col">
-            <div className="bg-newBgColor h-[65px] rounded-e-[20px] !rounded-b-[0] flex items-center px-[20px] text-[20px] font-[600]">
-              <div className="flex-1">{t('post_preview', 'Post Preview')}</div>
-              <div className="cursor-pointer">
-                <CloseIcon onClick={askClose} className="text-[#A3A3A3]" />
+              </div>
+              <div
+                data-create-post-preview
+                className="w-[580px] min-w-[580px] max-w-[580px] shrink-0 flex flex-col flex-1 min-h-0 bg-newBgColorInner"
+              >
+                <div className="bg-newBgColor h-[65px] lg:rounded-e-[20px] !rounded-b-[0] flex items-center px-[20px] text-[20px] font-[600] shrink-0">
+                  <div className="flex-1">{t('post_preview', 'Post Preview')}</div>
+                  <div className="cursor-pointer hidden lg:block" onClick={askClose}>
+                    <CloseIcon className="text-[#A3A3A3]" />
+                  </div>
+                </div>
+                <div className="relative flex-1 min-h-0 min-w-0">
+                  <Scrollable
+                    scrollClasses="!pe-[20px]"
+                    className="absolute top-0 p-[20px] pe-[8px] left-0 w-full h-full overflow-x-hidden overflow-y-auto scrollbar scrollbar-thumb-newColColor scrollbar-track-newBgColorInner"
+                  >
+                    <ShowAllProviders ref={ref} />
+                  </Scrollable>
+                </div>
               </div>
             </div>
-            <div className="flex-1 relative">
-              <Scrollable
-                scrollClasses="!pe-[20px]"
-                className="absolute top-0 p-[20px] pe-[8px] left-0 w-full h-full overflow-x-hidden overflow-y-scroll scrollbar scrollbar-thumb-newColColor scrollbar-track-newBgColorInner"
-              >
-                <ShowAllProviders ref={ref} />
-              </Scrollable>
-            </div>
-          </div>
-        </div>
-        <div className="select-none h-[84px] py-[20px] border-t border-newBorder flex items-center">
-          <div className="flex-1 flex ps-[20px] gap-[8px]">
+            <div className="select-none shrink-0 h-[84px] py-[20px] border-t border-newBorder flex flex-row items-center gap-0">
+              <div className="flex-1 flex flex-row ps-[20px] gap-[8px] min-w-0">
             {!dummy && (
               <TagsComponent
                 name="tags"
@@ -574,11 +724,11 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
               <RepeatComponent repeat={repeater} onChange={setRepeater} />
             )}
           </div>
-          <div className="pe-[20px] flex items-center justify-end gap-[8px]">
+          <div className="flex flex-row pe-[20px] items-center justify-end gap-[8px] min-w-0">
             {existingData?.integration && (
               <button
                 onClick={deletePost}
-                className="cursor-pointer flex text-[#FF3F3F] gap-[8px] items-center text-[15px] font-[600]"
+                className="cursor-pointer flex text-[#FF3F3F] gap-[8px] items-center text-[15px] font-[600] shrink-0"
               >
                 <div>
                   <TrashIcon />
@@ -586,14 +736,17 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                 <div>{t('delete_post', 'Delete Post')}</div>
               </button>
             )}
-            <DatePicker onChange={setDate} date={date} />
+            <div>
+              <DatePicker onChange={setDate} date={date} />
+            </div>
+            <div className="flex gap-2">
             {!addEditSets && (
               <button
                 disabled={
                   selectedIntegrations.length === 0 || loading || locked
                 }
                 onClick={schedule('draft')}
-                className="relative cursor-pointer disabled:cursor-not-allowed px-[20px] h-[44px] bg-btnSimple justify-center items-center flex rounded-[8px] text-[15px] font-[600]"
+                className="relative cursor-pointer disabled:cursor-not-allowed px-[20px] h-[44px] bg-btnSimple justify-center items-center flex rounded-[8px] text-[15px] font-[600] shrink-0"
               >
                 {loading && (
                   <div className="absolute left-[50%] top-[50%] -translate-y-[50%] -translate-x-[50%]">
@@ -668,13 +821,17 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                 )}
               </div>
             )}
+            </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
-      <CopilotPopup
-        hitEscapeToClose={false}
-        clickOutsideToClose={true}
-        instructions={`
+      {showCopilot && (
+        <CopilotPopup
+          hitEscapeToClose={false}
+          clickOutsideToClose={true}
+          instructions={`
 You are an assistant that help the user to schedule their social media posts,
 Here are the things you can do:
 - Add a new comment / post to the list of posts
@@ -685,14 +842,15 @@ Here are the things you can do:
 Post content can be added using the addPostContentFor{num} function.
 After using the addPostFor{num} it will create a new addPostContentFor{num+ 1} function.
 `}
-        labels={{
-          title: t('your_assistant', 'Your Assistant'),
-          initial: t(
-            'assistant_initial_message',
-            'Hi! I can help you to refine your social media posts.'
-          ),
-        }}
-      />
+          labels={{
+            title: t('your_assistant', 'Your Assistant'),
+            initial: t(
+              'assistant_initial_message',
+              'Hi! I can help you to refine your social media posts.'
+            ),
+          }}
+        />
+      )}
     </div>
   );
 };

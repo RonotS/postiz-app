@@ -13,6 +13,8 @@ import dayjs from 'dayjs';
 import clsx from 'clsx';
 import { pricing } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/pricing';
 import { usePlanPrices } from '@gitroom/frontend/components/billing/use-plan-prices';
+import { subscribePlanDisplayName } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscribe-plans.config';
+import { isSubscribeBillingTier } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscribe-plans.config';
 import { FAQComponent } from '@gitroom/frontend/components/billing/faq.component';
 import { useSWRConfig } from 'swr';
 import { useUser } from '@gitroom/frontend/components/layout/user.context';
@@ -230,8 +232,6 @@ export const MainBillingComponent: FC<{
   const [finishTrial, setFinishTrial] = useState(
     !!queryParams.get('finishTrial')
   );
-  const [payTodayNoTrial, setPayTodayNoTrial] = useState(false);
-
   const [subscription, setSubscription] = useState<Subscription | undefined>(
     sub
   );
@@ -390,9 +390,6 @@ export const MainBillingComponent: FC<{
               period: monthlyOrYearly === 'on' ? 'YEARLY' : 'MONTHLY',
               utm,
               billing,
-              ...(payTodayNoTrial && user?.allowTrial
-                ? { skipTrial: true }
-                : {}),
               ...(dub ? { dub } : {}),
             }),
           })
@@ -438,7 +435,7 @@ export const MainBillingComponent: FC<{
         }
         setLoading(false);
       },
-    [monthlyOrYearly, subscription, user, utm, payTodayNoTrial, dub]
+    [monthlyOrYearly, subscription, user, utm, dub]
   );
   if (user?.isLifetime) {
     router.replace('/');
@@ -446,29 +443,16 @@ export const MainBillingComponent: FC<{
   }
   return (
     <div className="flex flex-col gap-[16px]">
-      {billingEnabled && (
+      {billingEnabled && user?.allowTrial && (
         <div className="rounded-[8px] border border-customColor6 bg-sixth px-[16px] py-[12px] text-[14px] text-customColor18">
-          <div className="font-[600] text-newTextColor mb-[6px]">
-            Stripe checkout (live or test keys from your server)
-          </div>
-          <p className="mb-[8px]">
-            Choose Standard or Pro, then use Purchase / trial. You are redirected
-            to Stripe to pay; webhooks on your server complete the subscription.
+          <p>
+            All plans include a <strong className="text-newTextColor">7-day free trial</strong>.
+            Stripe charges your selected plan when the trial ends. Same pricing as{' '}
+            <a href="/subscribe" className="text-[#618DFF] underline">
+              /subscribe
+            </a>
+            .
           </p>
-          {user?.allowTrial && (
-            <label className="flex cursor-pointer items-center gap-[10px] select-none">
-              <input
-                type="checkbox"
-                checked={payTodayNoTrial}
-                onChange={(e) => setPayTodayNoTrial(e.target.checked)}
-                className="h-[16px] w-[16px] accent-[#618DFF]"
-              />
-              <span>
-                Pay today — skip the 7-day trial (charges the card immediately on
-                live keys)
-              </span>
-            </label>
-          )}
         </div>
       )}
       <div className="flex flex-row">
@@ -485,13 +469,19 @@ export const MainBillingComponent: FC<{
       {finishTrial && <FinishTrial close={() => setFinishTrial(false)} />}
       <div className="flex gap-[16px] [@media(max-width:1024px)]:flex-col [@media(max-width:1024px)]:text-center">
         {Object.entries(planPricing)
-          .filter((f) => !isGeneral || f[0] !== 'FREE')
+          .filter(([key]) =>
+            isGeneral
+              ? isSubscribeBillingTier(key)
+              : key !== 'FREE'
+          )
           .map(([name, values]) => (
             <div
               key={name}
               className="flex-1 bg-sixth border border-customColor6 rounded-[4px] p-[24px] gap-[16px] flex flex-col [@media(max-width:1024px)]:items-center"
             >
-              <div className="text-[18px]">{name}</div>
+              <div className="text-[18px]">
+                {isGeneral ? subscribePlanDisplayName(name) : name}
+              </div>
               <div className="text-[38px] flex gap-[2px] items-center">
                 <div>
                   $

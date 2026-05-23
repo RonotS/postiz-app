@@ -13,6 +13,10 @@ import { AuthService } from '@gitroom/helpers/auth/auth.service';
 import { TrackService } from '@gitroom/nestjs-libraries/track/track.service';
 import { UsersService } from '@gitroom/nestjs-libraries/database/prisma/users/users.service';
 import { TrackEnum } from '@gitroom/nestjs-libraries/user/track.enum';
+import {
+  SUBSCRIBE_BILLING_TIERS,
+  subscribePlanDisplayName,
+} from '@gitroom/nestjs-libraries/database/prisma/subscriptions/subscribe-plans.config';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_nothing');
 
@@ -1148,9 +1152,9 @@ export class StripeService {
     }
   }
 
-  /** Super-admin: show effective plan USD/cents vs $0.50 minimum guard. */
+  /** Super-admin: show effective plan USD/cents vs $0.50 minimum guard (/subscribe tiers). */
   adminStripePricingDiagnostics() {
-    const tiers = ['STANDARD', 'PRO'] as const;
+    const tiers = [...SUBSCRIBE_BILLING_TIERS] as const;
     const overrideRaw = (
       process.env.NEXT_PUBLIC_STRIPE_PLAN_PRICE_OVERRIDE_USD ||
       process.env.STRIPE_PLAN_PRICE_OVERRIDE_USD ||
@@ -1172,6 +1176,7 @@ export class StripeService {
       );
       return {
         tier,
+        planName: subscribePlanDisplayName(tier),
         monthUsd: p.month_price,
         yearUsd: p.year_price,
         monthCents,
@@ -1182,7 +1187,7 @@ export class StripeService {
     });
     return {
       minChargeNote:
-        'Applies to subscriber subscription Checkout only (STANDARD / PRO line items in this app). It does not apply to the one-time admin test Checkout in section 3. This app rejects subscription amounts under 50¢ (except free). Stripe also enforces card minimums in live mode.',
+        'Applies to /subscribe subscription Checkout (Core / Pro / Enterprise → TEAM, ULTIMATE, PRO). All new subscribers get a 7-day Stripe trial when allowTrial is true. Stripe charges the selected plan when the trial ends.',
       envOverride: overrideRaw || null,
       tiers: rows,
     };

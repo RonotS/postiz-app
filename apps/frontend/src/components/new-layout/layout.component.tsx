@@ -15,7 +15,7 @@ import dynamic from 'next/dynamic';
 import Link from 'next/link';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { useVariables } from '@gitroom/react/helpers/variable.context';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import useSWR from 'swr';
 import { CheckPayment } from '@gitroom/frontend/components/layout/check.payment';
 import { ToolTip } from '@gitroom/frontend/components/layout/top.tip';
@@ -32,13 +32,14 @@ import { CopilotKit } from '@copilotkit/react-core';
 import { MantineWrapper } from '@gitroom/react/helpers/mantine.wrapper';
 import { AnnouncementBanner } from '@gitroom/frontend/components/layout/announcement.banner';
 import { Title } from '@gitroom/frontend/components/layout/title';
+import { DocumentTitle } from '@gitroom/frontend/components/layout/document-title';
 import { TopMenu } from '@gitroom/frontend/components/layout/top.menu';
 import NotificationComponent from '@gitroom/frontend/components/notifications/notification.component';
 import { OrganizationSelector } from '@gitroom/frontend/components/layout/organization.selector';
 import { StreakComponent } from '@gitroom/frontend/components/layout/streak.component';
 import { PreConditionComponent } from '@gitroom/frontend/components/layout/pre-condition.component';
 import { AttachToFeedbackIcon } from '@gitroom/frontend/components/new-layout/sentry.feedback.component';
-import { FirstBillingComponent } from '@gitroom/frontend/components/billing/first.billing.component';
+import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { MobileDrawer } from '@gitroom/frontend/components/new-layout/mobile.drawer';
 import {
   AdminHubBreadcrumbs,
@@ -61,6 +62,8 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
 
   // Feedback icon component attaches Sentry feedback to a top-bar icon when DSN is present
   const pathname = usePathname();
+  const router = useRouter();
+  const isSubscribeRoute = pathname === '/subscribe';
   const isAdminHubRoute =
     pathname === '/adminisamazing' || pathname?.startsWith('/adminisamazing/');
   const searchParams = useSearchParams();
@@ -79,20 +82,53 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
     refreshWhenHidden: false,
   });
 
-  if (!user) return null;
-
   const isBillingRoute =
     pathname === '/billing' || pathname?.startsWith('/billing/');
   const isPlatformAdminUser =
-    (user as { admin?: boolean }).admin === true ||
-    (user as { isSuperAdmin?: boolean }).isSuperAdmin === true;
+    !!user &&
+    ((user as { admin?: boolean }).admin === true ||
+      (user as { isSuperAdmin?: boolean }).isSuperAdmin === true);
 
   const showFirstBillingGate =
+    !!user &&
     user.tier === 'FREE' &&
     isGeneral &&
     billingEnabled &&
     !isBillingRoute &&
+    !isSubscribeRoute &&
     !isPlatformAdminUser;
+
+  useEffect(() => {
+    if (showFirstBillingGate) {
+      router.replace('/subscribe');
+    }
+  }, [showFirstBillingGate, router]);
+
+  if (!user) return null;
+
+  if (isSubscribeRoute) {
+    return (
+      <ContextWrapper user={user}>
+        <MantineWrapper>
+          <DocumentTitle />
+          <Toaster />
+          <CheckPayment check={searchParams.get('check') || ''} mutate={mutate}>
+            {children}
+          </CheckPayment>
+        </MantineWrapper>
+      </ContextWrapper>
+    );
+  }
+
+  if (showFirstBillingGate) {
+    return (
+      <ContextWrapper user={user}>
+        <MantineWrapper>
+          <LoadingComponent />
+        </MantineWrapper>
+      </ContextWrapper>
+    );
+  }
 
   return (
     <ContextWrapper user={user}>
@@ -102,6 +138,7 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
         showDevConsole={false}
       >
         <MantineWrapper>
+          <DocumentTitle />
           <ToolTip />
           <Toaster />
           <CheckPayment check={searchParams.get('check') || ''} mutate={mutate}>
@@ -119,10 +156,7 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
               )}
             >
               <div />
-              {showFirstBillingGate ? (
-                <FirstBillingComponent />
-              ) : (
-                <>
+              <>
                   {!isAdminHubRoute && <AnnouncementBanner />}
                   <div
                     className={clsx(
@@ -169,7 +203,7 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
                         isAdminHubRoute && 'min-w-0 w-full'
                       )}
                     >
-                      <div className="flex bg-newBgColorInner h-[80px] px-[20px] items-center shrink-0 border-b border-newBorder/80">
+                      <div className="flex bg-newBgColorInner h-[80px] px-[20px] items-center shrink-0 border-b border-newBorder/80 overflow-visible relative z-[50]">
                         <div className="text-[24px] font-[600] flex flex-1 items-center gap-3 min-w-0">
                           {isAdminHubRoute && (
                             <>
@@ -191,7 +225,7 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
                           )}
                           <Title />
                         </div>
-                        <div className="flex gap-[10px] md:gap-[20px] text-textItemBlur items-center shrink-0">
+                        <div className="flex gap-[10px] md:gap-[20px] text-textItemBlur items-center shrink-0 overflow-visible">
                           {!isAdminHubRoute && (
                             <div className="hidden sm:block">
                               <StreakComponent />
@@ -220,8 +254,7 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
                       </div>
                     </div>
                   </div>
-                </>
-              )}
+              </>
             </div>
           </CheckPayment>
         </MantineWrapper>

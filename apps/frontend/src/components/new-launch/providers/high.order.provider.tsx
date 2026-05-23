@@ -179,6 +179,15 @@ export const withProvider = function <T extends object>(params: {
       return global;
     }, [internal, global, isGlobal]);
 
+    const hideEditorForSettings = useCallback(() => {
+      if (
+        typeof window !== 'undefined' &&
+        window.matchMedia('(min-width: 1026px)').matches
+      ) {
+        setHide(true);
+      }
+    }, [setHide]);
+
     const form = useForm({
       resolver: classValidatorResolver(dto || Empty),
       ...(Object.keys(selectedIntegration.settings).length > 0
@@ -221,11 +230,11 @@ export const withProvider = function <T extends object>(params: {
                   ),
             fix: () => {
               setCurrent(props.id);
-              setHide(true);
+              hideEditorForSettings();
             },
             preview: () => {
               setCurrent(props.id);
-              setHide(true);
+              hideEditorForSettings();
             },
           };
         },
@@ -260,7 +269,7 @@ export const withProvider = function <T extends object>(params: {
         <FormProvider {...form}>
           <div
             className={clsx(
-              'border border-borderPreview rounded-[12px] shadow-previewShadow',
+              'border border-borderPreview rounded-[12px] shadow-previewShadow min-w-0 max-w-full overflow-hidden',
               !current && 'hidden'
             )}
           >

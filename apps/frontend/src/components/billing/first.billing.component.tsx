@@ -13,7 +13,6 @@ import dynamic from 'next/dynamic';
 import { LogoTextComponent } from '@gitroom/frontend/components/ui/logo-text.component';
 import { pricing } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/pricing';
 import { usePlanPrices } from '@gitroom/frontend/components/billing/use-plan-prices';
-import { capitalize } from 'lodash';
 import clsx from 'clsx';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { CheckIconComponent } from '@gitroom/frontend/components/ui/check.icon.component';
@@ -53,15 +52,14 @@ export const FirstBillingComponent = () => {
   const user = useUser();
   const dub = useDubClickId();
   const [stripe, setStripe] = useState<null | Promise<Stripe>>(null);
-  const [tier, setTier] = useState('STANDARD');
+  const [tier, setTier] = useState<string>('TEAM');
   const [period, setPeriod] = useState('MONTHLY');
   const fetch = useFetch();
   const modals = useModals();
   const t = useT();
   const [datafast_visitor_id] = useCookie('datafast_visitor_id', '');
   const [datafast_session_id] = useCookie('datafast_session_id', '');
-  const [payTodayNoTrial, setPayTodayNoTrial] = useState(false);
-  const { effectivePricing: planPricing } = usePlanPrices();
+  const { effectivePricing: planPricing, subscribePlans } = usePlanPrices();
 
   useEffect(() => {
     setStripe(loadStripe(stripeClient));
@@ -74,7 +72,6 @@ export const FirstBillingComponent = () => {
         body: JSON.stringify({
           billing: tier,
           period: period,
-          ...(payTodayNoTrial && user?.allowTrial ? { skipTrial: true } : {}),
           ...(datafast_visitor_id && datafast_session_id
             ? { datafast_visitor_id, datafast_session_id }
             : {}),
@@ -82,7 +79,7 @@ export const FirstBillingComponent = () => {
         }),
       })
     ).json();
-  }, [tier, period, payTodayNoTrial, user?.allowTrial, dub, datafast_visitor_id, datafast_session_id]);
+  }, [tier, period, dub, datafast_visitor_id, datafast_session_id]);
 
   const showYouTube = () => {
     modals.openModal({
@@ -100,7 +97,7 @@ export const FirstBillingComponent = () => {
   };
 
   const { data, isLoading } = useSWR(
-    `/billing-embedded-${tier}-${period}-${payTodayNoTrial ? '1' : '0'}`,
+    `/billing-embedded-${tier}-${period}`,
     loadCheckout,
     {
       revalidateOnFocus: false,
@@ -112,8 +109,13 @@ export const FirstBillingComponent = () => {
   );
 
   const price = useMemo(
-    () => Object.entries(planPricing).filter(([key]) => key !== 'FREE'),
-    [planPricing]
+    () =>
+      subscribePlans.map((plan) => [
+        plan.billing,
+        planPricing[plan.billing],
+        plan.name,
+      ] as const),
+    [planPricing, subscribePlans]
   );
 
   const JoinOver = () => {
@@ -210,17 +212,6 @@ export const FirstBillingComponent = () => {
           <div className="block tablet:hidden">
             <JoinOver />
           </div>
-          {user?.allowTrial && (
-            <label className="mb-[16px] flex cursor-pointer items-center gap-[10px] text-[14px] text-customColor18 select-none">
-              <input
-                type="checkbox"
-                checked={payTodayNoTrial}
-                onChange={(e) => setPayTodayNoTrial(e.target.checked)}
-                className="h-[16px] w-[16px] accent-[#618DFF]"
-              />
-              <span>Pay today — skip the 7-day free trial</span>
-            </label>
-          )}
           {!isLoading && data && stripe ? (
             <EmbeddedBilling
               stripe={stripe}
@@ -279,9 +270,9 @@ export const FirstBillingComponent = () => {
                 </div>
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-[8px] mobile:!grid-cols-2 tablet:grid-cols-4">
+            <div className="grid grid-cols-2 gap-[8px] mobile:!grid-cols-2 tablet:grid-cols-3">
               {price.map(
-                ([key, value]) => (
+                ([key, value, label]) => (
                   <div
                     onClick={() => setTier(key)}
                     key={key}
@@ -293,7 +284,7 @@ export const FirstBillingComponent = () => {
                     )}
                   >
                     <div className="text-[20px] mobile:text-[18px] font-[500]">
-                      {capitalize(key)}
+                      {label}
                     </div>
                     <div className="text-[24px] mobile:text-[18px] font-[400]">
                       <span className="text-[44px] mobile:text-[30px] font-[600]">

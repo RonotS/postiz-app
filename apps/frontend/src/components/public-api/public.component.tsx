@@ -227,7 +227,7 @@ const McpSection = ({
           <div className="text-[13px] text-customColor18 mt-[2px]">
             {t(
               'connect_your_mcp_client_to_postiz_to_schedule_your_posts_faster',
-              'Connect Postiz MCP server to your client (Http streaming) to schedule your posts faster.'
+              'Connect TweetMax MCP server to your client (Http streaming) to schedule your posts faster.'
             )}
           </div>
         </div>
@@ -342,10 +342,10 @@ const cliSteps = [
   },
   {
     label: 'Set your API key, copy it to your secret files',
-    code: 'export POSTIZ_API_KEY="{API_KEY}"',
+    code: 'export TWEETMAX_API_KEY="{API_KEY}"',
   },
   {
-    label: 'Install the Postiz skill for your AI agent',
+    label: 'Install the TweetMax skill for your AI agent',
     code: 'npx skills add gitroomhq/postiz-agent',
   },
 ] as const;
@@ -386,7 +386,7 @@ const CliSection = ({
           <div className="text-[13px] text-customColor18 mt-[2px]">
             {t(
               'cli_description',
-              'Use the Postiz CLI to automate posting from your terminal, or install the skill to let your AI agent schedule posts for you.'
+              'Use the TweetMax CLI to automate posting from your terminal, or install the skill to let your AI agent schedule posts for you.'
             )}
           </div>
         </div>
@@ -499,7 +499,7 @@ const PublicApiContent = () => {
         <br />
         {t(
           'api_auth_note_line2',
-          'If you are building a product that schedules posts on behalf of other Postiz users,'
+          'If you are building a product that schedules posts on behalf of other TweetMax users,'
         )}
         <br />
         {t(
@@ -521,7 +521,7 @@ const PublicApiContent = () => {
             <div className="text-[13px] text-customColor18 mt-[2px]">
               {t(
                 'use_postiz_api_to_integrate_with_your_tools',
-                'Use Postiz API to integrate with your tools.'
+                'Use TweetMax API to integrate with your tools.'
               )}
             </div>
           </div>

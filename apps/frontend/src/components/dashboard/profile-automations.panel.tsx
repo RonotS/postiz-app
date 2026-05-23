@@ -25,6 +25,8 @@ import {
   ProfileAutomationsNavIcon,
   ProfileAutomationsSectionIcon,
 } from '@gitroom/frontend/components/dashboard/profile-automations.icons';
+import { useXPlugBatchRateLimit } from '@gitroom/frontend/components/dashboard/use-x-plug-batch-rate-limit';
+import { XPlugBatchRateLimitBanner } from '@gitroom/frontend/components/dashboard/x-plug-batch-rate-limit-banner';
 
 type PlugRow = {
   id: string;
@@ -241,6 +243,11 @@ export const ProfileAutomationsPanel: FC = () => {
   );
 
   const [pickedId, setPickedId] = useState('');
+  const {
+    rateLimit: plugBatchLimit,
+    countdown: plugBatchCountdown,
+    pollMinutes: plugPollMinutes,
+  } = useXPlugBatchRateLimit(pickedId || undefined);
 
   useEffect(() => {
     if (!xIntegrations.length) {
@@ -438,6 +445,14 @@ export const ProfileAutomationsPanel: FC = () => {
           disabled={busy}
         />
       )}
+
+      {pickedId ? (
+        <XPlugBatchRateLimitBanner
+          rateLimit={plugBatchLimit}
+          countdown={plugBatchCountdown}
+          pollMinutes={plugPollMinutes}
+        />
+      ) : null}
 
       <ProfileAutomationsSection
         title={t('auto_dm_new_followers', 'Auto DM new followers')}

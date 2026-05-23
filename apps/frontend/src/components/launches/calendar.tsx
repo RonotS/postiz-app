@@ -85,6 +85,29 @@ const convertTimeFormatBasedOnLocality = (time: number) => {
   }
 };
 
+const WeekHourLabel: FC<{ hour: number }> = ({ hour }) => {
+  if (isUSCitizen()) {
+    const h12 = hour === 12 ? 12 : hour % 12;
+    const period = hour >= 12 ? 'PM' : 'AM';
+    return (
+      <div className="flex flex-col items-center justify-center text-center w-full leading-tight">
+        <span className="text-[13px] mobile:text-[10px] text-newTableText whitespace-nowrap">
+          {h12}:00
+        </span>
+        <span className="text-[11px] mobile:text-[9px] text-newTableText">
+          {period}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <span className="text-[13px] mobile:text-[10px] text-newTableText leading-tight text-center w-full">
+      {hour}:00
+    </span>
+  );
+};
+
 export const hours = Array.from(
   {
     length: 24,
@@ -138,14 +161,14 @@ const usePostActions = (onMutate?: () => void) => {
             <AddEditModal
               {...(isDuplicate
                 ? {
-                    onlyValues: data.posts.map(
-                      ({ image, settings, content }: any) => ({
-                        image,
-                        settings,
-                        content,
-                      })
-                    ),
-                  }
+                  onlyValues: data.posts.map(
+                    ({ image, settings, content }: any) => ({
+                      image,
+                      settings,
+                      content,
+                    })
+                  ),
+                }
                 : {})}
               allIntegrations={integrations.map((p) => ({ ...p }))}
               reopenModal={editPost(post)}
@@ -154,12 +177,12 @@ const usePostActions = (onMutate?: () => void) => {
                 isDuplicate
                   ? integrations
                   : integrations
-                      .slice(0)
-                      .filter((f) => f.id === data.integration)
-                      .map((p) => ({
-                        ...p,
-                        picture: data.integrationPicture,
-                      }))
+                    .slice(0)
+                    .filter((f) => f.id === data.integration)
+                    .map((p) => ({
+                      ...p,
+                      picture: data.integrationPicture,
+                    }))
               }
               date={publishDate}
             />
@@ -349,56 +372,71 @@ export const WeekView = () => {
     const currentLanguage = i18next.resolvedLanguage || 'en';
     dayjs.locale(currentLanguage);
 
+    const todayLabel = newDayjs().format('L');
     const days = [];
     const weekStart = newDayjs(startDate);
     for (let i = 0; i < 7; i++) {
       const day = weekStart.add(i, 'day');
       days.push({
         name: day.format('dddd'),
+        nameShort: day.format('ddd'),
         day: day.format('L'),
+        dayCompact: day.format('MMM D'),
         date: day,
+        isToday: day.format('L') === todayLabel,
       });
     }
     return days;
   }, [i18next.resolvedLanguage, startDate]);
 
   return (
-    <div className="flex flex-col text-textColor flex-1">
-      <div className="flex-1 relative">
-        <div className="grid [grid-template-columns:136px_repeat(7,_minmax(0,_1fr))] min-w-[800px] gap-[4px] rounded-[10px] absolute h-full start-0 top-0 w-full overflow-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor">
-          <div className="z-10 bg-newTableHeader flex justify-center items-center flex-col h-[62px] rounded-[8px] sticky top-0"></div>
-          {localizedDays.map((day, index) => (
+    <div className="flex flex-col text-textColor flex-1 min-w-0">
+      <div className="flex-1 relative min-w-0">
+        <div
+          className={clsx(
+            'grid [grid-template-columns:136px_repeat(7,_minmax(0,_1fr))] gap-[4px] rounded-[10px] absolute h-full start-0 top-0 w-full min-w-0 overflow-auto scrollbar scrollbar-thumb-fifth scrollbar-track-newBgColor',
+            'mobile:[grid-template-columns:56px_repeat(7,152px)]',
+            'mobile:w-max mobile:min-w-[1120px] mobile:max-w-none',
+            'mobile:gap-[8px]'
+          )}
+        >
+          <div className="z-10 bg-newTableHeader flex justify-center items-center flex-col h-[70px] mobile:h-[58px] rounded-[8px] sticky top-0 w-full min-w-0" />
+          {localizedDays.map((day) => (
             <div
-              key={day.name}
-              className="p-2 text-center bg-newTableHeader flex justify-center items-center flex-col h-[62px] rounded-[8px] sticky top-0 z-[20]"
+              key={day.date.format('YYYY-MM-DD')}
+              className="px-1 py-2 text-center bg-newTableHeader flex justify-center items-center flex-col h-[70px] mobile:h-[58px] rounded-[8px] sticky top-0 z-[20] w-full min-w-0 mobile:w-[152px] mobile:max-w-[152px] mobile:shrink-0"
             >
-              <div className="text-[14px] font-[500] text-newTableText">
-                {day.name}
-              </div>
-              <div
-                className={clsx(
-                  'text-[14px] font-[600] flex items-center justify-center gap-[6px]',
-                  day.day === newDayjs().format('L') &&
-                    'text-newTableTextFocused'
-                )}
-              >
-                {day.day === newDayjs().format('L') && (
-                  <div className="w-[6px] h-[6px] bg-newTableTextFocused rounded-full" />
-                )}
-                {day.day}
+              <div className="flex flex-col items-center justify-center w-full min-w-0 gap-0.5 text-center">
+                <span
+                  className="text-[13px] mobile:text-[11px] font-medium text-newTableText leading-tight text-center w-full"
+                  title={day.name}
+                >
+                  {day.nameShort}
+                </span>
+                <span
+                  className={clsx(
+                    'text-[13px] mobile:text-[11px] font-semibold flex items-center justify-center gap-[5px] leading-tight text-center w-full',
+                    day.isToday && 'text-newTableTextFocused'
+                  )}
+                >
+                  {day.isToday && (
+                    <div className="w-[6px] h-[6px] mobile:w-[5px] mobile:h-[5px] bg-newTableTextFocused rounded-full shrink-0" />
+                  )}
+                  <span className="max-w-full text-center">{day.dayCompact}</span>
+                </span>
               </div>
             </div>
           ))}
           {hours.map((hour) => (
             <Fragment key={hour}>
-              <div className="p-2 pe-4 text-center items-center justify-center flex text-[14px] text-newTableText">
-                {convertTimeFormatBasedOnLocality(hour)}
+              <div className="flex items-center justify-center min-h-[88px] mobile:min-h-[80px] w-full min-w-0 self-stretch">
+                <WeekHourLabel hour={hour} />
               </div>
               {localizedDays.map((day, indexDay) => (
                 <Fragment
                   key={`${startDate}-${day.date.format('YYYY-MM-DD')}-${hour}`}
                 >
-                  <div className="relative">
+                  <div className="relative w-full min-w-0 min-h-[88px] mobile:min-h-[80px] mobile:w-[152px] mobile:max-w-[152px] mobile:shrink-0 overflow-hidden">
                     <CalendarColumn
                       getDate={day.date.hour(hour).startOf('hour')}
                     />
@@ -424,7 +462,11 @@ export const MonthView = () => {
     const days = [];
     // Starting from Monday (1) to Sunday (7)
     for (let i = 1; i <= 7; i++) {
-      days.push(newDayjs().day(i).format('dddd'));
+      const d = newDayjs().day(i);
+      days.push({
+        long: d.format('dddd'),
+        short: d.format('ddd'),
+      });
     }
     return days;
   }, [i18next.resolvedLanguage]);
@@ -464,13 +506,16 @@ export const MonthView = () => {
   return (
     <div className="flex flex-col text-textColor flex-1">
       <div className="flex-1 flex relative">
-        <div className="grid grid-cols-7 grid-rows-[62px_auto] min-w-[800px] gap-[4px] rounded-[10px] absolute start-0 top-0 overflow-auto w-full h-full scrollbar scrollbar-thumb-tableBorder scrollbar-track-secondary">
+        <div className="grid grid-cols-7 grid-rows-[62px_auto] gap-[4px] rounded-[10px] absolute start-0 top-0 overflow-auto w-full min-w-0 h-full scrollbar scrollbar-thumb-tableBorder scrollbar-track-secondary">
           {localizedDays.map((day) => (
             <div
-              key={day}
+              key={day.short}
               className="z-[20] p-2 bg-newTableHeader flex justify-center items-center flex-col h-[62px] rounded-[8px] sticky top-0"
             >
-              <div>{day}</div>
+              <div className="text-sm max-md:text-[10px] font-medium truncate w-full text-center">
+                <span className="md:hidden">{day.short}</span>
+                <span className="hidden md:inline">{day.long}</span>
+              </div>
             </div>
           ))}
           {calendarDays.map((date, index) => (
@@ -609,11 +654,11 @@ export const CalendarColumn: FC<{
       const check =
         display === 'day'
           ? pList.format('YYYY-MM-DD HH:mm') ===
-            getDate.format('YYYY-MM-DD HH:mm')
+          getDate.format('YYYY-MM-DD HH:mm')
           : display === 'week'
-          ? pList.isSameOrAfter(getDate.startOf('hour')) &&
+            ? pList.isSameOrAfter(getDate.startOf('hour')) &&
             pList.isBefore(getDate.endOf('hour'))
-          : pList.format('DD/MM/YYYY') === getDate.format('DD/MM/YYYY');
+            : pList.format('DD/MM/YYYY') === getDate.format('DD/MM/YYYY');
       return check;
     });
   }, [posts, display, getDate]);
@@ -747,28 +792,28 @@ export const CalendarColumn: FC<{
     const set: any = !sets.length
       ? undefined
       : await new Promise((resolve) => {
-          modal.openModal({
-            title: t('select_set', 'Select a Set'),
-            closeOnClickOutside: true,
-            askClose: false,
-            closeOnEscape: true,
-            withCloseButton: true,
-            onClose: () => resolve('exit'),
-            children: (
-              <SetSelectionModal
-                sets={sets}
-                onSelect={(selectedSet) => {
-                  resolve(selectedSet);
-                  modal.closeAll();
-                }}
-                onContinueWithoutSet={() => {
-                  resolve(undefined);
-                  modal.closeAll();
-                }}
-              />
-            ),
-          });
+        modal.openModal({
+          title: t('select_set', 'Select a Set'),
+          closeOnClickOutside: true,
+          askClose: false,
+          closeOnEscape: true,
+          withCloseButton: true,
+          onClose: () => resolve('exit'),
+          children: (
+            <SetSelectionModal
+              sets={sets}
+              onSelect={(selectedSet) => {
+                resolve(selectedSet);
+                modal.closeAll();
+              }}
+              onContinueWithoutSet={() => {
+                resolve(undefined);
+                modal.closeAll();
+              }}
+            />
+          ),
         });
+      });
 
     if (set === 'exit') return;
 
@@ -794,20 +839,20 @@ export const CalendarColumn: FC<{
           mutate={reloadCalendarView}
           {...(signature?.id && !set
             ? {
-                onlyValues: [
-                  {
-                    content: '\n' + signature.content,
-                  },
-                ],
-              }
+              onlyValues: [
+                {
+                  content: '\n' + signature.content,
+                },
+              ],
+            }
             : {})}
           date={
             randomHour
               ? getDate.hour(Math.floor(Math.random() * 24))
               : getDate.format('YYYY-MM-DDTHH:mm:ss') ===
                 newDayjs().startOf('hour').format('YYYY-MM-DDTHH:mm:ss')
-              ? newDayjs().add(10, 'minute')
-              : getDate
+                ? newDayjs().add(10, 'minute')
+                : getDate
           }
           {...(set?.content ? { set: JSON.parse(set.content) } : {})}
           reopenModal={() => ({})}
@@ -835,7 +880,8 @@ export const CalendarColumn: FC<{
       )}
       <div
         className={clsx(
-          'relative flex flex-col flex-1 text-white rounded-[8px] min-h-[70px]',
+          'relative flex flex-col flex-1 text-white rounded-[8px] min-h-[88px]',
+          display === 'week' && 'mobile:min-h-[80px]',
           canDrop && 'border border-[#612BD3]'
         )}
       >
@@ -855,10 +901,16 @@ export const CalendarColumn: FC<{
             <div
               key={post.id}
               className={clsx(
-                'text-textColor p-[2.5px] relative flex flex-col justify-center items-center'
+                'text-textColor p-[2.5px] relative flex flex-col justify-center items-center min-w-0 overflow-hidden',
+                display === 'week' && 'max-md:p-[4px]'
               )}
             >
-              <div className="relative w-full flex flex-col items-center p-[2.5px]">
+              <div
+                className={clsx(
+                  'relative w-full flex flex-col items-center p-[2.5px] min-w-0 max-w-full',
+                  display === 'week' && 'max-md:p-[2px]'
+                )}
+              >
                 <CalendarItem
                   display={display as 'day' | 'week' | 'month'}
                   isBeforeNow={isBeforeNow}
@@ -903,8 +955,8 @@ export const CalendarColumn: FC<{
                 display === ('month' as any)
                   ? 'flex-1 min-h-[40px] w-full'
                   : !postList.length
-                  ? 'min-h-full w-full p-[5px]'
-                  : 'min-h-[40px] w-full',
+                    ? 'min-h-full w-full p-[5px]'
+                    : 'min-h-[40px] w-full',
                 'flex items-center justify-center cursor-pointer pb-[2.5px]'
               )}
             >
@@ -1027,8 +1079,9 @@ const CalendarItem: FC<{
       // @ts-ignore
       ref={dragRef}
       className={clsx(
-        'w-full flex h-full flex-1 flex-col group',
+        'w-full flex h-full flex-1 flex-col group overflow-hidden max-w-full',
         'relative',
+        display === 'week' && 'min-h-[76px] mobile:min-h-[72px]',
         state === 'ERROR' && 'rounded-[10px] ring-2 ring-red-500'
       )}
       style={{
@@ -1044,9 +1097,23 @@ const CalendarItem: FC<{
           !
         </div>
       )}
+      {display === 'week' && (
+        <div
+          className={clsx(
+            'md:hidden h-[4px] w-full shrink-0',
+            !post?.tags?.[0]?.tag?.color && 'bg-btnPrimary'
+          )}
+          style={
+            post?.tags?.[0]?.tag?.color
+              ? { backgroundColor: post.tags[0].tag.color }
+              : undefined
+          }
+        />
+      )}
       <div
         className={clsx(
-          'text-white text-[11px] max-h-[24px] h-[24px] min-h-[24px] w-full rounded-tr-[10px] rounded-tl-[10px] flex items-center justify-center gap-[10px] px-[5px] bg-btnPrimary'
+          'text-white text-[11px] max-h-[24px] h-[24px] min-h-[24px] w-full rounded-tr-[10px] rounded-tl-[10px] flex items-center justify-center gap-[10px] px-[5px] bg-btnPrimary',
+          display === 'week' && 'max-md:hidden'
         )}
         style={{
           backgroundColor: post?.tags?.[0]?.tag?.color,
@@ -1128,30 +1195,52 @@ const CalendarItem: FC<{
         onClick={editPost}
         className={clsx(
           'gap-[5px] w-full flex h-full flex-1 rounded-br-[10px] rounded-bl-[10px] p-[8px] text-[14px] bg-newColColor',
-          'relative',
+          'relative min-w-0',
+          display === 'week' &&
+          'max-md:flex-col max-md:items-center max-md:justify-center max-md:p-[6px] max-md:gap-[4px] max-md:rounded-[8px]',
           isBeforeNow && '!grayscale'
         )}
       >
-        <div className={clsx('relative min-w-[20px]')}>
+        <div
+          className={clsx(
+            'relative shrink-0',
+            display === 'week' ? 'max-md:mx-auto' : 'min-w-[20px]'
+          )}
+        >
           <img
-            className="w-[20px] h-[20px] rounded-[8px]"
+            className={clsx(
+              'rounded-[8px]',
+              display === 'week'
+                ? 'w-[20px] h-[20px] max-md:w-[30px] max-md:h-[30px]'
+                : 'w-[20px] h-[20px]'
+            )}
             src={post.integration.picture! || '/no-picture.svg'}
           />
           <img
-            className="w-[12px] h-[12px] rounded-[8px] absolute z-10 top-[10px] end-0 border border-fifth"
+            className={clsx(
+              'rounded-[8px] absolute z-10 border border-fifth',
+              display === 'week'
+                ? 'w-[12px] h-[12px] top-[10px] end-0 max-md:w-[14px] max-md:h-[14px] max-md:top-[18px] max-md:end-[-2px]'
+                : 'w-[12px] h-[12px] top-[10px] end-0'
+            )}
             src={`/icons/platforms/${post.integration?.providerIdentifier}.png`}
           />
         </div>
-        <div className="w-full flex-1 flex flex-col min-h-[40px]">
+        <div
+          className={clsx(
+            'w-full flex-1 flex flex-col min-h-[40px] min-w-0',
+            display === 'week' && 'max-md:hidden'
+          )}
+        >
           <div className="text-start">
             {state === 'DRAFT' ? t('draft', 'Draft') + ': ' : ''}
           </div>
-            <div className="w-full relative">
-              <div className="absolute top-0 start-0 w-full text-ellipsis break-words line-clamp-1 text-start">
-                {stripHtmlValidation('none', post.content, false, true, false) ||
-                  t('no_content', 'no content')}
-              </div>
+          <div className="w-full relative">
+            <div className="absolute top-0 start-0 w-full text-ellipsis break-words line-clamp-1 text-start">
+              {stripHtmlValidation('none', post.content, false, true, false) ||
+                t('no_content', 'no content')}
             </div>
+          </div>
         </div>
         {showTime && (
           <div className="text-textColor/50 text-[12px] whitespace-nowrap flex items-center">
