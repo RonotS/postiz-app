@@ -668,6 +668,94 @@ export class IntegrationRepository {
     });
   }
 
+  /** Find X channel(s) that published this tweet id (releaseId). */
+  findXChannelsByPostReleaseId(releaseId: string) {
+    const id = String(releaseId ?? '').trim();
+    if (!id) {
+      return Promise.resolve([]);
+    }
+    return this._posts.model.post.findMany({
+      where: {
+        releaseId: id,
+        deletedAt: null,
+        state: 'PUBLISHED',
+        integration: {
+          providerIdentifier: 'x',
+          deletedAt: null,
+          disabled: false,
+        },
+      },
+      select: {
+        integration: {
+          select: {
+            id: true,
+            profile: true,
+            organizationId: true,
+          },
+        },
+      },
+      take: 5,
+    }).then((rows) => rows.map((r) => r.integration).filter(Boolean));
+  }
+
+  findActiveXIntegrationsByProfile(profile: string) {
+    const normalized = profile.trim().replace(/^@+/i, '').toLowerCase();
+    if (!normalized) {
+      return Promise.resolve([]);
+    }
+    return this._integration.model.integration.findMany({
+      where: {
+        providerIdentifier: 'x',
+        deletedAt: null,
+        disabled: false,
+        profile: {
+          equals: normalized,
+          mode: 'insensitive',
+        },
+      },
+    });
+  }
+
+  /** X channels to register on TweetStream (profile handle required). */
+  listXIntegrationsForTweetStreamSync() {
+    const trackAll =
+      process.env.TWEETSTREAM_TRACK_ALL_X?.trim() === 'true' ||
+      process.env.TWEETSTREAM_TRACK_ALL_X?.trim() === '1';
+
+    if (trackAll) {
+      return this._integration.model.integration.findMany({
+        where: {
+          providerIdentifier: 'x',
+          deletedAt: null,
+          disabled: false,
+          profile: { not: null },
+        },
+        select: { profile: true },
+      });
+    }
+
+    return this._plugs.model.plugs.findMany({
+      where: {
+        activated: true,
+        plugFunction: {
+          in: ['autoDmEngagers', 'autoDmFollowers', 'autoDmPinnedPost'],
+        },
+        integration: {
+          providerIdentifier: 'x',
+          deletedAt: null,
+          disabled: false,
+          profile: { not: null },
+        },
+      },
+      select: {
+        integration: { select: { profile: true } },
+      },
+      distinct: ['integrationId'],
+    }).then((rows) =>
+      rows.map((r) => ({ profile: r.integration.profile }))
+    );
+  }
+
   getActivePlugByFunction(
     organizationId: string,
     integrationId: string,
@@ -725,11 +813,11 @@ export class IntegrationRepository {
         integrationId,
         deletedAt: null,
         state: 'PUBLISHED',
-        releaseId: { not: null },
+        releaseId: { not: null, notIn: ['missing', ''] },
       },
       orderBy: [{ updatedAt: 'desc' }, { publishDate: 'desc' }],
       take,
-      select: { releaseId: true },
+      select: { releaseId: true, settings: true },
     });
   }
 
@@ -948,6 +1036,38 @@ export class IntegrationRepository {
         value: p,
       })),
       skipDuplicates: true,
+    });
+  }
+
+  async deleteExisingDataValues(
+    methodName: string,
+    integrationId: string,
+    values: string[]
+  ) {
+    if (!values.length) {
+      return { count: 0 };
+    }
+    return this._exisingPlugData.model.exisingPlugData.deleteMany({
+      where: {
+        integrationId,
+        methodName,
+        value: { in: values },
+      },
+    });
+  }
+
+  async listExisingDataWithPrefix(
+    methodName: string,
+    integrationId: string,
+    prefix: string
+  ) {
+    return this._exisingPlugData.model.exisingPlugData.findMany({
+      where: {
+        integrationId,
+        methodName,
+        value: { startsWith: prefix },
+      },
+      select: { value: true },
     });
   }
 

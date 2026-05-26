@@ -35,6 +35,8 @@
     "prisma-db-push": "pnpm exec prisma db push --accept-data-loss --schema ./libraries/nestjs-libraries/src/database/prisma/schema.prisma",
     "prisma-db-pull": "pnpm exec prisma db pull --schema ./libraries/nestjs-libraries/src/database/prisma/schema.prisma",
     "prisma-reset": "cd ./libraries/nestjs-libraries/src/database/prisma && pnpm exec prisma db push --force-reset && pnpm exec prisma db push",
+    "tweetstream:me": "node ./scripts/tweetstream-cli.mjs me",
+    "tweetstream:listen": "node ./scripts/tweetstream-cli.mjs listen --seconds=30",
     "docker-build": "./var/docker/docker-build.sh",
     "docker-create": "./var/docker/docker-create.sh",
     "postinstall": "pnpm run prisma-generate",

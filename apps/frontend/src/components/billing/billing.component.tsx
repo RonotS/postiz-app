@@ -4,7 +4,7 @@ import { useCallback, useEffect } from 'react';
 import useSWR from 'swr';
 import { LoadingComponent } from '@gitroom/frontend/components/layout/loading';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
-import { MainBillingComponent } from './main.billing.component';
+import { BillingAccountComponent } from './billing-account.component';
 export const BillingComponent = () => {
   const fetch = useFetch();
   const load = useCallback(async (path: string) => {
@@ -21,5 +21,7 @@ export const BillingComponent = () => {
   if (isLoadingSubscription || isLoadingTier) {
     return <LoadingComponent />;
   }
-  return <MainBillingComponent sub={subscription?.subscription} />;
+  return (
+    <BillingAccountComponent sub={subscription?.subscription} />
+  );
 };

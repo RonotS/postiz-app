@@ -208,7 +208,19 @@ export class UsersRepository {
           select: {
             role: true,
             organization: {
-              select: { id: true, name: true },
+              select: {
+                id: true,
+                name: true,
+                subscription: {
+                  where: { deletedAt: null },
+                  select: {
+                    subscriptionTier: true,
+                    period: true,
+                    cancelAt: true,
+                    isLifetime: true,
+                  },
+                },
+              },
             },
           },
           orderBy: { createdAt: 'asc' },

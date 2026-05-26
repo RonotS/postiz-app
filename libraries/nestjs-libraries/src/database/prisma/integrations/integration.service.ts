@@ -32,11 +32,17 @@ import {
   xEngagementPollerWorkflowId,
   xProfileAutomationsPollerWorkflowId,
   X_ENGAGEMENT_PLUG_FUNCTIONS,
+  X_FOLLOWER_DM_POLL_RELEASE_ID,
   X_PROFILE_AUTOMATION_PLUG_FUNCTIONS,
+  X_PROFILE_AUTOMATIONS_POLL_RELEASE_ID,
   type XEngagementPlugFunction,
   type XProfileAutomationPlugFunction,
 } from '@gitroom/nestjs-libraries/temporal/x.follower.dm.constants';
-import { resolveXPollIntervalMs } from '@gitroom/helpers/x/x.poll-interval.env';
+import { acquireXPollerTickLock } from '@gitroom/nestjs-libraries/integrations/social/x-poller-tick.guard';
+import {
+  resolveXPollIntervalMs,
+  resolveXEngagementPollIntervalMs,
+} from '@gitroom/helpers/x/x.poll-interval.env';
 import {
   X_ENGAGEMENT_MAX_POSTS_PER_TICK,
 } from '@gitroom/nestjs-libraries/integrations/social/x-plug-batch-rate-limit';
@@ -44,6 +50,7 @@ import {
   addQueuedEstimate,
   buildXPlugBatchRateLimitStatus,
   createDmBatchGate,
+  isXPlugDmWindowFull,
   decayQueuedEstimate,
 } from '@gitroom/nestjs-libraries/integrations/social/x-plug-batch-rate-limit.store';
 import { XAccountActivityService } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.service';
@@ -63,10 +70,25 @@ import {
   recordXUnfollowsForIntegration,
 } from '@gitroom/nestjs-libraries/integrations/social/x-follow-rate-limit.store';
 import {
+  cancelXFollowQueueItem,
+  clearXFollowQueueCompleted,
+  enqueueXFollowQueueItems,
+  getXFollowQueueStatus,
+  listIntegrationIdsWithPendingQueue,
+  processXFollowQueueBatch,
+} from '@gitroom/nestjs-libraries/integrations/social/x-follow-queue.store';
+import {
   getXAccountActivityRedisSubscribedKey,
   isXAccountActivityPollingDisabled,
   isXAccountActivityWebhooksEnabled,
+  isXEngagementPollingDisabled,
 } from '@gitroom/helpers/x/x.account-activity.env';
+import {
+  isPostizBackendWorker,
+  isTweetStreamFollowerPollingDisabled,
+} from '@gitroom/helpers/x/tweetstream.env';
+import { isTweetStreamWsConsumerActive } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.ws-state';
+import { TweetStreamService } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.service';
 
 dayjs.extend(utc);
 
@@ -82,15 +104,25 @@ export class IntegrationService implements OnModuleInit {
     private _refreshIntegrationService: RefreshIntegrationService,
     private _temporalService: TemporalService,
     private _xAccountActivity: XAccountActivityService,
-    private _xAccountActivityHandler: XAccountActivityHandler
+    private _xAccountActivityHandler: XAccountActivityHandler,
+    private _tweetStream: TweetStreamService
   ) { }
 
   async onModuleInit(): Promise<void> {
-    if (process.env.RUN_CRON) {
-      void this.bootstrapXPlugPollers().catch((err) =>
+    if (process.env.RUN_CRON && isPostizBackendWorker()) {
+      void this.bootstrapXPlugPollersWhenTemporalReady().catch((err) =>
         console.error('bootstrapXPlugPollers:', err)
       );
     }
+    const queueIntervalMs = Math.max(
+      15_000,
+      Number(process.env.X_FOLLOW_QUEUE_POLL_MS) || 60_000
+    );
+    setInterval(() => {
+      void this.processAllPendingXFollowQueues().catch((err) =>
+        console.error('processAllPendingXFollowQueues:', err)
+      );
+    }, queueIntervalMs);
   }
 
   async changeActiveCron(orgId: string) {
@@ -191,6 +223,9 @@ export class IntegrationService implements OnModuleInit {
       void this.syncXAccountActivitySubscription(row).catch((err) =>
         console.error('syncXAccountActivitySubscription:', err)
       );
+      void this.syncTweetStreamForIntegration(row).catch((err) =>
+        console.error('syncTweetStreamForIntegration:', err)
+      );
     }
 
     return row;
@@ -252,6 +287,9 @@ export class IntegrationService implements OnModuleInit {
     if (integration.providerIdentifier === 'x') {
       void this.unsyncXAccountActivitySubscription(integration).catch((err) =>
         console.error('unsyncXAccountActivitySubscription:', err)
+      );
+      void this.syncTweetStreamMonitoredAccounts().catch((err) =>
+        console.error('syncTweetStreamMonitoredAccounts:', err)
       );
     }
     await this._integrationRepository.disconnectChannel(orgId, integration.id);
@@ -321,6 +359,28 @@ export class IntegrationService implements OnModuleInit {
     if (integration) {
       await this.syncXAccountActivitySubscription(integration);
     }
+  }
+
+  async syncTweetStreamMonitoredAccounts() {
+    if (!this._tweetStream.isEnabled()) {
+      return { desired: [] as string[] };
+    }
+    return this._tweetStream.syncMonitoredAccounts();
+  }
+
+  async getTweetStreamStatus() {
+    return this._tweetStream.getStatus();
+  }
+
+  async listTweetStreamRecentEvents(limit?: number) {
+    return this._tweetStream.listRecentEvents(limit);
+  }
+
+  private async syncTweetStreamForIntegration(integration: Integration) {
+    if (integration.providerIdentifier !== 'x' || !integration.profile?.trim()) {
+      return;
+    }
+    await this.syncTweetStreamMonitoredAccounts();
   }
 
   async informAboutRefreshError(
@@ -615,6 +675,35 @@ export class IntegrationService implements OnModuleInit {
       return true;
     }
 
+    if (getPlugById.integration.providerIdentifier === 'x') {
+      const integrationId = getPlugById.integration.id;
+      if (data.postId === X_FOLLOWER_DM_POLL_RELEASE_ID) {
+        const intervalMs = resolveXPollIntervalMs(
+          'X_FOLLOWER_DM_POLL_INTERVAL_MS'
+        );
+        const acquired = await acquireXPollerTickLock(
+          'follower',
+          integrationId,
+          intervalMs
+        );
+        if (!acquired) {
+          return true;
+        }
+      } else if (data.postId === X_PROFILE_AUTOMATIONS_POLL_RELEASE_ID) {
+        const intervalMs = resolveXPollIntervalMs(
+          'X_PROFILE_AUTOMATIONS_POLL_INTERVAL_MS'
+        );
+        const acquired = await acquireXPollerTickLock(
+          'profile',
+          integrationId,
+          intervalMs
+        );
+        if (!acquired) {
+          return true;
+        }
+      }
+    }
+
     const integration = this._integrationManager.getSocialIntegration(
       getPlugById.integration.providerIdentifier
     );
@@ -755,6 +844,25 @@ export class IntegrationService implements OnModuleInit {
         if (userIds.length === 0) return;
         const values = userIds.map((uid) => `fds:${uid}`);
         await this._integrationRepository.saveExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          values
+        );
+      },
+      listFollowerSnapshotUserIds: async () => {
+        const rows = await this._integrationRepository.listExisingDataWithPrefix(
+          getPlugById.plugFunction,
+          integrationId,
+          'fds:'
+        );
+        return rows
+          .map((r) => r.value.replace(/^fds:/, ''))
+          .filter(Boolean);
+      },
+      removeFollowerTracking: async (userIds: string[]) => {
+        if (!userIds.length) return;
+        const values = userIds.flatMap((uid) => [`fdm:${uid}`, `fds:${uid}`]);
+        await this._integrationRepository.deleteExisingDataValues(
           getPlugById.plugFunction,
           integrationId,
           values
@@ -926,30 +1034,58 @@ export class IntegrationService implements OnModuleInit {
     await this.syncEngagementPoller(organizationId, integrationId);
   }
 
+  /**
+   * Follower-DM poller runs when TweetStream WS is down, even if
+   * TWEETSTREAM_DISABLE_FOLLOWER_POLLING=true (that flag only applies while WS is live).
+   */
+  private async shouldRunFollowerDmPoller(): Promise<boolean> {
+    if (isXAccountActivityPollingDisabled()) {
+      return false;
+    }
+    if (!isTweetStreamFollowerPollingDisabled()) {
+      return true;
+    }
+    return !(await isTweetStreamWsConsumerActive());
+  }
+
+  /**
+   * Start/stop follower-DM pollers based on TweetStream WebSocket availability.
+   */
+  async syncFollowerDmPollersWithTweetStreamFallback(): Promise<void> {
+    const plugs =
+      await this._integrationRepository.listActiveFollowerDmPlugs();
+    const wsActive = await isTweetStreamWsConsumerActive();
+    for (const plug of plugs) {
+      if (wsActive && isTweetStreamFollowerPollingDisabled()) {
+        await this.stopXFollowerDmPollerWorkflow(plug.integrationId);
+        continue;
+      }
+      if (await this.shouldRunFollowerDmPoller()) {
+        await this.startXFollowerDmPollerWorkflow(
+          plug.organizationId,
+          plug.integrationId,
+          plug.id
+        );
+      }
+    }
+  }
+
   private async startXFollowerDmPollerWorkflow(
     organizationId: string,
     integrationId: string,
     plugId: string
   ): Promise<void> {
-    if (isXAccountActivityPollingDisabled()) {
+    if (!(await this.shouldRunFollowerDmPoller())) {
       return;
     }
-    const raw = this._temporalService.client?.getRawClient();
-    if (!raw) return;
-    const workflowId = xFollowerDmPollerWorkflowId(integrationId);
     const pollIntervalMs = resolveXPollIntervalMs(
       'X_FOLLOWER_DM_POLL_INTERVAL_MS'
     );
-    try {
-      await raw.workflow.start('xFollowerDmPollerWorkflow', {
-        taskQueue: 'main',
-        workflowId,
-        workflowIdConflictPolicy: 'TERMINATE_EXISTING',
-        args: [{ organizationId, integrationId, plugId, pollIntervalMs }],
-      });
-    } catch (err) {
-      console.error('startXFollowerDmPollerWorkflow:', err);
-    }
+    await this.startForeverPollerIfNotRunning(
+      'xFollowerDmPollerWorkflow',
+      xFollowerDmPollerWorkflowId(integrationId),
+      [{ organizationId, integrationId, plugId, pollIntervalMs }]
+    );
   }
 
   private async stopXFollowerDmPollerWorkflow(
@@ -996,25 +1132,17 @@ export class IntegrationService implements OnModuleInit {
     organizationId: string,
     integrationId: string
   ): Promise<void> {
-    if (isXAccountActivityPollingDisabled()) {
+    if (isXEngagementPollingDisabled()) {
       return;
     }
-    const raw = this._temporalService.client?.getRawClient();
-    if (!raw) return;
-    const workflowId = xProfileAutomationsPollerWorkflowId(integrationId);
     const pollIntervalMs = resolveXPollIntervalMs(
       'X_PROFILE_AUTOMATIONS_POLL_INTERVAL_MS'
     );
-    try {
-      await raw.workflow.start('xProfileAutomationsPollerWorkflow', {
-        taskQueue: 'main',
-        workflowId,
-        workflowIdConflictPolicy: 'TERMINATE_EXISTING',
-        args: [{ organizationId, integrationId, pollIntervalMs }],
-      });
-    } catch (err) {
-      console.error('startXProfileAutomationsPollerWorkflow:', err);
-    }
+    await this.startForeverPollerIfNotRunning(
+      'xProfileAutomationsPollerWorkflow',
+      xProfileAutomationsPollerWorkflowId(integrationId),
+      [{ organizationId, integrationId, pollIntervalMs }]
+    );
   }
 
   private async stopXProfileAutomationsPollerWorkflow(
@@ -1062,12 +1190,35 @@ export class IntegrationService implements OnModuleInit {
    * Avoids TERMINATE_EXISTING on every plug upsert (attach flow), which caused
    * Temporal "Workflow task not found" warnings and reset the poll timer.
    */
+  /** Avoid throwing when nestjs-temporal-core is not connected yet (backend boot). */
+  private getTemporalRawClientSafe() {
+    try {
+      return this._temporalService.client?.getRawClient() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async bootstrapXPlugPollersWhenTemporalReady(): Promise<void> {
+    const maxAttempts = 24;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (this.getTemporalRawClientSafe()) {
+        await this.bootstrapXPlugPollers();
+        return;
+      }
+      await timer(5000);
+    }
+    console.warn(
+      'bootstrapXPlugPollers: Temporal client not ready after retries; pollers start on next plug sync or publish'
+    );
+  }
+
   private async startForeverPollerIfNotRunning(
     workflowType: string,
     workflowId: string,
     args: unknown[]
   ): Promise<void> {
-    const raw = this._temporalService.client?.getRawClient();
+    const raw = this.getTemporalRawClientSafe();
     if (!raw) {
       return;
     }
@@ -1102,12 +1253,10 @@ export class IntegrationService implements OnModuleInit {
     organizationId: string,
     integrationId: string
   ): Promise<void> {
-    if (isXAccountActivityPollingDisabled()) {
+    if (isXEngagementPollingDisabled()) {
       return;
     }
-    const pollIntervalMs = resolveXPollIntervalMs(
-      'X_ENGAGEMENT_POLL_INTERVAL_MS'
-    );
+    const pollIntervalMs = resolveXEngagementPollIntervalMs();
     await this.startForeverPollerIfNotRunning(
       'xEngagementPollerWorkflow',
       xEngagementPollerWorkflowId(integrationId),
@@ -1150,8 +1299,7 @@ export class IntegrationService implements OnModuleInit {
     releaseId: string,
     postSettings?: Record<string, unknown>
   ): Promise<void> {
-    const status = await buildXPlugBatchRateLimitStatus(integrationId);
-    if (status.limited) {
+    if (await isXPlugDmWindowFull(integrationId)) {
       return;
     }
 
@@ -1163,21 +1311,11 @@ export class IntegrationService implements OnModuleInit {
       return;
     }
 
-    const enabledFuncs = new Set<string>();
-    if (postSettings?.auto_dm_enabled === true) {
-      enabledFuncs.add('autoDmEngagers');
-    }
-    if (postSettings?.auto_retweet_enabled === true) {
-      enabledFuncs.add('autoRepostPost');
-    }
-    if (postSettings?.auto_thread_reply_enabled === true) {
-      enabledFuncs.add('autoThreadReply');
-    }
+    const plugsForPost = plugs.filter((plug) =>
+      this.isEngagementPlugActiveForPost(plug.plugFunction, postSettings)
+    );
 
-    for (const plug of plugs) {
-      if (enabledFuncs.size > 0 && !enabledFuncs.has(plug.plugFunction)) {
-        continue;
-      }
+    for (const plug of plugsForPost) {
       try {
         await this.processPlugs({
           plugId: plug.id,
@@ -1199,8 +1337,23 @@ export class IntegrationService implements OnModuleInit {
     organizationId: string,
     integrationId: string
   ): Promise<void> {
-    const status = await buildXPlugBatchRateLimitStatus(integrationId);
-    if (status.limited) {
+    void organizationId;
+
+    const pollIntervalMs = resolveXEngagementPollIntervalMs();
+    const acquired = await acquireXPollerTickLock(
+      'engagement',
+      integrationId,
+      pollIntervalMs
+    );
+    if (!acquired) {
+      return;
+    }
+
+    if (await isXPlugDmWindowFull(integrationId)) {
+      const status = await buildXPlugBatchRateLimitStatus(integrationId);
+      console.warn(
+        `X engagement poller: skipping tick integration=${integrationId} dmWindow=${status.dmWindow.count}/${status.dmWindow.limit}`
+      );
       return;
     }
 
@@ -1217,18 +1370,35 @@ export class IntegrationService implements OnModuleInit {
         integrationId,
         100
       );
-    const releaseIds = posts
-      .map((p) => p.releaseId)
-      .filter((id): id is string => !!id && id.trim().length > 0);
 
-    const toProcess = releaseIds.slice(0, X_ENGAGEMENT_MAX_POSTS_PER_TICK);
-    const skippedPosts = Math.max(0, releaseIds.length - toProcess.length);
+    const toProcess = posts
+      .filter((p) => !!p.releaseId?.trim())
+      .slice(0, X_ENGAGEMENT_MAX_POSTS_PER_TICK);
+
+    const skippedPosts = Math.max(0, posts.length - toProcess.length);
     if (skippedPosts > 0) {
       await addQueuedEstimate(integrationId, skippedPosts * plugs.length);
     }
 
-    for (const releaseId of toProcess) {
-      for (const plug of plugs) {
+    for (const post of toProcess) {
+      const releaseId = post.releaseId!.trim();
+      let postSettings: Record<string, unknown> | undefined;
+      if (post.settings) {
+        try {
+          postSettings = JSON.parse(post.settings) as Record<string, unknown>;
+        } catch {
+          postSettings = undefined;
+        }
+      }
+
+      const plugsForPost = plugs.filter((plug) =>
+        this.isEngagementPlugActiveForPost(plug.plugFunction, postSettings)
+      );
+      if (!plugsForPost.length) {
+        continue;
+      }
+
+      for (const plug of plugsForPost) {
         try {
           await this.processPlugs({
             plugId: plug.id,
@@ -1244,8 +1414,32 @@ export class IntegrationService implements OnModuleInit {
           );
         }
       }
-      await decayQueuedEstimate(integrationId, plugs.length);
+      await decayQueuedEstimate(integrationId, plugsForPost.length);
     }
+  }
+
+  /** Skip X API calls for posts with per-tweet automations turned off. */
+  private isEngagementPlugActiveForPost(
+    plugFunction: string,
+    postSettings?: Record<string, unknown>
+  ): boolean {
+    if (plugFunction === 'autoDmEngagers') {
+      return postSettings?.auto_dm_enabled !== false;
+    }
+    if (plugFunction === 'autoRepostPost') {
+      return postSettings?.auto_retweet_enabled === true;
+    }
+    if (plugFunction === 'autoThreadReply') {
+      return postSettings?.auto_thread_reply_enabled === true;
+    }
+    if (plugFunction === 'autoPlugPost') {
+      const text =
+        typeof postSettings?.auto_plug_reply_text === 'string'
+          ? postSettings.auto_plug_reply_text.trim()
+          : '';
+      return text.length >= 3;
+    }
+    return true;
   }
 
   async getXPlugBatchRateLimit(orgId: string, integrationId: string) {
@@ -1256,16 +1450,26 @@ export class IntegrationService implements OnModuleInit {
     return buildXPlugBatchRateLimitStatus(integrationId);
   }
 
-  /** Restarts forever X plug pollers at the current default interval (5 min). */
+  /**
+   * Ensures forever X pollers exist. Does not terminate running workflows (avoids
+   * restart API credit spikes). Skips kinds disabled via env / TweetStream.
+   */
   async bootstrapXPlugPollers(): Promise<void> {
-    if (isXAccountActivityPollingDisabled()) {
-      return;
-    }
+    if (!isXEngagementPollingDisabled()) {
+      const engagement =
+        await this._integrationRepository.listXIntegrationsWithActiveEngagementPlugs();
+      for (const row of engagement) {
+        await this.syncEngagementPoller(row.organizationId, row.integrationId);
+      }
 
-    const engagement =
-      await this._integrationRepository.listXIntegrationsWithActiveEngagementPlugs();
-    for (const row of engagement) {
-      await this.syncEngagementPoller(row.organizationId, row.integrationId);
+      const profile =
+        await this._integrationRepository.listXIntegrationsWithActiveProfileAutomationPlugs();
+      for (const row of profile) {
+        await this.syncProfileAutomationsPoller(
+          row.organizationId,
+          row.integrationId
+        );
+      }
     }
 
     const followerPlugs =
@@ -1275,15 +1479,6 @@ export class IntegrationService implements OnModuleInit {
         plug.organizationId,
         plug.integrationId,
         plug.id
-      );
-    }
-
-    const profile =
-      await this._integrationRepository.listXIntegrationsWithActiveProfileAutomationPlugs();
-    for (const row of profile) {
-      await this.syncProfileAutomationsPoller(
-        row.organizationId,
-        row.integrationId
       );
     }
   }
@@ -1300,9 +1495,18 @@ export class IntegrationService implements OnModuleInit {
     );
 
     if (body.func === 'autoDmFollowers' && row.activated) {
-      if (!isXAccountActivityPollingDisabled()) {
-        await this.startXFollowerDmPollerWorkflow(orgId, integrationId, row.id);
-      }
+      await this.startXFollowerDmPollerWorkflow(orgId, integrationId, row.id);
+    }
+
+    if (
+      (body.func === 'autoDmEngagers' ||
+        body.func === 'autoDmFollowers' ||
+        body.func === 'autoDmPinnedPost') &&
+      row.activated
+    ) {
+      void this.syncTweetStreamMonitoredAccounts().catch((err) =>
+        console.error('syncTweetStreamMonitoredAccounts:', err)
+      );
     }
 
     if (this.isProfileAutomationPlug(body.func) && row.activated) {
@@ -1334,13 +1538,11 @@ export class IntegrationService implements OnModuleInit {
 
     if (updated.plugFunction === 'autoDmFollowers') {
       if (status) {
-        if (!isXAccountActivityPollingDisabled()) {
-          await this.startXFollowerDmPollerWorkflow(
-            orgId,
-            updated.integrationId,
-            plugId
-          );
-        }
+        await this.startXFollowerDmPollerWorkflow(
+          orgId,
+          updated.integrationId,
+          plugId
+        );
         if (isXAccountActivityWebhooksEnabled()) {
           void this.syncXAccountActivityForIntegrationId(
             orgId,
@@ -1604,6 +1806,99 @@ export class IntegrationService implements OnModuleInit {
         'Unfollow request failed';
       throw new HttpException(String(msg), HttpStatus.BAD_REQUEST);
     }
+  }
+
+  private async assertActiveXIntegration(orgId: string, integrationId: string) {
+    const integration = await this.getIntegrationById(orgId, integrationId);
+    if (!integration || integration.providerIdentifier !== 'x') {
+      throw new HttpException('Invalid X integration', HttpStatus.BAD_REQUEST);
+    }
+    if (integration.disabled || integration.deletedAt) {
+      throw new HttpException('Channel is disabled', HttpStatus.BAD_REQUEST);
+    }
+    if (integration.refreshNeeded) {
+      throw new HttpException(
+        'Reconnect this X channel before following users',
+        HttpStatus.BAD_REQUEST
+      );
+    }
+    return integration;
+  }
+
+  async processAllPendingXFollowQueues(): Promise<void> {
+    const pending = await listIntegrationIdsWithPendingQueue();
+    for (const { integrationId, orgId } of pending) {
+      try {
+        await this.processXFollowQueue(orgId, integrationId);
+      } catch {
+        // skip invalid/disabled integrations until user fixes
+      }
+    }
+  }
+
+  async getXFollowQueue(orgId: string, integrationId: string) {
+    await this.assertActiveXIntegration(orgId, integrationId);
+    await this.processXFollowQueue(orgId, integrationId);
+    return getXFollowQueueStatus(integrationId, orgId);
+  }
+
+  async enqueueXFollowQueue(
+    orgId: string,
+    integrationId: string,
+    entries: {
+      targetUserId: string;
+      targetUsername?: string;
+      targetName?: string;
+    }[]
+  ) {
+    await this.assertActiveXIntegration(orgId, integrationId);
+    const result = await enqueueXFollowQueueItems(
+      integrationId,
+      orgId,
+      entries
+    );
+    await this.processXFollowQueue(orgId, integrationId);
+    const status = await getXFollowQueueStatus(integrationId, orgId);
+    return { ...result, status };
+  }
+
+  async processXFollowQueue(orgId: string, integrationId: string) {
+    const integration = await this.assertActiveXIntegration(
+      orgId,
+      integrationId
+    );
+    const x = this._integrationManager.getSocialIntegration('x') as XProvider;
+    return processXFollowQueueBatch(integrationId, orgId, async (userIds) => {
+      try {
+        return await x.followUsers(integration, userIds);
+      } catch (err: any) {
+        const msg =
+          err?.data?.detail ||
+          err?.data?.title ||
+          err?.message ||
+          'Follow request failed';
+        throw new HttpException(String(msg), HttpStatus.BAD_REQUEST);
+      }
+    });
+  }
+
+  async cancelXFollowQueueItem(
+    orgId: string,
+    integrationId: string,
+    itemId: string
+  ) {
+    await this.assertActiveXIntegration(orgId, integrationId);
+    const ok = await cancelXFollowQueueItem(integrationId, itemId);
+    if (!ok) {
+      throw new HttpException('Queue item not found', HttpStatus.NOT_FOUND);
+    }
+    return getXFollowQueueStatus(integrationId, orgId);
+  }
+
+  async clearXFollowQueueCompleted(orgId: string, integrationId: string) {
+    await this.assertActiveXIntegration(orgId, integrationId);
+    const removed = await clearXFollowQueueCompleted(integrationId);
+    return { removed, status: await getXFollowQueueStatus(integrationId, orgId) };
   }
 
   async findFreeDateTime(

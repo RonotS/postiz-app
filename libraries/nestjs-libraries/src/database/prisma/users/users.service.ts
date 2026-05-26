@@ -74,6 +74,16 @@ export class UsersService {
         role: m.role,
         organizationId: m.organization.id,
         organizationName: m.organization.name,
+        subscriptionTier:
+          m.organization.subscription?.subscriptionTier ?? 'FREE',
+        subscriptionPeriod: m.organization.subscription?.period ?? null,
+        subscriptionCancelAt: m.organization.subscription?.cancelAt
+          ? m.organization.subscription.cancelAt instanceof Date
+            ? m.organization.subscription.cancelAt.toISOString()
+            : String(m.organization.subscription.cancelAt)
+          : null,
+        subscriptionLifetime:
+          m.organization.subscription?.isLifetime ?? false,
       })),
     }));
   }

@@ -170,7 +170,7 @@ const Accept: FC<{ resolve: (res: boolean) => void }> = ({ resolve }) => {
     </div>
   );
 };
-const Info: FC<{
+export const BillingCancelFeedbackForm: FC<{
   proceed: (feedback: string) => void;
 }> = (props) => {
   const [feedback, setFeedback] = useState('');
@@ -203,10 +203,8 @@ const Info: FC<{
         />
       </div>
       <div>
-        <Button disabled={feedback.length < 20} onClick={cancel}>
-          {feedback.length < 20
-            ? t('please_add_at_least', 'Please add at least 20 chars')
-            : t('cancel_subscription', 'Cancel Subscription')}
+        <Button onClick={cancel}>
+          {t('cancel_subscription', 'Cancel Subscription')}
         </Button>
       </div>
     </div>
@@ -350,7 +348,7 @@ export const MainBillingComponent: FC<{
                 classNames: {
                   modal: 'bg-transparent text-textColor',
                 },
-                children: <Info proceed={(e) => res(e)} />,
+                children: <BillingCancelFeedbackForm proceed={(e) => res(e)} />,
               });
             });
 

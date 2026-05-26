@@ -1,14 +1,15 @@
 import { proxyActivities, sleep } from '@temporalio/workflow';
 import { PostActivity } from '@gitroom/orchestrator/activities/post.activity';
 import { X_FOLLOWER_DM_POLL_RELEASE_ID } from '@gitroom/nestjs-libraries/temporal/x.follower.dm.constants';
+import { staggerMsFromIntegrationId } from '@gitroom/nestjs-libraries/temporal/x.poller.workflow.helpers';
 
 const { processPlug, isFollowerDmPlugActive } = proxyActivities<PostActivity>({
   startToCloseTimeout: '10 minute',
   taskQueue: 'x',
   retry: {
-    maximumAttempts: 3,
+    maximumAttempts: 2,
     backoffCoefficient: 1,
-    initialInterval: '2 minutes',
+    initialInterval: '30 seconds',
   },
 });
 
@@ -18,7 +19,7 @@ const { processPlug, isFollowerDmPlugActive } = proxyActivities<PostActivity>({
  */
 export async function xFollowerDmPollerWorkflow({
   organizationId: _organizationId,
-  integrationId: _integrationId,
+  integrationId,
   plugId,
   pollIntervalMs = 300_000,
 }: {
@@ -29,9 +30,10 @@ export async function xFollowerDmPollerWorkflow({
   pollIntervalMs?: number;
 }): Promise<void> {
   void _organizationId;
-  void _integrationId;
 
   const tickMs = Math.max(30_000, Math.min(3_600_000, pollIntervalMs));
+
+  await sleep(staggerMsFromIntegrationId(integrationId, tickMs));
 
   while (true) {
     const active = await isFollowerDmPlugActive(plugId);

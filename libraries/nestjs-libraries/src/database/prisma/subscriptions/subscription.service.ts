@@ -275,4 +275,50 @@ export class SubscriptionService {
       orgId
     );
   }
+
+  /**
+   * Platform admin: set an organization's tier without Stripe (comp / support).
+   * Does not cancel an existing Stripe subscription — use billing admin for that.
+   */
+  async adminSetOrganizationSubscription(
+    organizationId: string,
+    tier: 'FREE' | 'STANDARD' | 'TEAM' | 'PRO' | 'ULTIMATE',
+    period: 'MONTHLY' | 'YEARLY' = 'MONTHLY'
+  ) {
+    const channels = pricing[tier].channel ?? 0;
+    await this.modifySubscriptionByOrg(organizationId, channels, tier);
+
+    if (tier === 'FREE') {
+      await this._subscriptionRepository.softDeleteSubscriptionsForOrganization(
+        organizationId
+      );
+      return { organizationId, tier, period: null };
+    }
+
+    const customerRow =
+      await this._subscriptionRepository.getCustomerIdByOrgId(organizationId);
+    const customerId =
+      customerRow?.paymentId?.trim() || `admin_${organizationId}`;
+
+    if (!customerRow?.paymentId) {
+      await this._subscriptionRepository.updateCustomerId(
+        organizationId,
+        customerId
+      );
+    }
+
+    await this.createOrUpdateSubscription(
+      false,
+      `admin_${organizationId}`,
+      customerId,
+      channels,
+      tier,
+      period,
+      null,
+      undefined,
+      organizationId
+    );
+
+    return { organizationId, tier, period };
+  }
 }

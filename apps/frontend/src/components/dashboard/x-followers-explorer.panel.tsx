@@ -59,6 +59,15 @@ import {
   mergeFollowerPages,
   XFollowersExplorerTable,
 } from '@gitroom/frontend/components/dashboard/x-followers-explorer-table';
+import { formatCompactCount } from '@gitroom/frontend/components/dashboard/follower-list-filters';
+import { XFollowQueuePanel } from '@gitroom/frontend/components/dashboard/x-follow-queue.panel';
+import { useXFollowQueue } from '@gitroom/frontend/components/dashboard/use-x-follow-queue';
+import {
+  DEFAULT_EXPLORER_ADVANCED_FILTERS,
+  type ExplorerAdvancedFilters,
+  countActiveAdvancedFilters,
+} from '@gitroom/frontend/components/dashboard/follower-explorer-advanced-filters';
+import { XFollowersExplorerFiltersPanel } from '@gitroom/frontend/components/dashboard/x-followers-explorer-filters.panel';
 
 type FollowerUser = FollowerListUser;
 
@@ -179,7 +188,10 @@ export const XFollowersExplorerPanel: FC = () => {
   const [tableSearch, setTableSearch] = useState('');
   const [hideWhitelisted, setHideWhitelisted] = useState(true);
   const [hideBlacklisted, setHideBlacklisted] = useState(true);
-  const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [advancedFilters, setAdvancedFilters] =
+    useState<ExplorerAdvancedFilters>(DEFAULT_EXPLORER_ADVANCED_FILTERS);
+  const [filtersCollapsed, setFiltersCollapsed] = useState(true);
+  const [lastLoadedAt, setLastLoadedAt] = useState<number | null>(null);
   const [tablePage, setTablePage] = useState(1);
   const [sortColumn, setSortColumn] = useState<SpreadsheetColumn | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
@@ -249,6 +261,7 @@ export const XFollowersExplorerPanel: FC = () => {
       whitelist,
       blacklist,
       visibility: { hideWhitelisted, hideBlacklisted },
+      advanced: advancedFilters,
     }),
     [
       engagementFilter,
@@ -257,6 +270,7 @@ export const XFollowersExplorerPanel: FC = () => {
       blacklist,
       hideWhitelisted,
       hideBlacklisted,
+      advancedFilters,
     ]
   );
 
@@ -264,6 +278,14 @@ export const XFollowersExplorerPanel: FC = () => {
     () => filterAndSortFollowers(users, listFilter, listSort, followerFilterOpts),
     [users, listFilter, listSort, followerFilterOpts]
   );
+
+  useEffect(() => {
+    const mq = window.matchMedia('(min-width: 1280px)');
+    const sync = () => setFiltersCollapsed(!mq.matches);
+    sync();
+    mq.addEventListener('change', sync);
+    return () => mq.removeEventListener('change', sync);
+  }, []);
 
   useEffect(() => {
     usersRef.current = users;
@@ -294,7 +316,19 @@ export const XFollowersExplorerPanel: FC = () => {
     tableSearch,
     hideWhitelisted,
     hideBlacklisted,
+    advancedFilters,
   ]);
+
+  const patchAdvancedFilters = useCallback(
+    (patch: Partial<ExplorerAdvancedFilters>) => {
+      setAdvancedFilters((prev) => ({ ...prev, ...patch }));
+    },
+    []
+  );
+
+  const resetAdvancedFilters = useCallback(() => {
+    setAdvancedFilters(DEFAULT_EXPLORER_ADVANCED_FILTERS);
+  }, []);
 
   useEffect(() => {
     if (!integrationId) {
@@ -399,6 +433,7 @@ export const XFollowersExplorerPanel: FC = () => {
     );
     setUsers(cappedUsers);
     setNextToken(token);
+    setLastLoadedAt(Date.now());
     const subjectItem = toBreadcrumbItem({
       ...page.subject,
       name: page.subject.name,
@@ -452,7 +487,7 @@ export const XFollowersExplorerPanel: FC = () => {
     setLoading(true);
     setSelected(new Set());
     try {
-      const page = await loadFollowers({ username: handle });
+      const page = await loadFollowers({ username: handle, listMode });
       if (!page) return;
       const subject = page.subject;
       setTrail([toBreadcrumbItem(subject)]);
@@ -466,11 +501,31 @@ export const XFollowersExplorerPanel: FC = () => {
     }
   }, [searchQuery, integrationId, loadFollowers, applyFollowerPage, t, toast]);
 
-  useEffect(() => {
-    if (integrationId) {
-      void resetAndLoadRoot();
-    }
-  }, [integrationId, listMode]);
+  const reloadCurrentSubjectList = useCallback(
+    async (mode: ListMode) => {
+      const subject = trail[trail.length - 1];
+      if (!subject?.id || !integrationId) return;
+      setLoading(true);
+      setSelected(new Set());
+      try {
+        const page = await loadFollowers({
+          subjectUserId: subject.id,
+          listMode: mode,
+        });
+        if (!page) return;
+        setListMode(mode);
+        setTablePage(1);
+        applyFollowerPage(page);
+      } catch (e: any) {
+        toast.show(e?.message || t('load_failed', 'Load failed'), 'warning');
+      } finally {
+        setLoading(false);
+      }
+    },
+    [trail, integrationId, loadFollowers, applyFollowerPage, t, toast]
+  );
+
+  // Do not auto-load the connected account's followers — user searches a handle first.
 
   const drillInto = useCallback(
     async (user: FollowerUser) => {
@@ -595,6 +650,54 @@ export const XFollowersExplorerPanel: FC = () => {
     [currentSubject, listMode]
   );
 
+  /** Display cap for list size (2.5k max); API still loads {{EXPLORER_PAGE_SIZE}} per request. */
+  const explorerPulledLabel = useMemo(() => {
+    if (subjectListCount != null && subjectListCount > 0) {
+      return formatCompactCount(
+        Math.min(subjectListCount, EXPLORER_MAX_LOADED)
+      );
+    }
+    return formatCompactCount(Math.min(users.length, EXPLORER_MAX_LOADED));
+  }, [subjectListCount, users.length]);
+
+  const followerCountTitle = useMemo(() => {
+    if (!currentSubject) return '';
+    const user = currentSubject.username || currentSubject.name;
+    const listLabel =
+      listMode === 'following'
+        ? t('following_list_lower', 'following')
+        : t('followers_list_lower', 'followers');
+
+    if (subjectListCount != null && subjectListCount > 0) {
+      return t(
+        'pulled_list_of_total',
+        '@{{user}} — Pulled {{pulled}} {{list}} of {{total}} {{list}}',
+        {
+          user,
+          pulled: explorerPulledLabel,
+          total: formatCompactCount(subjectListCount),
+          list: listLabel,
+        }
+      );
+    }
+
+    return t(
+      'displaying_followers_title',
+      "Displaying @{{user}}'s {{shown}} followers",
+      {
+        user,
+        shown: formatCompactCount(displayUsers.length),
+      }
+    );
+  }, [
+    currentSubject,
+    subjectListCount,
+    listMode,
+    explorerPulledLabel,
+    displayUsers.length,
+    t,
+  ]);
+
   const explorerTotalPages = useMemo(
     () => explorerTotalPagesFromListCount(subjectListCount),
     [subjectListCount]
@@ -699,8 +802,8 @@ export const XFollowersExplorerPanel: FC = () => {
   );
 
   const maxSelectableForFollow = useMemo(
-    () => Math.min(followSlotsLeft, followableOnPage.length),
-    [followSlotsLeft, followableOnPage.length]
+    () => followableOnPage.length,
+    [followableOnPage.length]
   );
 
   const maxSelectableForUnfollow = useMemo(
@@ -709,8 +812,8 @@ export const XFollowersExplorerPanel: FC = () => {
   );
 
   const cappedFollowableIds = useMemo(
-    () => followableOnPage.slice(0, maxSelectableForFollow).map((u) => u.id),
-    [followableOnPage, maxSelectableForFollow]
+    () => followableOnPage.map((u) => u.id),
+    [followableOnPage]
   );
 
   const cappedUnfollowableIds = useMemo(
@@ -736,19 +839,6 @@ export const XFollowersExplorerPanel: FC = () => {
   );
 
   useEffect(() => {
-    if (followSlotsLeft <= 0) return;
-    setSelected((prev) => {
-      const followSelected = users.filter(
-        (u) => !u.alreadyFollowing && prev.has(u.id)
-      );
-      if (followSelected.length <= followSlotsLeft) return prev;
-      const next = new Set(prev);
-      followSelected.slice(followSlotsLeft).forEach((u) => next.delete(u.id));
-      return next;
-    });
-  }, [followSlotsLeft, users]);
-
-  useEffect(() => {
     if (unfollowSlotsLeft <= 0) return;
     setSelected((prev) => {
       const unfollowSelected = users.filter(
@@ -771,26 +861,6 @@ export const XFollowersExplorerPanel: FC = () => {
           const next = new Set(prev);
           next.delete(id);
           return next;
-        }
-        if (user && !user.alreadyFollowing) {
-          const followSelectedCount = users.filter(
-            (u) => !u.alreadyFollowing && prev.has(u.id)
-          ).length;
-          if (followSelectedCount >= followSlotsLeft) {
-            toast.show(
-              t(
-                'x_follow_select_limit',
-                'You can only select {{remaining}} more to follow today ({{count}}/{{limit}} used in 24h).',
-                {
-                  remaining: followSlotsLeft,
-                  count: followRateLimit?.daily?.count ?? followRateLimit?.count ?? followLimit,
-                  limit: followDailyLimit,
-                }
-              ),
-              'warning'
-            );
-            return prev;
-          }
         }
         if (user?.alreadyFollowing) {
           const unfollowSelectedCount = users.filter(
@@ -971,6 +1041,70 @@ export const XFollowersExplorerPanel: FC = () => {
     ]
   );
 
+  const { mutate: mutateFollowQueue } = useXFollowQueue(integrationId);
+
+  const queueSelectedFollows = useCallback(async () => {
+    if (!integrationId || selectedToFollow.length === 0) return;
+    setActionLoading(true);
+    try {
+      const res = await fetch(
+        `/integrations/${integrationId}/x-follow-queue`,
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            entries: selectedToFollow.map((u) => ({
+              targetUserId: u.id,
+              targetUsername: u.username,
+              targetName: u.name,
+            })),
+          }),
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const raw = data?.message;
+        throw new Error(
+          typeof raw === 'string' ? raw : `Failed (${res.status})`
+        );
+      }
+      void mutateFollowQueue(data.status, { revalidate: false });
+      void mutateFollowRateLimit(data.status?.rateLimit, {
+        revalidate: false,
+      });
+      toast.show(
+        t(
+          'queue_added',
+          'Added {{added}} to the follow queue ({{skipped}} skipped). Open the Follow queue tab for scheduled times — up to 400 follows per day.',
+          {
+            added: data.added ?? selectedToFollow.length,
+            skipped: data.skipped ?? 0,
+          }
+        ),
+        'success'
+      );
+      setSelected((prev) => {
+        const next = new Set(prev);
+        selectedToFollow.forEach((u) => next.delete(u.id));
+        return next;
+      });
+    } catch (e: any) {
+      toast.show(
+        e?.message || t('queue_add_failed', 'Could not add to queue'),
+        'warning'
+      );
+    } finally {
+      setActionLoading(false);
+    }
+  }, [
+    integrationId,
+    selectedToFollow,
+    fetch,
+    mutateFollowQueue,
+    mutateFollowRateLimit,
+    toast,
+    t,
+  ]);
+
   const massFollow = useCallback(async () => {
     if (followSlotsLeft <= 0) {
       toast.show(
@@ -1116,11 +1250,8 @@ export const XFollowersExplorerPanel: FC = () => {
   const atExplorerLoadCap = users.length >= EXPLORER_MAX_LOADED;
 
   const cappedPageFollowableIds = useMemo(
-    () =>
-      pageFollowable
-        .slice(0, Math.min(followSlotsLeft, pageFollowable.length))
-        .map((u) => u.id),
-    [pageFollowable, followSlotsLeft]
+    () => pageFollowable.map((u) => u.id),
+    [pageFollowable]
   );
 
   const cappedPageUnfollowableIds = useMemo(
@@ -1212,8 +1343,26 @@ export const XFollowersExplorerPanel: FC = () => {
         onClear: () => setEngagementFilter('all'),
       });
     }
+    const adv = countActiveAdvancedFilters(advancedFilters);
+    if (adv > 0) {
+      chips.push({
+        key: 'advanced',
+        label: t('advanced_filters_active', '{{count}} advanced filters', {
+          count: adv,
+        }),
+        onClear: resetAdvancedFilters,
+      });
+    }
     return chips;
-  }, [hideWhitelisted, hideBlacklisted, listFilter, engagementFilter, t]);
+  }, [
+    hideWhitelisted,
+    hideBlacklisted,
+    listFilter,
+    engagementFilter,
+    advancedFilters,
+    resetAdvancedFilters,
+    t,
+  ]);
 
   const clearAllFilters = useCallback(() => {
     setListFilter('all');
@@ -1221,7 +1370,28 @@ export const XFollowersExplorerPanel: FC = () => {
     setTableSearch('');
     setHideWhitelisted(true);
     setHideBlacklisted(true);
-  }, []);
+    resetAdvancedFilters();
+  }, [resetAdvancedFilters]);
+
+  const filterBadgeCount = useMemo(
+    () =>
+      countActiveAdvancedFilters(advancedFilters) +
+      (hideWhitelisted ? 1 : 0) +
+      (hideBlacklisted ? 1 : 0),
+    [advancedFilters, hideWhitelisted, hideBlacklisted]
+  );
+
+  const lastLoadedLabel = useMemo(() => {
+    if (!lastLoadedAt) return null;
+    const days = Math.floor((Date.now() - lastLoadedAt) / (86400 * 1000));
+    if (days < 1) return t('search_result_today', 'Result of the search today');
+    if (days === 1) {
+      return t('search_result_days_ago_one', 'Result of the search 1 day ago');
+    }
+    return t('search_result_days_ago', 'Result of the search {{days}} days ago', {
+      days,
+    });
+  }, [lastLoadedAt, t]);
 
   if (loadingIntegrations) {
     return (
@@ -1283,7 +1453,7 @@ export const XFollowersExplorerPanel: FC = () => {
         />
       ) : null}
 
-      <ProfileAutomationsCard noPadding className="overflow-hidden">
+      <ProfileAutomationsCard noPadding className="overflow-hidden min-w-0">
         {/* Spreadsheet header & toolbar */}
         <div className="border-b border-newBorder bg-newBgColorInner px-4 py-4 sm:px-5">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1291,53 +1461,43 @@ export const XFollowersExplorerPanel: FC = () => {
               {subjectHeader && currentSubject && (
                 <>
                   <h3 className="text-base sm:text-lg font-semibold text-newTextColor leading-snug">
-                    {subjectListCount != null
-                      ? listMode === 'following'
-                        ? t(
-                            'displaying_following_with_total',
-                            "@{{user}} — {{shown}} shown · {{loaded}} loaded of ~{{total}} following",
-                            {
-                              user:
-                                currentSubject.username || currentSubject.name,
-                              shown: displayUsers.length.toLocaleString(),
-                              loaded: users.length.toLocaleString(),
-                              total: Math.min(
-                                subjectListCount,
-                                EXPLORER_MAX_LOADED
-                              ).toLocaleString(),
-                            }
-                          )
-                        : t(
-                            'displaying_followers_with_total',
-                            "@{{user}} — {{shown}} shown · {{loaded}} loaded of ~{{total}} followers",
-                            {
-                              user:
-                                currentSubject.username || currentSubject.name,
-                              shown: displayUsers.length.toLocaleString(),
-                              loaded: users.length.toLocaleString(),
-                              total: Math.min(
-                                subjectListCount,
-                                EXPLORER_MAX_LOADED
-                              ).toLocaleString(),
-                            }
-                          )
-                      : t(
-                          'displaying_followers_title',
-                          "Displaying @{{user}}'s {{shown}} followers",
-                          {
-                            user:
-                              currentSubject.username || currentSubject.name,
-                            shown: displayUsers.length.toLocaleString(),
-                          }
-                        )}
+                    {followerCountTitle}
                   </h3>
                   <p className="mt-1 text-xs text-newTableText">
                     {t(
-                      'explorer_subtitle',
-                      'Use Next to load more pages from X ({{size}} per page, up to {{max}}). Sort, filter, and bulk follow or unfollow.',
+                      'explorer_list_cap_hint',
+                      'Only the first {{size}} rows load per search to save API credits. Use filters, sort, and Next to fetch more from X (up to {{max}} in this view).',
                       {
                         size: EXPLORER_PAGE_SIZE,
-                        max: EXPLORER_MAX_LOADED.toLocaleString(),
+                        max: formatCompactCount(EXPLORER_MAX_LOADED),
+                      }
+                    )}
+                  </p>
+                  {lastLoadedLabel && (
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-newTableText">
+                      <span>{lastLoadedLabel}</span>
+                      <ProfileAutomationsGhostButton
+                        disabled={loading || actionLoading}
+                        className="!px-2 !py-1 text-xs"
+                        onClick={() => {
+                          if (trail.length) {
+                            void goToBreadcrumb(trail.length - 1);
+                          } else {
+                            void resetAndLoadRoot();
+                          }
+                        }}
+                      >
+                        {t('update_this_search', 'Update this search')}
+                      </ProfileAutomationsGhostButton>
+                    </div>
+                  )}
+                  <p className="mt-1 text-xs text-cyan-600/90 dark:text-cyan-400/90">
+                    {t(
+                      'showing_filtered_count',
+                      'Showing {{filtered}} of {{loaded}} loaded',
+                      {
+                        filtered: displayUsers.length.toLocaleString(),
+                        loaded: users.length.toLocaleString(),
                       }
                     )}
                   </p>
@@ -1371,8 +1531,10 @@ export const XFollowersExplorerPanel: FC = () => {
                 disabled={loading || actionLoading}
                 onClick={() => {
                   setSearchQuery('');
-                  setListMode('followers');
-                  void resetAndLoadRoot();
+                  setTrail([]);
+                  setUsers([]);
+                  setNextToken(undefined);
+                  setTablePage(1);
                 }}
                 className={explorerNavButtonClass(false)}
               >
@@ -1381,9 +1543,11 @@ export const XFollowersExplorerPanel: FC = () => {
             </div>
           </div>
 
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="relative min-w-0 flex-1 max-w-md">
-              <span className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-newTableText">@</span>
+          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto] lg:items-end">
+            <div className="relative min-w-0 sm:col-span-2 lg:col-span-1">
+              <span className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-newTableText">
+                @
+              </span>
               <input
                 type="text"
                 value={searchQuery}
@@ -1400,35 +1564,41 @@ export const XFollowersExplorerPanel: FC = () => {
               />
             </div>
             <ProfileAutomationsPrimaryButton
+              className="w-full sm:w-auto justify-center"
               disabled={loading || actionLoading || !searchQuery.trim()}
               onClick={() => void searchByUsername()}
             >
               {t('search', 'Search')}
             </ProfileAutomationsPrimaryButton>
             <ProfileAutomationsGhostButton
+              className={clsx('w-full sm:w-auto justify-center', explorerNavButtonClass(listMode === 'followers'))}
               disabled={loading || actionLoading}
               onClick={() => {
-                setSearchQuery('');
-                setListMode('followers');
-                void resetAndLoadRoot();
+                if (trail.length) {
+                  void reloadCurrentSubjectList('followers');
+                } else {
+                  setListMode('followers');
+                }
               }}
-              className={explorerNavButtonClass(listMode === 'followers')}
             >
               {t('followers_list', 'Followers')}
             </ProfileAutomationsGhostButton>
             <ProfileAutomationsGhostButton
+              className={clsx('w-full sm:w-auto justify-center', explorerNavButtonClass(listMode === 'following'))}
               disabled={loading || actionLoading}
               onClick={() => {
-                setSearchQuery('');
-                setListMode('following');
+                if (trail.length) {
+                  void reloadCurrentSubjectList('following');
+                } else {
+                  setListMode('following');
+                }
               }}
-              className={explorerNavButtonClass(listMode === 'following')}
             >
               {t('following_list', 'Following')}
             </ProfileAutomationsGhostButton>
           </div>
 
-          {(activeFilterChips.length > 0 || showFilterPanel) && (
+          {activeFilterChips.length > 0 && (
             <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
               {activeFilterChips.map((chip) => (
                 <span
@@ -1446,119 +1616,128 @@ export const XFollowersExplorerPanel: FC = () => {
                   </button>
                 </span>
               ))}
-              {activeFilterChips.length > 0 && (
-                <button
-                  type="button"
-                  className="text-btnPrimary hover:underline"
-                  onClick={clearAllFilters}
-                >
-                  {t('clear_all_filters', 'Clear all filters')}
-                </button>
-              )}
+              <button
+                type="button"
+                className="text-btnPrimary hover:underline"
+                onClick={clearAllFilters}
+              >
+                {t('clear_all_filters', 'Clear all filters')}
+              </button>
             </div>
           )}
 
-          <div className="mt-4 flex flex-col gap-3 border-t border-newBorder pt-4 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex flex-wrap items-center gap-2">
-              <ProfileAutomationsPrimaryButton
-                className="!px-3 !py-2 text-xs"
-                onClick={() => setShowFilterPanel((v) => !v)}
-              >
-                {t('filters', 'Filters')}
-              </ProfileAutomationsPrimaryButton>
-              <ProfileAutomationsPrimaryButton
-                loading={actionLoading}
-                disabled={loading || followSlotsLeft <= 0 || selectedToFollow.length === 0}
-                onClick={massFollow}
-                className="!px-3 !py-2 text-xs"
-              >
-                {t('follow_selected', 'Follow selected ({{count}})', {
-                  count: selectedToFollow.length,
-                })}
-              </ProfileAutomationsPrimaryButton>
-              <ProfileAutomationsGhostButton
-                disabled={loading || actionLoading || unfollowSlotsLeft <= 0 || selectedToUnfollow.length === 0}
-                onClick={massUnfollow}
-                className="!px-3 !py-2 text-xs border-red-400 bg-red-50 text-red-700 font-semibold hover:bg-red-100 dark:border-red-500/40 dark:bg-transparent dark:text-red-400 dark:hover:bg-red-500/10"
-              >
-                {t('unfollow_selected_short', 'Unfollow selected ({{count}})', {
-                  count: selectedToUnfollow.length,
-                })}
-              </ProfileAutomationsGhostButton>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
+          <div className="mt-4 flex flex-col gap-3 border-t border-newBorder pt-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+              <div className="flex flex-wrap items-center gap-2 min-w-0">
+                <ProfileAutomationsPrimaryButton
+                  className="!px-3 !py-2 text-xs w-full sm:w-auto"
+                  onClick={() => setFiltersCollapsed((v) => !v)}
+                >
+                  {filtersCollapsed
+                    ? t('show_filters', 'Show filters')
+                    : t('hide_filters', 'Hide filters')}
+                  {filterBadgeCount > 0 ? ` (${filterBadgeCount})` : ''}
+                </ProfileAutomationsPrimaryButton>
+                <ProfileAutomationsPrimaryButton
+                  loading={actionLoading}
+                  disabled={loading || followSlotsLeft <= 0 || selectedToFollow.length === 0}
+                  onClick={massFollow}
+                  className="!px-3 !py-2 text-xs flex-1 sm:flex-none min-w-[140px]"
+                >
+                  {t('follow_selected', 'Follow selected ({{count}})', {
+                    count: selectedToFollow.length,
+                  })}
+                </ProfileAutomationsPrimaryButton>
+                <ProfileAutomationsGhostButton
+                  disabled={
+                    loading ||
+                    actionLoading ||
+                    selectedToFollow.length === 0
+                  }
+                  onClick={() => {
+                    void queueSelectedFollows();
+                  }}
+                  className="!px-3 !py-2 text-xs flex-1 sm:flex-none min-w-[140px]"
+                >
+                  {t('queue_selected', 'Queue selected ({{count}})', {
+                    count: selectedToFollow.length,
+                  })}
+                </ProfileAutomationsGhostButton>
+                <ProfileAutomationsGhostButton
+                  disabled={
+                    loading ||
+                    actionLoading ||
+                    unfollowSlotsLeft <= 0 ||
+                    selectedToUnfollow.length === 0
+                  }
+                  onClick={massUnfollow}
+                  className="!px-3 !py-2 text-xs flex-1 sm:flex-none min-w-[140px] border-red-400 bg-red-50 text-red-700 font-semibold hover:bg-red-100 dark:border-red-500/40 dark:bg-transparent dark:text-red-400 dark:hover:bg-red-500/10"
+                >
+                  {t('unfollow_selected_short', 'Unfollow selected ({{count}})', {
+                    count: selectedToUnfollow.length,
+                  })}
+                </ProfileAutomationsGhostButton>
+              </div>
               <input
                 type="search"
                 value={tableSearch}
                 onChange={(e) => setTableSearch(e.target.value)}
-                placeholder={t('table_search', 'Search...')}
-                className="w-full min-w-[160px] rounded-lg border border-newBorder bg-newBgColorInner px-3 py-2 text-sm text-newTextColor outline-none sm:w-48"
+                placeholder={t('table_search', 'Search table...')}
+                className="w-full lg:max-w-[220px] rounded-lg border border-newBorder bg-newBgColorInner px-3 py-2 text-sm text-newTextColor outline-none focus:border-btnPrimary/50"
               />
             </div>
           </div>
-
-          {showFilterPanel && (
-            <div className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-newBorder bg-newBgColor/40 p-4 sm:grid-cols-2 lg:grid-cols-4">
-              <div>
-                <label className="mb-1 block text-[10px] font-semibold uppercase text-newTableText">
-                  {t('filter_accounts', 'Account filter')}
-                </label>
-                <select
-                  value={listFilter}
-                  onChange={(e) => setListFilter(e.target.value as FollowerListFilter)}
-                  className="w-full rounded-lg border border-newBorder bg-newBgColorInner px-2 py-2 text-sm"
-                >
-                  <option value="all">{t('filter_all', 'All accounts')}</option>
-                  <option value="i_follow">{t('filter_i_follow', 'Only accounts I follow')}</option>
-                  <option value="low_engagement">{t('filter_low_engagement', 'Low engagement (I follow)')}</option>
-                  <option value="inactive">
-                    {t(
-                      'filter_inactive',
-                      'Inactive (I follow, fewer than 10 posts)'
-                    )}
-                  </option>
-                  <option value="low_followers">{t('filter_low_followers', 'Small accounts (I follow)')}</option>
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-[10px] font-semibold uppercase text-newTableText">
-                  {t('filter_engagement', 'Engagement')}
-                </label>
-                <select
-                  value={engagementFilter}
-                  onChange={(e) => setEngagementFilter(e.target.value as EngagementFilter)}
-                  className="w-full rounded-lg border border-newBorder bg-newBgColorInner px-2 py-2 text-sm"
-                >
-                  <option value="all">{t('engagement_all', 'All levels')}</option>
-                  <option value="inactive">{t('engagement_inactive', 'Inactive')}</option>
-                  <option value="low">{t('engagement_low', 'Low active')}</option>
-                  <option value="moderate">{t('engagement_moderate', 'Moderate active')}</option>
-                  <option value="active">{t('engagement_active', 'Active')}</option>
-                  <option value="high">{t('engagement_high', 'Highly active')}</option>
-                </select>
-              </div>
-              <label className="flex items-center gap-2 text-sm text-newTextColor pt-5">
-                <input
-                  type="checkbox"
-                  checked={hideWhitelisted}
-                  onChange={(e) => setHideWhitelisted(e.target.checked)}
-                />
-                {t('hide_whitelisted', 'Hide whitelisted')}
-              </label>
-              <label className="flex items-center gap-2 text-sm text-newTextColor pt-5">
-                <input
-                  type="checkbox"
-                  checked={hideBlacklisted}
-                  onChange={(e) => setHideBlacklisted(e.target.checked)}
-                />
-                {t('hide_blacklisted', 'Hide blacklisted')}
-              </label>
-            </div>
-          )}
         </div>
 
-        <div className="px-2 sm:px-3 pb-4 max-h-[min(70vh,720px)] overflow-auto explorer-scrollbar">
-          {loading && users.length === 0 ? (
+        <div className="flex min-h-0 flex-col xl:flex-row">
+          {!filtersCollapsed ? (
+            <div className="shrink-0 border-b border-newBorder p-3 sm:p-4 xl:border-b-0 xl:border-r xl:max-w-[300px] xl:w-[280px] 2xl:w-[300px]">
+              <XFollowersExplorerFiltersPanel
+                filters={advancedFilters}
+                onChange={patchAdvancedFilters}
+                onReset={resetAdvancedFilters}
+                hideWhitelisted={hideWhitelisted}
+                hideBlacklisted={hideBlacklisted}
+                onHideWhitelisted={setHideWhitelisted}
+                onHideBlacklisted={setHideBlacklisted}
+                collapsed={false}
+                onToggleCollapse={() => setFiltersCollapsed(true)}
+                disabled={loading || actionLoading}
+              />
+            </div>
+          ) : null}
+          {filtersCollapsed ? (
+            <div className="hidden xl:flex shrink-0 border-r border-newBorder p-4">
+              <XFollowersExplorerFiltersPanel
+                filters={advancedFilters}
+                onChange={patchAdvancedFilters}
+                onReset={resetAdvancedFilters}
+                hideWhitelisted={hideWhitelisted}
+                hideBlacklisted={hideBlacklisted}
+                onHideWhitelisted={setHideWhitelisted}
+                onHideBlacklisted={setHideBlacklisted}
+                collapsed
+                onToggleCollapse={() => setFiltersCollapsed(false)}
+                disabled={loading || actionLoading}
+              />
+            </div>
+          ) : null}
+
+          <div className="min-w-0 flex-1 overflow-x-auto">
+            <div className="min-w-[640px] px-2 sm:px-3 pb-4 max-h-[min(55vh,600px)] sm:max-h-[min(65vh,700px)] xl:max-h-[min(70vh,720px)] overflow-y-auto explorer-scrollbar">
+          {!loading && users.length === 0 && trail.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+              <p className="text-sm font-medium text-newTextColor">
+                {t('search_to_start', 'Search for an X username')}
+              </p>
+              <p className="mt-2 text-xs text-newTableText max-w-md">
+                {t(
+                  'search_to_start_hint',
+                  'Enter a handle above and click Search to load that account’s followers or following list. Your connected account is not loaded automatically.'
+                )}
+              </p>
+            </div>
+          ) : loading && users.length === 0 ? (
             <XFollowersExplorerTable
               users={[]}
               loading
@@ -1588,12 +1767,9 @@ export const XFollowersExplorerPanel: FC = () => {
               onToggleWhitelist={toggleWhitelist}
               onToggleBlacklist={toggleBlacklist}
               selectDisabled={(user) =>
-                (!user.alreadyFollowing &&
-                  followSlotsLeft <= 0 &&
-                  !selected.has(user.id)) ||
-                (!!user.alreadyFollowing &&
-                  unfollowSlotsLeft <= 0 &&
-                  !selected.has(user.id))
+                !!user.alreadyFollowing &&
+                unfollowSlotsLeft <= 0 &&
+                !selected.has(user.id)
               }
             />
           ) : users.length === 0 ? (
@@ -1643,6 +1819,8 @@ export const XFollowersExplorerPanel: FC = () => {
               />
             </>
           )}
+            </div>
+          </div>
         </div>
       </ProfileAutomationsCard>
 

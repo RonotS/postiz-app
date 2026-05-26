@@ -203,7 +203,25 @@ WHERE email = 'AaronSanto73990@x.local'
         </p>
       </AdminSurface>
 
-      <div className="mt-8 flex flex-wrap gap-2">
+      <AdminSurface className="mt-8" padding>
+        <h3 className="text-[15px] font-bold text-newTextColor">Automation pages</h3>
+        <p className="mt-1 text-[13px] text-textItemBlur leading-relaxed max-w-[70ch]">
+          Preview coming-soon experiences in the main app. Use{' '}
+          <Link href="/adminisamazing/automation-pages" className="text-cyan-400 font-semibold hover:underline">
+            Automations
+          </Link>{' '}
+          to show or hide them in the sidebar for normal users (platform super admin always sees them when off).
+        </p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <AdminButtonLink href="/dashboard/profile-automations">Profile automations</AdminButtonLink>
+          <AdminButtonLink href="/dashboard/followers">Follow automations</AdminButtonLink>
+          {isSuper ? (
+            <AdminButtonLink href="/adminisamazing/automation-pages">Visibility settings</AdminButtonLink>
+          ) : null}
+        </div>
+      </AdminSurface>
+
+      <div className="mt-6 flex flex-wrap gap-2">
         <AdminButtonLink href="/adminisamazing/user-management">User management</AdminButtonLink>
         <AdminButtonLink href="/adminisamazing/analytics">Analytics</AdminButtonLink>
         <AdminButtonLink href="/adminisamazing/billing">Billing</AdminButtonLink>

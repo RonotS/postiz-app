@@ -11,6 +11,10 @@ import {
   FollowAutomationsIcon,
   ProfileAutomationsNavIcon,
 } from '@gitroom/frontend/components/dashboard/profile-automations.icons';
+import {
+  canAccessAutomationPage,
+  type AutomationPageKind,
+} from '@gitroom/frontend/components/dashboard/automation-page-gate';
 
 interface MenuItemInterface {
   name: string;
@@ -19,6 +23,8 @@ interface MenuItemInterface {
   role?: string[];
   hide?: boolean;
   requireBilling?: boolean;
+  /** When set, item is visible to all users if the flag is on; else platform super admin only. */
+  automationPage?: AutomationPageKind;
   onClick?: () => void;
   disabled?: boolean;
 }
@@ -107,11 +113,13 @@ export const useMenuItem = () => {
       name: t('follow_automations', 'Follow automations'),
       icon: <FollowAutomationsIcon />,
       path: '/dashboard/followers',
+      automationPage: 'follow',
     },
     {
       name: t('profile_automations', 'Profile automations'),
       icon: <ProfileAutomationsNavIcon />,
       path: '/dashboard/profile-automations',
+      automationPage: 'profile',
     },
     {
       name: isGeneral ? t('calendar', 'Calendar') : t('launches', 'Launches'),
@@ -221,6 +229,8 @@ export const useMenuItem = () => {
     },
     {
       name: t('integrations', 'Integrations'),
+      // Hidden per request — connect X from profile automations / launches instead.
+      hide: true,
       icon: (
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -339,7 +349,7 @@ export const useMenuItem = () => {
     },
     {
       name: t('billing', 'Billing'),
-      hide: true,
+      hide: false,
       icon: (
         <svg
           xmlns="http://www.w3.org/2000/svg"
@@ -358,8 +368,8 @@ export const useMenuItem = () => {
         </svg>
       ),
       path: '/billing',
-      role: ['ADMIN', 'SUPERADMIN'],
-      requireBilling: true,
+      role: ['ADMIN', 'SUPERADMIN', 'USER'],
+      requireBilling: false,
     },
     {
       name: t('settings', 'Settings'),
@@ -419,9 +429,12 @@ export const TopMenu: FC = () => {
                 if (f.requireBilling && !billingEnabled) {
                   return false;
                 }
-                if (f.name === 'Billing' && user?.isLifetime) {
+                if (f.automationPage && !canAccessAutomationPage(user, f.automationPage)) {
                   return false;
                 }
+                if (f.name === 'Billing' && user?.isLifetime) {
+              return false;
+            }
                 if (f.role) {
                   return f.role.includes(user?.role!);
                 }
@@ -444,6 +457,9 @@ export const TopMenu: FC = () => {
           const visible = secondMenu.filter((f) => {
             if (f.hide) return false;
             if (f.requireBilling && !billingEnabled) return false;
+            if (f.automationPage && !canAccessAutomationPage(user, f.automationPage)) {
+              return false;
+            }
             if (f.name === 'Billing' && user?.isLifetime) return false;
             if (f.role) return f.role.includes(user?.role!);
             return true;

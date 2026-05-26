@@ -961,7 +961,9 @@ export class PostsService {
           post.integration.id,
           post.settings as Record<string, unknown>
         )
-        .catch(() => {});
+        .catch((err) =>
+          console.error('ensureXHomepageAutomaticPlugs:', err)
+        );
 
       if (body.type !== 'update') {
         this.startWorkflow(

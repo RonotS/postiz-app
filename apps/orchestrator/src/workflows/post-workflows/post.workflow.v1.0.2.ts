@@ -44,6 +44,16 @@ const {
   },
 });
 
+const { runEngagementPlugsForReleaseId } = proxyActivities<PostActivity>({
+  startToCloseTimeout: '10 minute',
+  taskQueue: 'x',
+  retry: {
+    maximumAttempts: 2,
+    backoffCoefficient: 1,
+    initialInterval: '30 seconds',
+  },
+});
+
 const poke = defineSignal('poke');
 
 const iterate = Array.from({ length: 5 });
@@ -170,6 +180,18 @@ export async function postWorkflowV102({
           postsResults[i].postId,
           postsResults[i].releaseURL
         );
+
+        if (
+          i === 0 &&
+          post.integration.providerIdentifier === 'x' &&
+          postsResults[i]?.postId
+        ) {
+          await runEngagementPlugsForReleaseId(
+            organizationId,
+            post.integration.id,
+            postsResults[i].postId
+          );
+        }
 
         if (i === 0) {
           // send notification on a sucessful post

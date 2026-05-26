@@ -3,6 +3,7 @@ import path from 'path';
 import {
   buildXGraphRateLimitStatus,
   pruneGraphTimestamps,
+  X_FOLLOW_DAILY_LIMIT_WINDOW_MS,
   XFollowRateLimitStatus,
   XGraphAction,
   getGraphRateLimitConfig,
@@ -93,12 +94,16 @@ export async function recordXGraphActionsForIntegration(
   }
 
   const { windowMs } = getGraphRateLimitConfig(action);
+  const pruneMs =
+    action === 'follow'
+      ? Math.max(windowMs, X_FOLLOW_DAILY_LIMIT_WINDOW_MS)
+      : windowMs;
   const store = await readStore();
   const now = Date.now();
   const key = storeKey(integrationId, action);
   const existing = pruneGraphTimestamps(
     readTimestamps(store, integrationId, action),
-    windowMs,
+    pruneMs,
     now
   );
   const added = Array.from({ length: actionCount }, () => now);

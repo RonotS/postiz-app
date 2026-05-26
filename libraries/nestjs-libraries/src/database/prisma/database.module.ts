@@ -43,6 +43,8 @@ import { AnnouncementsRepository } from '@gitroom/nestjs-libraries/database/pris
 import { AnnouncementsService } from '@gitroom/nestjs-libraries/database/prisma/announcements/announcements.service';
 import { XAccountActivityService } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.service';
 import { XAccountActivityHandler } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.handler';
+import { TweetStreamService } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.service';
+import { AutomationPagesFlagsService } from '@gitroom/nestjs-libraries/platform/automation-pages-flags.service';
 
 @Global()
 @Module({
@@ -95,6 +97,8 @@ import { XAccountActivityHandler } from '@gitroom/nestjs-libraries/integrations/
     AnnouncementsService,
     XAccountActivityService,
     XAccountActivityHandler,
+    TweetStreamService,
+    AutomationPagesFlagsService,
   ],
   get exports() {
     return this.providers;

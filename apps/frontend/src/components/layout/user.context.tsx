@@ -19,6 +19,11 @@ export const UserContext = createContext<
       allowTrial: boolean;
       isTrailing: boolean;
       streakSince: string | null;
+      automationPages?: {
+        profileAutomationsPublic: boolean;
+        followAutomationsPublic: boolean;
+      };
+      admin?: boolean;
     })
 >(undefined);
 export const ContextWrapper: FC<{

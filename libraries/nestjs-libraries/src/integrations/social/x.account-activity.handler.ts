@@ -4,6 +4,7 @@ import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import { XProvider } from '@gitroom/nestjs-libraries/integrations/social/x.provider';
 import { isXAccountActivityWebhooksEnabled } from '@gitroom/helpers/x/x.account-activity.env';
+import { normalizeTweetStreamHandle } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.normalize';
 
 type PlugFields = Record<string, string>;
 
@@ -30,6 +31,28 @@ export class XAccountActivityHandler {
       await this._integrationRepository.findActiveXIntegrationsByInternalId(
         forUserId
       );
+    await this.dispatchToIntegrations(integrations, payload);
+  }
+
+  /** TweetStream WebSocket: resolve channel by @handle (integration.profile). */
+  async handleTweetStreamPayload(
+    monitoredHandle: string,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    const handle = normalizeTweetStreamHandle(monitoredHandle);
+    if (!handle) {
+      return;
+    }
+
+    const integrations =
+      await this._integrationRepository.findActiveXIntegrationsByProfile(handle);
+    await this.dispatchToIntegrations(integrations, payload);
+  }
+
+  private async dispatchToIntegrations(
+    integrations: Integration[],
+    payload: Record<string, unknown>
+  ): Promise<void> {
     if (!integrations.length) {
       return;
     }
@@ -43,7 +66,7 @@ export class XAccountActivityHandler {
         await this.dispatchForIntegration(xProvider, integration, payload);
       } catch (err) {
         this.log.error(
-          `handlePayload integration=${integration.id}:`,
+          `dispatchToIntegrations integration=${integration.id}:`,
           err
         );
       }
@@ -154,6 +177,25 @@ export class XAccountActivityHandler {
         if (userIds.length === 0) return;
         const values = userIds.map((uid) => `fds:${uid}`);
         await this._integrationRepository.saveExisingData(
+          plugFunction,
+          integrationId,
+          values
+        );
+      },
+      listFollowerSnapshotUserIds: async () => {
+        const rows = await this._integrationRepository.listExisingDataWithPrefix(
+          plugFunction,
+          integrationId,
+          'fds:'
+        );
+        return rows
+          .map((r) => r.value.replace(/^fds:/, ''))
+          .filter(Boolean);
+      },
+      removeFollowerTracking: async (userIds: string[]) => {
+        if (!userIds.length) return;
+        const values = userIds.flatMap((uid) => [`fdm:${uid}`, `fds:${uid}`]);
+        await this._integrationRepository.deleteExisingDataValues(
           plugFunction,
           integrationId,
           values
@@ -287,27 +329,43 @@ export class XAccountActivityHandler {
     }
 
     const follows = (payload.follow_events as any[]) || [];
-    const followerPlug = await this._integrationRepository.getActivePlugByFunction(
-      orgId,
-      integrationId,
-      'autoDmFollowers'
-    );
-    if (followerPlug) {
-      const fields = this.parsePlugFields(followerPlug.data);
-      const fCtx = this.buildFollowerPlugContext(
-        'autoDmFollowers',
-        integrationId
-      );
-      for (const ev of follows) {
-        const followerId = this.userIdFromUser(ev.source);
-        if (!followerId) continue;
-        await xProvider.webhookDmFollower(
-          integration,
-          followerId,
-          fields as any,
-          undefined,
-          fCtx
+    if (follows.length > 0) {
+      const followerPlug =
+        await this._integrationRepository.getActivePlugByFunction(
+          orgId,
+          integrationId,
+          'autoDmFollowers'
         );
+      if (!followerPlug) {
+        this.log.warn(
+          `TweetStream follow event(s) for @${integration.profile} but autoDmFollowers plug is off — enable Auto-DM new followers in profile automations.`
+        );
+      } else {
+        const fields = this.parsePlugFields(followerPlug.data);
+        const fCtx = this.buildFollowerPlugContext(
+          'autoDmFollowers',
+          integrationId
+        );
+        for (const ev of follows) {
+          const followerId = this.userIdFromUser(ev.source);
+          if (!followerId) continue;
+          const sent = await xProvider.webhookDmFollower(
+            integration,
+            followerId,
+            fields as any,
+            undefined,
+            fCtx
+          );
+          if (sent) {
+            this.log.log(
+              `TweetStream: welcome DM sent to follower ${followerId} (@${integration.profile})`
+            );
+          } else {
+            this.log.warn(
+              `TweetStream: follow from ${followerId} — welcome DM not sent (baseline, empty message, X 403/429, or DM window). Check backend logs for X AUTO DM.`
+            );
+          }
+        }
       }
     }
 

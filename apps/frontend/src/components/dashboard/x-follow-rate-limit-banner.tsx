@@ -38,6 +38,8 @@ export const XFollowRateLimitBanner: FC<{
 
   const showDaily = action === 'follow' && !!rateLimit?.daily;
   const showWindowForAction = action === 'unfollow';
+  const showFollowBatchWindow =
+    action === 'follow' && !!rateLimit && !rateLimit.limited;
 
   const showTimer = !!(
     rateLimit &&
@@ -64,27 +66,6 @@ export const XFollowRateLimitBanner: FC<{
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap gap-2">
-            {showWindowForAction && (
-              <div
-                className={clsx(
-                  'shrink-0 rounded-xl px-3 py-2 text-center tabular-nums',
-                  rateLimit.limited && rateLimit.limitedBy !== 'daily'
-                    ? 'bg-amber-500/15'
-                    : 'bg-newBgColor'
-                )}
-              >
-                <p className="text-[10px] uppercase tracking-wide text-newTableText">
-                  {t('x_follow_counter', '{{minutes}} min window', {
-                    minutes: rateLimit.windowMinutes,
-                  })}
-                </p>
-                <p className="text-lg font-bold text-newTextColor">
-                  {rateLimit.count}
-                  <span className="font-medium text-newTableText"> / </span>
-                  {rateLimit.limit}
-                </p>
-              </div>
-            )}
             {showDaily && rateLimit.daily && (
               <div
                 className={clsx(
@@ -106,6 +87,41 @@ export const XFollowRateLimitBanner: FC<{
                 </p>
               </div>
             )}
+            {showWindowForAction && (
+              <div
+                className={clsx(
+                  'shrink-0 rounded-xl px-3 py-2 text-center tabular-nums',
+                  rateLimit.limited && rateLimit.limitedBy !== 'daily'
+                    ? 'bg-amber-500/15'
+                    : 'bg-newBgColor'
+                )}
+              >
+                <p className="text-[10px] uppercase tracking-wide text-newTableText">
+                  {t('x_follow_counter', '{{minutes}} min window', {
+                    minutes: rateLimit.windowMinutes,
+                  })}
+                </p>
+                <p className="text-lg font-bold text-newTextColor">
+                  {rateLimit.count}
+                  <span className="font-medium text-newTableText"> / </span>
+                  {rateLimit.limit}
+                </p>
+              </div>
+            )}
+            {showFollowBatchWindow && (
+              <div className="shrink-0 rounded-xl px-3 py-2 text-center tabular-nums bg-newBgColor">
+                <p className="text-[10px] uppercase tracking-wide text-newTableText">
+                  {t('x_follow_batch_window', '{{minutes}} min batch', {
+                    minutes: rateLimit.windowMinutes,
+                  })}
+                </p>
+                <p className="text-lg font-bold text-newTextColor">
+                  {rateLimit.count}
+                  <span className="font-medium text-newTableText"> / </span>
+                  {rateLimit.limit}
+                </p>
+              </div>
+            )}
           </div>
           <div className="min-w-0 flex-1">
             <p className="text-sm font-semibold text-newTextColor">
@@ -115,10 +131,14 @@ export const XFollowRateLimitBanner: FC<{
                       'x_unfollow_limit_reached_title',
                       'Unfollow limit reached for this profile'
                     )
-                  : rateLimit.limitedBy === 'daily'
+                  : rateLimit.limitedBy === 'daily' && rateLimit.daily
                     ? t(
-                        'x_follow_daily_limit_reached_title',
-                        'Daily follow limit reached'
+                        'x_follow_daily_limit_reached_title_applied',
+                        'Following {{count}} of {{limit}} today — rate limit applied',
+                        {
+                          count: rateLimit.daily.count,
+                          limit: rateLimit.daily.limit,
+                        }
                       )
                     : t(
                         'x_follow_limit_reached_title',
@@ -126,7 +146,9 @@ export const XFollowRateLimitBanner: FC<{
                       )
                 : action === 'unfollow'
                   ? t('x_unfollow_limit_title', 'Unfollow rate (X API)')
-                  : t('x_follow_limit_title', 'Follow daily cap (X)')}
+                  : showDaily && rateLimit.daily
+                    ? t('x_follow_limit_title_daily', 'Follow activity (daily cap)')
+                    : t('x_follow_limit_title', 'Follow daily cap (X)')}
             </p>
             <p className="mt-0.5 text-xs text-newTableText leading-relaxed">
               {rateLimit.limited
@@ -143,7 +165,7 @@ export const XFollowRateLimitBanner: FC<{
                   : rateLimit.limitedBy === 'daily' && rateLimit.daily
                     ? t(
                         'x_follow_daily_limit_reached_desc',
-                        'You have followed {{count}} accounts in the last {{hours}} hours (max {{limit}} per day). Follow is paused until the daily window resets.',
+                        'Following {{count}} of {{limit}} accounts in the last {{hours}} hours — rate limit applied. Follow is paused until the daily window resets.',
                         {
                           count: rateLimit.daily.count,
                           hours: rateLimit.daily.windowHours,
@@ -173,12 +195,14 @@ export const XFollowRateLimitBanner: FC<{
                   : showDaily && rateLimit.daily
                     ? t(
                         'x_follow_limit_desc_daily',
-                        '{{dailyCount}}/{{dailyLimit}} in {{hours}}h. Up to {{remaining}} more follows allowed now.',
+                        'Following {{dailyCount}} of {{dailyLimit}} accounts in the last {{hours}} hours ({{remaining}} left today). Batches are capped at {{batchLimit}} per {{minutes}} minutes.',
                         {
                           dailyCount: rateLimit.daily.count,
                           dailyLimit: rateLimit.daily.limit,
                           hours: rateLimit.daily.windowHours,
                           remaining: rateLimit.daily.remaining,
+                          batchLimit: rateLimit.limit,
+                          minutes: rateLimit.windowMinutes,
                         }
                       )
                     : t(
@@ -218,19 +242,6 @@ export const XFollowRateLimitBanner: FC<{
           )}
         </div>
         <div className="space-y-1.5">
-          {showWindowForAction && (
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-newBgLineColor/80">
-              <div
-                className={clsx(
-                  'h-full rounded-full transition-all duration-300',
-                  rateLimit.limited && rateLimit.limitedBy !== 'daily'
-                    ? 'bg-amber-500'
-                    : 'bg-btnPrimary'
-                )}
-                style={{ width: `${windowPct}%` }}
-              />
-            </div>
-          )}
           {showDaily && rateLimit.daily && (
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-newBgLineColor/80">
               <div
@@ -241,6 +252,19 @@ export const XFollowRateLimitBanner: FC<{
                     : 'bg-violet-500'
                 )}
                 style={{ width: `${dailyPct}%` }}
+              />
+            </div>
+          )}
+          {(showWindowForAction || showFollowBatchWindow) && (
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-newBgLineColor/80">
+              <div
+                className={clsx(
+                  'h-full rounded-full transition-all duration-300',
+                  rateLimit.limited && rateLimit.limitedBy !== 'daily'
+                    ? 'bg-amber-500'
+                    : 'bg-btnPrimary/70'
+                )}
+                style={{ width: `${windowPct}%` }}
               />
             </div>
           )}

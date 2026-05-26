@@ -98,6 +98,14 @@ export class SubscriptionRepository {
     });
   }
 
+  /** Soft-delete active subscription rows for an organization (admin → FREE). */
+  softDeleteSubscriptionsForOrganization(organizationId: string) {
+    return this._subscription.model.subscription.updateMany({
+      where: { organizationId, deletedAt: null },
+      data: { deletedAt: new Date() },
+    });
+  }
+
   updateCustomerId(organizationId: string, customerId: string) {
     return this._organization.model.organization.update({
       where: {

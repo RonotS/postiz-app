@@ -24,7 +24,11 @@ import { uniqBy } from 'lodash';
 import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
 import { XDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/x.dto';
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
-import { markPlugBatchLimitedFromError } from '@gitroom/nestjs-libraries/integrations/social/x-plug-batch-rate-limit.store';
+import {
+  isXApiRateLimitError,
+  markPlugBatchLimitedFromError,
+} from '@gitroom/nestjs-libraries/integrations/social/x-plug-batch-rate-limit.store';
+import { getXWebhookDmDelayMs } from '@gitroom/helpers/x/x.account-activity.env';
 
 type XPlugDmBatchContext = {
   tryReserveDm?: () => Promise<boolean>;
@@ -439,9 +443,10 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     targetUserId: string,
     dmText: string,
     plugContext?: XPlugDmBatchContext,
-    delayMs = 2000
+    delayMs = 2000,
+    options?: { realtime?: boolean }
   ): Promise<boolean> {
-    if (plugContext?.tryReserveDm) {
+    if (!options?.realtime && plugContext?.tryReserveDm) {
       const allowed = await plugContext.tryReserveDm();
       if (!allowed) {
         return false;
@@ -458,21 +463,40 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       return true;
     } catch (dmErr: any) {
       await markPlugBatchLimitedFromError(integration.id, dmErr);
-      console.error(
-        `X AUTO DM ERROR for user ${targetUserId}:`,
-        dmErr?.data || dmErr
-      );
+      const status = dmErr?.code ?? dmErr?.data?.status;
+      if (status === 403) {
+        console.warn(
+          `X AUTO DM: cannot DM user ${targetUserId} (403 — they must follow you or allow DMs from non-followers)`
+        );
+      } else if (isXApiRateLimitError(dmErr)) {
+        console.error(
+          `X AUTO DM: rate limited (429) for user ${targetUserId}:`,
+          dmErr?.data || dmErr
+        );
+      } else {
+        console.error(
+          `X AUTO DM ERROR for user ${targetUserId}:`,
+          dmErr?.data || dmErr
+        );
+      }
       return false;
     }
   }
 
   // Fetch user IDs of accounts that LIKED a tweet.
   // Returns up to 100 user IDs (X V2 API page size).
-  private async fetchLikers(client: TwitterApi, tweetId: string): Promise<string[]> {
+  private async fetchLikers(
+    client: TwitterApi,
+    tweetId: string,
+    integrationId?: string
+  ): Promise<string[]> {
     try {
       const res = await client.v2.tweetLikedBy(tweetId, { max_results: 100 });
       return (res?.data || []).map((u) => u.id);
     } catch (err) {
+      if (integrationId && isXApiRateLimitError(err)) {
+        await markPlugBatchLimitedFromError(integrationId, err);
+      }
       console.error('X AUTO DM: failed to fetch likers:', err);
       return [];
     }
@@ -607,7 +631,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       const userIdSet = new Set<string>();
 
       if (effectiveTargetLikes) {
-        const ids = await this.fetchLikers(client, id);
+        const ids = await this.fetchLikers(client, id, integration.id);
         ids.forEach((uid) => userIdSet.add(uid));
       }
       if (effectiveTargetRetweets) {
@@ -827,6 +851,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         userIds: string[]
       ) => Promise<Set<string>>;
       saveFollowerSnapshotIds: (userIds: string[]) => Promise<void>;
+      listFollowerSnapshotUserIds?: () => Promise<string[]>;
+      removeFollowerTracking?: (userIds: string[]) => Promise<void>;
     }
   ) {
     if (postSettings?.auto_dm_followers_enabled === false) {
@@ -893,13 +919,24 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         return false;
       }
 
-      const alreadyDmd = await plugContext.loadDmdUserIds(recentIds);
+      const recentSet = new Set(recentIds);
+      const snapshotIds = plugContext.listFollowerSnapshotUserIds
+        ? await plugContext.listFollowerSnapshotUserIds()
+        : [];
+      const unfollowed = snapshotIds.filter((uid) => !recentSet.has(uid));
+      if (unfollowed.length && plugContext.removeFollowerTracking) {
+        await plugContext.removeFollowerTracking(unfollowed);
+      }
+
       const inSnapshot = await plugContext.loadFollowerSnapshotContains(
         recentIds
       );
 
+      const unfollowedSet = new Set(unfollowed);
       const toWelcome = recentIds.filter(
-        (uid) => uid !== ownerId && !alreadyDmd.has(uid) && !inSnapshot.has(uid)
+        (uid) =>
+          uid !== ownerId &&
+          (!inSnapshot.has(uid) || unfollowedSet.has(uid))
       );
       if (toWelcome.length === 0) {
         return false;
@@ -1383,7 +1420,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
     try {
       if (targetLike) {
-        const ids = await this.fetchLikers(client, pinnedId);
+        const ids = await this.fetchLikers(client, pinnedId, integration.id);
         ids.forEach((uid) => userIdSet.add(uid));
       }
       if (targetRepost) {
@@ -2501,7 +2538,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       engagerUserId,
       dmText,
       plugContext as XPlugDmBatchContext | undefined,
-      500
+      getXWebhookDmDelayMs(),
+      { realtime: true }
     );
     if (sent && plugContext?.saveDmdUserIds) {
       await plugContext.saveDmdUserIds([engagerUserId]);
@@ -2558,7 +2596,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       engagerUserId,
       dmText,
       plugContext as XPlugDmBatchContext | undefined,
-      500
+      getXWebhookDmDelayMs(),
+      { realtime: true }
     );
     if (sent && plugContext?.saveDmdUserIds) {
       await plugContext.saveDmdUserIds([engagerUserId]);
@@ -2584,6 +2623,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       setFollowerBaselineMarker: () => Promise<void>;
       loadFollowerSnapshotContains: (userIds: string[]) => Promise<Set<string>>;
       saveFollowerSnapshotIds: (userIds: string[]) => Promise<void>;
+      removeFollowerTracking?: (userIds: string[]) => Promise<void>;
     }
   ): Promise<boolean> {
     if (postSettings?.auto_dm_followers_enabled === false) {
@@ -2597,21 +2637,14 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       return false;
     }
 
+    if (plugContext.removeFollowerTracking) {
+      await plugContext.removeFollowerTracking([followerUserId]);
+    }
+
     const baselineDone = await plugContext.hasFollowerBaselineMarker();
     if (!baselineDone) {
       await plugContext.setFollowerBaselineMarker();
       await plugContext.saveFollowerSnapshotIds([followerUserId]);
-      return false;
-    }
-
-    const alreadyDmd = await plugContext.loadDmdUserIds([followerUserId]);
-    if (alreadyDmd.has(followerUserId)) {
-      return false;
-    }
-    const inSnapshot = await plugContext.loadFollowerSnapshotContains([
-      followerUserId,
-    ]);
-    if (inSnapshot.has(followerUserId)) {
       return false;
     }
 
@@ -2639,7 +2672,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       followerUserId,
       dmText,
       plugContext as XPlugDmBatchContext | undefined,
-      500
+      getXWebhookDmDelayMs(),
+      { realtime: true }
     );
     if (sent) {
       await plugContext.saveDmdUserIds([followerUserId]);
@@ -2838,6 +2872,9 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     };
     createdAt?: string;
     verified?: boolean;
+    protected?: boolean;
+    location?: string;
+    description?: string;
   } {
     const id = String(u.id);
     const metrics = u.public_metrics;
@@ -2859,6 +2896,9 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         : {}),
       createdAt: u.created_at,
       verified: u.verified === true,
+      protected: u.protected === true,
+      location: typeof u.location === 'string' ? u.location : undefined,
+      description: typeof u.description === 'string' ? u.description : undefined,
     };
   }
 
@@ -2869,6 +2909,9 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     'public_metrics',
     'created_at',
     'verified',
+    'protected',
+    'location',
+    'description',
   ] as const;
 
   private readonly subjectUserFields = [

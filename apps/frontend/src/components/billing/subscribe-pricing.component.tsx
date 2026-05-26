@@ -1,6 +1,6 @@
 'use client';
 
-import React, { FC, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { FC, useCallback, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import { useRouter } from 'next/navigation';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
@@ -165,11 +165,8 @@ export const SubscribePricingComponent: FC = () => {
     });
   }, [subscribePlans, effectivePricing]);
 
-  useEffect(() => {
-    if (user?.tier?.current && user.tier.current !== 'FREE') {
-      router.replace('/dashboard');
-    }
-  }, [user, router]);
+  const hasActivePlan =
+    !!user?.tier?.current && user.tier.current !== 'FREE';
 
   const startCheckout = useCallback(
     (billing: SubscribeBillingTier, monthPrice: number) => async () => {
@@ -252,7 +249,18 @@ export const SubscribePricingComponent: FC = () => {
 
       <header className="relative z-10 flex items-center justify-between px-6 py-5 md:px-10">
         <LogoTextComponent />
-        <LogoutComponent />
+        <div className="flex items-center gap-3">
+          {hasActivePlan && (
+            <button
+              type="button"
+              onClick={() => router.push('/billing')}
+              className="rounded-full border border-white/20 px-4 py-2 text-[13px] text-white/80 hover:bg-white/10"
+            >
+              Manage subscription
+            </button>
+          )}
+          <LogoutComponent />
+        </div>
       </header>
 
       <main className="relative z-10 mx-auto max-w-[1200px] px-4 pb-16 pt-4 md:px-8 md:pt-8">
@@ -261,10 +269,15 @@ export const SubscribePricingComponent: FC = () => {
             {t('subscribe_choose_plan', 'Choose your plan')}
           </h1>
           <p className="mx-auto mt-3 max-w-lg text-[15px] text-white/50">
-            {t(
-              'subscribe_subtitle',
-              'Every plan includes a 7-day free trial. Stripe charges your selected plan when the trial ends. Cancel anytime from settings.'
-            )}
+            {hasActivePlan
+              ? t(
+                  'subscribe_subtitle_active',
+                  'You already have a plan. Use Billing to upgrade, downgrade, or cancel — or pick a different plan below.'
+                )
+              : t(
+                  'subscribe_subtitle',
+                  'Every plan includes a 7-day free trial. Stripe charges your selected plan when the trial ends. Cancel anytime from Billing.'
+                )}
           </p>
         </div>
 

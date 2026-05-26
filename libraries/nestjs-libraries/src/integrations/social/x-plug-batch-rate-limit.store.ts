@@ -5,7 +5,7 @@ import {
   X_PLUG_DM_WINDOW_MS,
   type XPlugBatchRateLimitStatus,
 } from '@gitroom/nestjs-libraries/integrations/social/x-plug-batch-rate-limit';
-import { resolveXPollIntervalMs } from '@gitroom/helpers/x/x.poll-interval.env';
+import { resolveXEngagementPollIntervalMs } from '@gitroom/helpers/x/x.poll-interval.env';
 
 const DM_TS_KEY = (integrationId: string) => `x:plug:dm:ts:${integrationId}`;
 const LIMITED_UNTIL_KEY = (integrationId: string) =>
@@ -59,6 +59,25 @@ export async function clearLimitedUntil(integrationId: string): Promise<void> {
   await ioRedis.del(LIMITED_UNTIL_KEY(integrationId));
 }
 
+/** Clears expired API cooldown keys so 0/15 DM window is not blocked by a stale timer. */
+export async function syncPlugDmCooldown(integrationId: string): Promise<void> {
+  const now = Date.now();
+  const limitedUntilMs = await getLimitedUntilMs(integrationId);
+  if (limitedUntilMs != null && now >= limitedUntilMs) {
+    await clearLimitedUntil(integrationId);
+  }
+}
+
+/** True when the 15-minute DM cap is exhausted (not poller batch timer). */
+export async function isXPlugDmWindowFull(
+  integrationId: string
+): Promise<boolean> {
+  await syncPlugDmCooldown(integrationId);
+  const now = Date.now();
+  const pruned = pruneTimestamps(await readDmTimestamps(integrationId), now);
+  return pruned.length >= X_PLUG_DM_WINDOW_MAX;
+}
+
 export async function recordDmSent(integrationId: string): Promise<void> {
   const now = Date.now();
   const pruned = pruneTimestamps(await readDmTimestamps(integrationId), now);
@@ -94,12 +113,10 @@ export function createDmBatchGate(integrationId: string) {
   return {
     tryReserveDm: async (): Promise<boolean> => {
       const now = Date.now();
+      await syncPlugDmCooldown(integrationId);
       const limitedUntil = await getLimitedUntilMs(integrationId);
       if (limitedUntil != null && now < limitedUntil) {
         return false;
-      }
-      if (limitedUntil != null && now >= limitedUntil) {
-        await clearLimitedUntil(integrationId);
       }
 
       if (sentThisTick >= X_PLUG_DM_BATCH_MAX_PER_TICK) {
@@ -134,6 +151,7 @@ export async function buildXPlugBatchRateLimitStatus(
   options?: { queuedEstimate?: number }
 ): Promise<XPlugBatchRateLimitStatus> {
   const now = Date.now();
+  await syncPlugDmCooldown(integrationId);
   const pruned = pruneTimestamps(await readDmTimestamps(integrationId), now);
   const count = pruned.length;
   const remaining = Math.max(0, X_PLUG_DM_WINDOW_MAX - count);
@@ -165,7 +183,7 @@ export async function buildXPlugBatchRateLimitStatus(
     limited,
     limitedUntil,
     limitedBy,
-    pollIntervalMs: resolveXPollIntervalMs('X_ENGAGEMENT_POLL_INTERVAL_MS'),
+    pollIntervalMs: resolveXEngagementPollIntervalMs(),
     dmWindow: {
       count,
       limit: X_PLUG_DM_WINDOW_MAX,
@@ -203,10 +221,19 @@ export function rateLimitResetMsFromError(err: unknown): number | null {
   return null;
 }
 
+/** True only for X HTTP 429 (rate limit). Other errors must not pause the integration. */
+export function isXApiRateLimitError(err: unknown): boolean {
+  const anyErr = err as { code?: number; data?: { status?: number } };
+  return anyErr?.code === 429 || anyErr?.data?.status === 429;
+}
+
 export async function markPlugBatchLimitedFromError(
   integrationId: string,
   err: unknown
 ): Promise<void> {
+  if (!isXApiRateLimitError(err)) {
+    return;
+  }
   const resetMs = rateLimitResetMsFromError(err);
   const until = resetMs ?? Date.now() + X_PLUG_DM_WINDOW_MS;
   await setLimitedUntilMs(integrationId, until, 'api_429');

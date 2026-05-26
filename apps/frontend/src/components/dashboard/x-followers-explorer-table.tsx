@@ -7,6 +7,7 @@ import ImageWithFallback from '@gitroom/react/helpers/image.with.fallback';
 import {
   FollowerListUser,
   SpreadsheetColumn,
+  formatCompactCount,
   formatFollowRatio,
   formatJoinedAgo,
   getUserEngagement,
@@ -161,28 +162,43 @@ export const XFollowersExplorerPagination: FC<{
       <span className="me-auto text-newTableText/80">
         {loadingMore
           ? t('loading_page', 'Loading page…')
-          : listTotal != null && listTotal > 0
+          : listTotal != null && listTotal > EXPLORER_MAX_LOADED
             ? t(
-                'page_range_with_list_total',
-                '{{from}}–{{to}} shown · {{loaded}} loaded of ~{{total}} ({{size}} per page)',
+                'page_range_capped_total',
+                '{{from}}–{{to}} on page · showing {{loadedCompact}} of {{totalCompact}} ({{size}} per page)',
                 {
                   from,
                   to,
-                  loaded: itemCount.toLocaleString(),
-                  total: Math.min(listTotal, EXPLORER_MAX_LOADED).toLocaleString(),
+                  loadedCompact: formatCompactCount(
+                    Math.min(itemCount, EXPLORER_MAX_LOADED)
+                  ),
+                  totalCompact: formatCompactCount(listTotal),
                   size: EXPLORER_PAGE_SIZE,
                 }
               )
-            : t(
-                'page_range',
-                '{{from}}–{{to}} of {{total}} ({{size}} per page)',
-                {
-                  from,
-                  to,
-                  total: itemCount.toLocaleString(),
-                  size: EXPLORER_PAGE_SIZE,
-                }
-              )}
+            : listTotal != null && listTotal > 0
+              ? t(
+                  'page_range_with_total',
+                  '{{from}}–{{to}} of {{totalCompact}} ({{size}} per page)',
+                  {
+                    from,
+                    to,
+                    totalCompact: formatCompactCount(
+                      Math.min(listTotal, itemCount)
+                    ),
+                    size: EXPLORER_PAGE_SIZE,
+                  }
+                )
+              : t(
+                  'page_range',
+                  '{{from}}–{{to}} of {{total}} ({{size}} per page)',
+                  {
+                    from,
+                    to,
+                    total: formatCompactCount(itemCount),
+                    size: EXPLORER_PAGE_SIZE,
+                  }
+                )}
       </span>
       <span>
         {t('page_of', 'Page {{page}} / {{total}}', {
@@ -217,7 +233,7 @@ export const XFollowersExplorerPagination: FC<{
           {t(
             'explorer_cap_note_short',
             'Maximum {{max}} accounts loaded from X for this profile.',
-            { max: EXPLORER_MAX_LOADED.toLocaleString() }
+            { max: formatCompactCount(EXPLORER_MAX_LOADED) }
           )}
         </span>
       )}

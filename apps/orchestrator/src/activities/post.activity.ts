@@ -384,6 +384,20 @@ export class PostActivity {
     );
   }
 
+  /** First like-DM scan right after an X post publishes (poller also runs every tick). */
+  @ActivityMethod()
+  async runEngagementPlugsForReleaseId(
+    organizationId: string,
+    integrationId: string,
+    releaseId: string
+  ): Promise<void> {
+    return this._integrationService.runEngagementPlugsForReleaseId(
+      organizationId,
+      integrationId,
+      releaseId
+    );
+  }
+
   @ActivityMethod()
   async processInternalPlug(data: {
     post: string;

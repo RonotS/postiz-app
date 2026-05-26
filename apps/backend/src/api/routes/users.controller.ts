@@ -4,6 +4,7 @@ import {
   Get,
   HttpException,
   Param,
+  Patch,
   Post,
   Query,
   Req,
@@ -24,6 +25,9 @@ import { getCookieUrlFromDomain } from '@gitroom/helpers/subdomain/subdomain.man
 import { pricing } from '@gitroom/nestjs-libraries/database/prisma/subscriptions/pricing';
 import { ApiTags } from '@nestjs/swagger';
 import { UsersService } from '@gitroom/nestjs-libraries/database/prisma/users/users.service';
+import { AdminUpdateOrgSubscriptionDto } from '@gitroom/nestjs-libraries/dtos/users/admin-update-org-subscription.dto';
+import { UpdateAutomationPagesFlagsDto } from '@gitroom/nestjs-libraries/dtos/users/update-automation-pages-flags.dto';
+import { AutomationPagesFlagsService } from '@gitroom/nestjs-libraries/platform/automation-pages-flags.service';
 import { UserDetailDto } from '@gitroom/nestjs-libraries/dtos/users/user.details.dto';
 import { EmailNotificationsDto } from '@gitroom/nestjs-libraries/dtos/users/email-notifications.dto';
 import { HttpForbiddenException } from '@gitroom/nestjs-libraries/services/exception.filter';
@@ -54,7 +58,8 @@ export class UsersController {
     private _authService: AuthService,
     private _orgService: OrganizationService,
     private _userService: UsersService,
-    private _trackService: TrackService
+    private _trackService: TrackService,
+    private _automationPagesFlags: AutomationPagesFlagsService
   ) {}
   @Get('/agent-media-sso')
   async getAgentMediaSsoUrl(
@@ -87,6 +92,45 @@ export class UsersController {
       throw new HttpException('Unauthorized', 400);
     }
     return this._userService.listUsersForPlatformAdmin(200);
+  }
+
+  @Get('/admin-automation-pages-flags')
+  async getAdminAutomationPagesFlags(@GetUserFromRequest() user: User) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Forbidden', 403);
+    }
+    return this._automationPagesFlags.getFlags();
+  }
+
+  @Patch('/admin-automation-pages-flags')
+  async updateAdminAutomationPagesFlags(
+    @GetUserFromRequest() user: User,
+    @Body() body: UpdateAutomationPagesFlagsDto
+  ) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Forbidden', 403);
+    }
+    return this._automationPagesFlags.updateFlags({
+      profileAutomationsPublic:
+        body.profileAutomationsPublic ?? body.tweetAutomationsPublic,
+      followAutomationsPublic: body.followAutomationsPublic,
+    });
+  }
+
+  @Patch('/admin-organization/:organizationId/subscription')
+  async adminUpdateOrganizationSubscription(
+    @GetUserFromRequest() user: User,
+    @Param('organizationId') organizationId: string,
+    @Body() body: AdminUpdateOrgSubscriptionDto
+  ) {
+    if (!user.isSuperAdmin) {
+      throw new HttpException('Forbidden', 403);
+    }
+    return this._subscriptionService.adminSetOrganizationSubscription(
+      organizationId,
+      body.tier,
+      body.period ?? 'MONTHLY'
+    );
   }
 
   @Get('/admin-platform-analytics')
@@ -198,6 +242,7 @@ export class UsersController {
       streakSince: organization?.streakSince || null,
       // @ts-ignore
       publicApi: organization?.users[0]?.role === 'SUPERADMIN' || organization?.users[0]?.role === 'ADMIN' ? organization?.apiKey : '',
+      automationPages: await this._automationPagesFlags.getFlags(),
     };
   }
 

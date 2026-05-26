@@ -34,13 +34,20 @@ export const XPlugBatchRateLimitBanner: FC<{
       )}
     >
       <p className="text-sm font-semibold text-newTextColor">
-        {t('x_plug_batch_title', 'X automations (polled)')}
+        {t('x_plug_batch_title', 'X auto-DM batching')}
       </p>
       <p className="mt-1 text-xs text-newTableText leading-relaxed">
         {t(
-          'x_plug_batch_interval',
-          'Plugs run about every {{minutes}} minutes per connected account. DMs and checks are batched to stay within X API limits.',
+          'x_plug_batch_realtime_hint',
+          'TweetStream sends replies and reposts in near real time when the backend WebSocket is running. Likes are not streamed — they are picked up by a poller about every {{minutes}} minutes.',
           { minutes: pollMinutes }
+        )}
+      </p>
+      <p className="mt-1 text-xs text-newTableText/80 leading-relaxed">
+        {t(
+          'x_plug_batch_dm_window_hint',
+          'The counter below is X’s DM quota ({{limit}} per 15 minutes), not the poll timer. At 0/{{limit}} you can still send DMs until the quota fills.',
+          { limit: rateLimit.dmWindow.limit }
         )}
       </p>
 
@@ -54,17 +61,17 @@ export const XPlugBatchRateLimitBanner: FC<{
         </p>
       )}
 
-      {rateLimit.limited && (
+      {rateLimit.limited && rateLimit.dmWindow.remaining <= 0 && (
         <p className="mt-2 text-xs font-medium text-amber-700 dark:text-amber-300">
           {rateLimit.limitedBy === 'api_429'
             ? t(
                 'x_plug_batch_limited_429',
-                'X rate limit hit — next batch after {{time}}.',
+                'X API cooldown — poller waits until {{time}}. Realtime reply/repost DMs still send when WebSocket is active.',
                 { time: countdown || '…' }
               )
             : t(
                 'x_plug_batch_limited_dm',
-                'DM cap reached for this window — next batch after {{time}}.',
+                'DM cap reached (15 per 15 min) — poller waits until {{time}}.',
                 { time: countdown || '…' }
               )}
         </p>

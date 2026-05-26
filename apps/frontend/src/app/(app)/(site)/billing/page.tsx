@@ -8,7 +8,7 @@ export const metadata: Metadata = {
 };
 export default async function Page() {
   return (
-    <div className="bg-newBgColorInner flex-1 flex-col flex p-[20px] gap-[12px]">
+    <div className="bg-newBgColorInner flex min-h-full flex-1 flex-col px-4 py-6 md:px-8 md:py-10">
       <BillingComponent />
     </div>
   );

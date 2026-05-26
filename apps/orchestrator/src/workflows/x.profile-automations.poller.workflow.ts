@@ -1,15 +1,16 @@
 import { proxyActivities, sleep } from '@temporalio/workflow';
 import { PostActivity } from '@gitroom/orchestrator/activities/post.activity';
 import { X_PROFILE_AUTOMATIONS_POLL_RELEASE_ID } from '@gitroom/nestjs-libraries/temporal/x.follower.dm.constants';
+import { staggerMsFromIntegrationId } from '@gitroom/nestjs-libraries/temporal/x.poller.workflow.helpers';
 
 const { processPlug, listActiveProfileAutomationPlugIds } =
   proxyActivities<PostActivity>({
     startToCloseTimeout: '15 minute',
     taskQueue: 'x',
     retry: {
-      maximumAttempts: 3,
+      maximumAttempts: 2,
       backoffCoefficient: 1,
-      initialInterval: '2 minutes',
+      initialInterval: '30 seconds',
     },
   });
 
@@ -28,6 +29,8 @@ export async function xProfileAutomationsPollerWorkflow({
   void _organizationId;
 
   const tickMs = Math.max(30_000, Math.min(3_600_000, pollIntervalMs));
+
+  await sleep(staggerMsFromIntegrationId(integrationId, tickMs));
 
   while (true) {
     const plugIds = await listActiveProfileAutomationPlugIds(integrationId);

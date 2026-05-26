@@ -1,3 +1,8 @@
+import type { ExplorerAdvancedFilters } from '@gitroom/frontend/components/dashboard/follower-explorer-advanced-filters';
+import { matchesAdvancedExplorerFilters } from '@gitroom/frontend/components/dashboard/follower-explorer-advanced-filters';
+
+export { formatCompactCount } from '@gitroom/nestjs-libraries/integrations/social/format-compact-count';
+
 export type FollowerPublicMetrics = {
   followersCount: number;
   followingCount: number;
@@ -14,6 +19,9 @@ export type FollowerListUser = {
   publicMetrics?: FollowerPublicMetrics;
   createdAt?: string;
   verified?: boolean;
+  protected?: boolean;
+  location?: string;
+  description?: string;
 };
 
 export type FollowerListFilter =
@@ -64,7 +72,7 @@ const LOW_ENGAGEMENT_MAX_TWEETS = 50;
 const INACTIVE_MAX_TWEETS = 10;
 const LOW_FOLLOWERS_MAX = 100;
 
-function metric(
+export function metric(
   user: FollowerListUser,
   key: keyof FollowerPublicMetrics
 ): number {
@@ -186,7 +194,15 @@ export function matchesTableSearch(
   if (!q) return true;
   const name = (user.name || '').toLowerCase();
   const username = (user.username || '').toLowerCase();
-  return name.includes(q) || username.includes(q) || `@${username}`.includes(q);
+  const bio = (user.description || '').toLowerCase();
+  const location = (user.location || '').toLowerCase();
+  return (
+    name.includes(q) ||
+    username.includes(q) ||
+    `@${username}`.includes(q) ||
+    bio.includes(q) ||
+    location.includes(q)
+  );
 }
 
 export function sortFollowerList(
@@ -285,6 +301,7 @@ export function filterAndSortFollowers(
     whitelist?: Set<string>;
     blacklist?: Set<string>;
     visibility?: ExplorerListVisibility;
+    advanced?: ExplorerAdvancedFilters;
   }
 ): FollowerListUser[] {
   const engagement = options?.engagement ?? 'all';
@@ -296,10 +313,13 @@ export function filterAndSortFollowers(
     hideBlacklisted: true,
   };
 
+  const advanced = options?.advanced;
+
   const filtered = users.filter((u) => {
     if (!matchesFollowerFilter(u, filter)) return false;
     if (!matchesEngagementFilter(u, engagement)) return false;
     if (!matchesTableSearch(u, tableSearch)) return false;
+    if (advanced && !matchesAdvancedExplorerFilters(u, advanced)) return false;
     const isWhitelisted = whitelist?.has(u.id);
     const isBlacklisted = blacklist?.has(u.id);
     if (visibility.hideWhitelisted && isWhitelisted) return false;
