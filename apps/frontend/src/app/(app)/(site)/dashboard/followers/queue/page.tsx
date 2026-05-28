@@ -75,7 +75,7 @@ export default function DashboardFollowQueuePage() {
           <p className="text-[13px] text-newTableText max-w-[min(100%,52ch)] leading-snug">
             {t(
               'follow_queue_page_intro',
-              'Schedule bulk follows across 15-minute windows. Up to 400 follows per day per connected profile.'
+              'Schedule bulk follows automatically. Up to 400 follows per day per connected profile.'
             )}
           </p>
         </div>
@@ -116,7 +116,7 @@ export default function DashboardFollowQueuePage() {
             title={t('queue_status', 'Queue status')}
             subtitle={t(
               'queue_status_sub',
-              'Pending follows and the next 15-minute processing window.'
+              'Pending follows and the upcoming processing batches.'
             )}
             icon={
               <ProfileAutomationsSectionIcon>

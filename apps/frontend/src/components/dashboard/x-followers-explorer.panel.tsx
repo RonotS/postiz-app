@@ -15,10 +15,7 @@ import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { useToaster } from '@gitroom/react/toaster/toaster';
 import { getActiveXIntegrations } from '@gitroom/frontend/components/layout/x-integration.util';
-import {
-  XProfilePickerIntegration,
-  XProfileSingleSelect,
-} from '@gitroom/frontend/components/launches/x-profile-picker.component';
+import { XProfilePickerIntegration } from '@gitroom/frontend/components/launches/x-profile-picker.component';
 import ImageWithFallback from '@gitroom/react/helpers/image.with.fallback';
 import {
   ProfileAutomationsCard,
@@ -148,7 +145,13 @@ type FollowersPageResponse = {
 };
 
 
-export const XFollowersExplorerPanel: FC = () => {
+type XFollowersExplorerPanelProps = {
+  integrationId: string;
+};
+
+export const XFollowersExplorerPanel: FC<XFollowersExplorerPanelProps> = ({
+  integrationId,
+}) => {
   const t = useT();
   const toast = useToaster();
   const fetch = useFetch();
@@ -169,7 +172,6 @@ export const XFollowersExplorerPanel: FC = () => {
     [integrations]
   );
 
-  const [integrationId, setIntegrationId] = useState('');
   const [trail, setTrail] = useState<BreadcrumbItem[]>([]);
   const [users, setUsers] = useState<FollowerUser[]>([]);
   const [nextToken, setNextToken] = useState<string | undefined>();
@@ -231,7 +233,7 @@ export const XFollowersExplorerPanel: FC = () => {
   const followSlotsLeft = followAtLimit
     ? 0
     : followRateLimit?.daily
-      ? followDailyRemaining
+      ? Math.min(followRemaining, followDailyRemaining)
       : followRemaining;
   const unfollowSlotsLeft = unfollowAtLimit ? 0 : unfollowRemaining;
 
@@ -370,19 +372,6 @@ export const XFollowersExplorerPanel: FC = () => {
       username: currentSubject.username,
     };
   }, [currentSubject, viewingOwnFollowers, activeIntegration, listMode, t]);
-
-  useEffect(() => {
-    if (!xIntegrations.length) {
-      setIntegrationId('');
-      return;
-    }
-    if (
-      !integrationId ||
-      !xIntegrations.some((i) => i.id === integrationId)
-    ) {
-      setIntegrationId(xIntegrations[0].id!);
-    }
-  }, [xIntegrations, integrationId]);
 
   const currentSubjectId = trail.length
     ? trail[trail.length - 1].id
@@ -822,14 +811,6 @@ export const XFollowersExplorerPanel: FC = () => {
     [unfollowableOnPage, maxSelectableForUnfollow]
   );
 
-  const idsToFollowNow = useMemo(
-    () =>
-      selectedToFollow
-        .map((u) => u.id)
-        .slice(0, Math.min(followSlotsLeft, X_FOLLOW_BATCH_MAX)),
-    [selectedToFollow, followSlotsLeft]
-  );
-
   const idsToUnfollowNow = useMemo(
     () =>
       selectedToUnfollow
@@ -1043,16 +1024,19 @@ export const XFollowersExplorerPanel: FC = () => {
 
   const { mutate: mutateFollowQueue } = useXFollowQueue(integrationId);
 
-  const queueSelectedFollows = useCallback(async () => {
-    if (!integrationId || selectedToFollow.length === 0) return;
-    setActionLoading(true);
-    try {
+  const enqueueFollowUsers = useCallback(
+    async (
+      users: Array<{ id: string; username?: string; name?: string }>
+    ): Promise<{ added: number; skipped: number } | null> => {
+      if (!integrationId || users.length === 0) {
+        return { added: 0, skipped: 0 };
+      }
       const res = await fetch(
         `/integrations/${integrationId}/x-follow-queue`,
         {
           method: 'POST',
           body: JSON.stringify({
-            entries: selectedToFollow.map((u) => ({
+            entries: users.map((u) => ({
               targetUserId: u.id,
               targetUsername: u.username,
               targetName: u.name,
@@ -1071,13 +1055,70 @@ export const XFollowersExplorerPanel: FC = () => {
       void mutateFollowRateLimit(data.status?.rateLimit, {
         revalidate: false,
       });
+      return {
+        added: data.added ?? users.length,
+        skipped: data.skipped ?? 0,
+      };
+    },
+    [integrationId, fetch, mutateFollowQueue, mutateFollowRateLimit]
+  );
+
+  const followUserIdsChunk = useCallback(
+    async (
+      userIds: string[]
+    ): Promise<{ succeededIds: string[]; failed: number } | null> => {
+      if (!integrationId || userIds.length === 0) {
+        return { succeededIds: [], failed: 0 };
+      }
+      const res = await fetch(`/integrations/${integrationId}/x-follow`, {
+        method: 'POST',
+        body: JSON.stringify({ userIds }),
+      });
+      const data = await res.json().catch(() => ({}));
+      const payload =
+        data?.message && typeof data.message === 'object'
+          ? data.message
+          : data;
+      if (payload?.rateLimit) {
+        void mutateFollowRateLimit(payload.rateLimit, { revalidate: false });
+      }
+      if (!res.ok) {
+        const raw = data?.message;
+        const msg =
+          typeof raw === 'string'
+            ? raw
+            : payload?.message ||
+              (res.status === 429
+                ? typeof payload?.message === 'string'
+                  ? payload.message
+                  : t(
+                      'x_follow_limit_blocked',
+                      'Follow limit reached. Try again when the timer resets.'
+                    )
+                : `Failed (${res.status})`);
+        throw new Error(String(msg));
+      }
+      return {
+        succeededIds: data.succeeded || [],
+        failed: (data.failed || []).length,
+      };
+    },
+    [integrationId, fetch, mutateFollowRateLimit, t]
+  );
+
+  const queueSelectedFollows = useCallback(async () => {
+    if (!integrationId || selectedToFollow.length === 0) return;
+    setActionLoading(true);
+    try {
+      const result = await enqueueFollowUsers(selectedToFollow);
+      if (!result) return;
       toast.show(
         t(
           'queue_added',
           'Added {{added}} to the follow queue ({{skipped}} skipped). Open the Follow queue tab for scheduled times — up to 400 follows per day.',
           {
-            added: data.added ?? selectedToFollow.length,
-            skipped: data.skipped ?? 0,
+            added: result.added,
+            skipped: result.skipped,
           }
         ),
         'success'
@@ -1098,49 +1139,146 @@ export const XFollowersExplorerPanel: FC = () => {
   }, [
     integrationId,
     selectedToFollow,
-    fetch,
-    mutateFollowQueue,
-    mutateFollowRateLimit,
+    enqueueFollowUsers,
     toast,
     t,
   ]);
 
   const massFollow = useCallback(async () => {
-    if (followSlotsLeft <= 0) {
+    if (!integrationId || selectedToFollow.length === 0) return;
+
+    if (followAtLimit && followLimitedBy === 'daily') {
       toast.show(
-        followLimitedBy === 'daily'
-          ? t(
-              'x_follow_daily_limit_blocked',
-              'Daily follow limit reached ({{dailyLimit}} per 24 hours). Try again when the daily timer resets.',
-              { dailyLimit: followDailyLimit }
-            )
-          : t(
-              'x_follow_limit_blocked',
-              'Follow limit reached for today ({{dailyLimit}} per 24 hours). Try again when the daily timer resets.',
-              { dailyLimit: followDailyLimit }
-            ),
+        t(
+          'x_follow_daily_limit_blocked',
+          'Daily follow limit reached ({{dailyLimit}} per 24 hours). Try again when the daily timer resets.',
+          { dailyLimit: followDailyLimit }
+        ),
         'warning'
       );
       return;
     }
-    const ids = idsToFollowNow;
-    if (!ids.length) return;
-    await runBulkAction('x-follow', ids, markAsFollowing, {
-      success: (count) =>
-        t('follow_success_count', 'Followed {{count}} account(s)', { count }),
-      partialFail: (count) =>
-        t('follow_partial_fail', '{{count}} could not be followed', { count }),
-      fail: t('follow_failed', 'Follow failed'),
-    });
+
+    const users = selectedToFollow;
+    const immediateUsers =
+      followSlotsLeft > 0 ? users.slice(0, followSlotsLeft) : [];
+    const overflowUsers = users.slice(immediateUsers.length);
+
+    if (!immediateUsers.length && !overflowUsers.length) return;
+
+    setActionLoading(true);
+    try {
+      let followedCount = 0;
+      let followFailed = 0;
+      const succeededIds: string[] = [];
+
+      if (immediateUsers.length > 0) {
+        for (let i = 0; i < immediateUsers.length; i += X_FOLLOW_BATCH_MAX) {
+          const chunk = immediateUsers
+            .slice(i, i + X_FOLLOW_BATCH_MAX)
+            .map((u) => u.id);
+          const result = await followUserIdsChunk(chunk);
+          if (!result) break;
+          succeededIds.push(...result.succeededIds);
+          followedCount += result.succeededIds.length;
+          followFailed += result.failed;
+        }
+        if (succeededIds.length > 0) {
+          markAsFollowing(succeededIds);
+        }
+      }
+
+      const succeededSet = new Set(succeededIds);
+      const usersToQueue = [
+        ...immediateUsers.filter((u) => !succeededSet.has(u.id)),
+        ...overflowUsers,
+      ];
+
+      let queueAdded = 0;
+      let queueSkipped = 0;
+      if (usersToQueue.length > 0) {
+        const queueResult = await enqueueFollowUsers(usersToQueue);
+        if (queueResult) {
+          queueAdded = queueResult.added;
+          queueSkipped = queueResult.skipped;
+        }
+      }
+
+      if (followedCount > 0 && queueAdded > 0) {
+        toast.show(
+          t(
+            'follow_and_queue_success',
+            'Followed {{followed}} now; {{queued}} added to the follow queue for the next {{minutes}}-minute windows.',
+            {
+              followed: followedCount,
+              queued: queueAdded,
+              minutes: followWindowMinutes,
+            }
+          ),
+          'success'
+        );
+      } else if (followedCount > 0) {
+        toast.show(
+          t('follow_success_count', 'Followed {{count}} account(s)', {
+            count: followedCount,
+          }),
+          'success'
+        );
+      } else if (queueAdded > 0) {
+        toast.show(
+          t(
+            'queue_added_window_full',
+            'Added {{added}} to the follow queue ({{skipped}} skipped). They will run when the {{minutes}}-minute window opens.',
+            {
+              added: queueAdded,
+              skipped: queueSkipped,
+              minutes: followWindowMinutes,
+            }
+          ),
+          'success'
+        );
+      } else if (usersToQueue.length > 0) {
+        toast.show(
+          t('queue_add_failed', 'Could not add to queue'),
+          'warning'
+        );
+      }
+
+      if (followFailed > 0) {
+        toast.show(
+          t('follow_partial_fail', '{{count}} could not be followed', {
+            count: followFailed,
+          }),
+          'warning'
+        );
+      }
+
+      setSelected((prev) => {
+        const next = new Set(prev);
+        succeededIds.forEach((id) => next.delete(id));
+        if (queueAdded > 0) {
+          usersToQueue.forEach((u) => next.delete(u.id));
+        }
+        return next;
+      });
+    } catch (e: any) {
+      toast.show(e?.message || t('follow_failed', 'Follow failed'), 'warning');
+    } finally {
+      setActionLoading(false);
+    }
   }, [
-    idsToFollowNow,
+    integrationId,
+    selectedToFollow,
+    followAtLimit,
+    followLimitedBy,
+    followDailyLimit,
     followSlotsLeft,
-    runBulkAction,
+    followUserIdsChunk,
+    enqueueFollowUsers,
     markAsFollowing,
     t,
     toast,
-    followLimitedBy,
-    followDailyLimit,
+    followWindowMinutes,
   ]);
 
   const massUnfollow = useCallback(async () => {
@@ -1414,15 +1552,6 @@ export const XFollowersExplorerPanel: FC = () => {
 
   return (
     <div className="w-full min-w-0 flex flex-col gap-4 sm:gap-5">
-      {xIntegrations.length > 1 && (
-        <XProfileSingleSelect
-          integrations={xIntegrations}
-          selectedId={integrationId}
-          onChange={setIntegrationId}
-          disabled={loading || actionLoading}
-        />
-      )}
-
       {(followRateLimit || unfollowRateLimit) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 min-w-0">
           {followRateLimit && (
@@ -1640,7 +1769,11 @@ export const XFollowersExplorerPanel: FC = () => {
                 </ProfileAutomationsPrimaryButton>
                 <ProfileAutomationsPrimaryButton
                   loading={actionLoading}
-                  disabled={loading || followSlotsLeft <= 0 || selectedToFollow.length === 0}
+                  disabled={
+                    loading ||
+                    selectedToFollow.length === 0 ||
+                    (followAtLimit && followLimitedBy === 'daily')
+                  }
                   onClick={massFollow}
                   className="!px-3 !py-2 text-xs flex-1 sm:flex-none min-w-[140px]"
                 >
@@ -1832,10 +1965,11 @@ export const XFollowersExplorerPanel: FC = () => {
           <li>
             {t(
               'follow_rate_limit_hint',
-              'This app enforces a {{dailyLimit}} follows-per-day cap per connected X profile, plus a short-window cap for unfollows. Each click processes up to {{batch}} accounts.',
+              'Up to {{windowLimit}} follows per {{minutes}} minutes and {{dailyLimit}} per day. Follow selected uses your current window first; the rest go to the follow queue automatically.',
               {
                 dailyLimit: followDailyLimit,
-                batch: X_FOLLOW_BATCH_MAX,
+                windowLimit: followLimit,
+                minutes: followWindowMinutes,
               }
             )}
           </li>

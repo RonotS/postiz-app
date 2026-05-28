@@ -68,6 +68,18 @@ export async function syncPlugDmCooldown(integrationId: string): Promise<void> {
   }
 }
 
+/** True while X API read/write cooldown is active (typically after HTTP 429). */
+export async function isXPlugApiReadPaused(
+  integrationId: string
+): Promise<{ paused: boolean; until: string | null }> {
+  await syncPlugDmCooldown(integrationId);
+  const untilMs = await getLimitedUntilMs(integrationId);
+  if (untilMs != null && Date.now() < untilMs) {
+    return { paused: true, until: new Date(untilMs).toISOString() };
+  }
+  return { paused: false, until: null };
+}
+
 /** True when the 15-minute DM cap is exhausted (not poller batch timer). */
 export async function isXPlugDmWindowFull(
   integrationId: string
@@ -107,7 +119,10 @@ export async function decayQueuedEstimate(
   await ioRedis.set(key, String(Math.max(0, prev - processed)));
 }
 
-export function createDmBatchGate(integrationId: string) {
+export function createDmBatchGate(
+  integrationId: string,
+  batchMaxPerTick = X_PLUG_DM_BATCH_MAX_PER_TICK
+) {
   let sentThisTick = 0;
 
   return {
@@ -119,7 +134,7 @@ export function createDmBatchGate(integrationId: string) {
         return false;
       }
 
-      if (sentThisTick >= X_PLUG_DM_BATCH_MAX_PER_TICK) {
+      if (sentThisTick >= batchMaxPerTick) {
         return false;
       }
 

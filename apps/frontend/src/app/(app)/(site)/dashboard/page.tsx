@@ -1130,7 +1130,7 @@ export default function DashboardPage() {
           <button
             type="button"
             aria-label={t('collapse_composer', 'Hide composer')}
-            className="lg:hidden fixed inset-0 z-30 bg-black/50 backdrop-blur-[2px]"
+            className="lg:hidden fixed inset-x-0 top-[80px] bottom-0 z-30 bg-black/50 backdrop-blur-[2px]"
             onClick={() => setComposerCollapsed(true)}
           />
         )}
@@ -1140,7 +1140,7 @@ export default function DashboardPage() {
           className={clsx(
             'flex-col bg-newBgColorInner border-newBorder overflow-y-auto custom-scrollbar flex',
             composerCollapsed ? 'hidden' : 'flex',
-            'fixed inset-x-0 bottom-0 z-40 max-h-[min(92dvh,100%)] border-t shadow-[0_-12px_40px_rgba(0,0,0,0.4)]',
+            'fixed inset-x-0 top-[80px] bottom-0 z-40 max-h-[calc(100dvh-80px)] border-t shadow-[0_-12px_40px_rgba(0,0,0,0.4)]',
             'lg:relative lg:inset-auto lg:bottom-auto lg:z-auto lg:max-h-none lg:w-[420px] lg:flex-shrink-0 lg:border-t-0 lg:border-l lg:shadow-none'
           )}
         >

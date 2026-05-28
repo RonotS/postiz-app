@@ -9,7 +9,8 @@
  *   node scripts/tweetstream-cli.mjs listen [--seconds=30]
  *   node scripts/tweetstream-cli.mjs postiz-status   # local Postiz backend
  *   node scripts/tweetstream-cli.mjs postiz-sync     # register Postiz X handles on TweetStream
- *   node scripts/tweetstream-cli.mjs postiz-events   # recent events Postiz saw (if PUBLISH_EVENTS=true)
+ *   node scripts/tweetstream-cli.mjs postiz-events [--limit=20]
+ *   node scripts/tweetstream-cli.mjs postiz-events-clear
  *
  * Loads TWEETSTREAM_API_KEY from process.env or ../../.env
  */
@@ -174,6 +175,12 @@ async function cmdListen(argv) {
             t.author?.handle || t.author?.name || t.author?.id || '?';
           const ref = t.ref?.type ? ` [${t.ref.type} → ${t.ref.tweetId}]` : '';
           console.log(`[${ts}] TWEET ${author}${ref}: ${(t.text || '').slice(0, 120)}`);
+        } else if (envelope.t === 'tweet' && envelope.op === 'update') {
+          const u = envelope.d || {};
+          const ref = u.ref?.type
+            ? ` [${u.ref.type} → ${u.ref.tweetId} @${(u.ref.author?.handle || '').replace(/^@+/, '')}]`
+            : '';
+          console.log(`[${ts}] UPDATE ${u.tweetId}${ref}`);
         } else if (envelope.t === 'account' && envelope.op === 'follow') {
           const d = envelope.d || {};
           const actor = d.actor?.handle || d.actor?.id || '?';
@@ -253,18 +260,85 @@ async function cmdClearWsLock() {
   console.log('\nRestart backend once. Only one dev:backend process.');
 }
 
-async function cmdPostizEvents() {
-  const data = await postizFetch('/events?limit=20');
+function parseLimitArg(argv, fallback = 20) {
+  for (const a of argv) {
+    if (a.startsWith('--limit=')) {
+      return Math.min(Math.max(Number(a.split('=')[1]) || fallback, 1), 200);
+    }
+  }
+  return fallback;
+}
+
+function formatEventLine(ev) {
+  const when = ev.ts
+    ? new Date(ev.ts).toLocaleString()
+    : '?';
+  const kind = ev.kind ?? 'event';
+  const who = ev.engagerHandle || ev.authorHandle || '?';
+  const parent =
+    ev.tweetId || ev.refTweetId
+      ? ` parent=${ev.tweetId || ev.refTweetId}`
+      : '';
+  const ref =
+    ev.refType && ev.refAuthorHandle
+      ? ` [${ev.refType} → @${ev.refAuthorHandle}]`
+      : ev.refType
+        ? ` [${ev.refType}]`
+        : '';
+  const preview = (ev.textPreview || '').slice(0, 60);
+  return `${when} | ${kind} | @${who}${ref}${parent} | ${preview}`;
+}
+
+async function cmdPostizEvents(argv) {
+  const limit = parseLimitArg(argv, 20);
+  const data = await postizFetch(`/events?limit=${limit}`);
+  if (data?.events?.length) {
+    console.log(`Showing ${data.events.length} newest events (limit=${limit}):\n`);
+    for (const ev of data.events) {
+      console.log(formatEventLine(ev));
+      if (ev.kind === 'raw' && ev.note) {
+        console.log(`  ↳ ${ev.note}`);
+      }
+    }
+    console.log('\nFull JSON:\n');
+  }
   console.log(JSON.stringify(data, null, 2));
+  const newest = data?.events?.[0];
+  if (
+    newest?.note?.includes('own posts are not auto-DM targets') &&
+    !newest?.refType
+  ) {
+    console.log(
+      '\nThis event is your channel posting a tweet — not someone replying to you. ' +
+        'To test comment auto-DM: use a second X account to reply on a Postiz-published post, then run postiz-events again.'
+    );
+  } else if (newest?.note?.includes('missed update envelope')) {
+    console.log(
+      '\nBackend is on the update-envelope build. Clear stale raw rows: postiz-events-clear, restart backend, comment again after "Connected to TweetStream WebSocket".'
+    );
+  } else if (newest?.kind === 'raw' && newest?.note?.includes('TweetStream omitted')) {
+    console.log(
+      '\nOld event note — restart pnpm run dev:backend, postiz-events-clear, then test a new reply from another account.'
+    );
+  } else if (newest?.kind === 'raw') {
+    console.log(
+      '\nUnmapped reply/RT — read the note above. Common fixes: post via Postiz (releaseId), autoDmEngagers ON, reply target ON, WS connected before commenting.'
+    );
+  }
   if (data?.events?.length) {
     console.log(
-      '\nIf events appear here but no DM on X, check: autoDmEngagers plug ON, OAuth valid, DM permissions.'
+      '\nIf kind=reply but no DM on X: autoDmEngagers plug ON, post reply target ON, OAuth valid.'
     );
   } else {
     console.log(
-      '\nNo events yet. Trigger a reply/follow on a tracked handle, or set TWEETSTREAM_PUBLISH_EVENTS=true and restart backend.'
+      '\nNo events yet. Comment after WS connects, or set TWEETSTREAM_PUBLISH_EVENTS=true and restart backend.'
     );
   }
+}
+
+async function cmdPostizEventsClear() {
+  console.log(JSON.stringify(await postizFetch('/events/clear', { method: 'POST' }), null, 2));
+  console.log('\nBuffer cleared. Restart backend if needed, wait for WebSocket connected, then test a new reply.');
 }
 
 const [,, command, ...rest] = process.argv;
@@ -289,7 +363,10 @@ switch (command) {
     await cmdPostizSync();
     break;
   case 'postiz-events':
-    await cmdPostizEvents();
+    await cmdPostizEvents(rest);
+    break;
+  case 'postiz-events-clear':
+    await cmdPostizEventsClear();
     break;
   case 'clear-ws-lock':
     await cmdClearWsLock();

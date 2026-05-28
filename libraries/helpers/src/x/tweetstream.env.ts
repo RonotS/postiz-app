@@ -39,6 +39,28 @@ export function getTweetStreamApiBase(): string {
   ).replace(/\/+$/, '');
 }
 
+/**
+ * When TweetStream WS is up, reply/RT DMs use the socket. Likes still need REST unless this is true.
+ * Default false — avoids fetchLikers 429 spam while testing comment/repost realtime DMs.
+ */
+export function isTweetStreamPollLikesWhenWsActive(): boolean {
+  const v = process.env.TWEETSTREAM_POLL_LIKES_WHEN_WS?.trim();
+  return v === 'true' || v === '1';
+}
+
+/**
+ * When TweetStream WS is up, still poll reply engagers as backup (one read/post/tick).
+ * Default true — socket often omits ref.tweetId until update; some replies never map.
+ * Set TWEETSTREAM_POLL_REPLIES_WHEN_WS=false to rely on WebSocket only.
+ */
+export function isTweetStreamPollRepliesWhenWsActive(): boolean {
+  const v = process.env.TWEETSTREAM_POLL_REPLIES_WHEN_WS?.trim();
+  if (v === 'false' || v === '0') {
+    return false;
+  }
+  return true;
+}
+
 /** When true, skip the follower-DM Temporal poller (TweetStream sends follow events). */
 export function isTweetStreamFollowerPollingDisabled(): boolean {
   if (!isTweetStreamEnabled()) {

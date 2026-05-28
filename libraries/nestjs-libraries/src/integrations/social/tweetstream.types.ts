@@ -13,17 +13,26 @@ export type TweetStreamAuthor = {
   name?: string;
 };
 
+export type TweetStreamTweetRef = {
+  type?: 'reply' | 'quote' | 'retweet';
+  tweetId?: string;
+  text?: string;
+  author?: TweetStreamAuthor;
+};
+
 export type TweetStreamTweetContent = {
   tweetId: string;
   text?: string;
   createdAt?: number;
   author?: TweetStreamAuthor;
-  ref?: {
-    type?: 'reply' | 'quote' | 'retweet';
-    tweetId?: string;
-    text?: string;
-    author?: TweetStreamAuthor;
-  };
+  ref?: TweetStreamTweetRef;
+};
+
+/** Follow-up envelope after `content` — often carries reply/quote ref context. */
+export type TweetStreamTweetUpdate = {
+  tweetId: string;
+  text?: string;
+  ref?: TweetStreamTweetRef;
 };
 
 export type TweetStreamFollowEvent = {

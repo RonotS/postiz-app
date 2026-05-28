@@ -45,14 +45,23 @@ import {
 } from '@gitroom/helpers/x/x.poll-interval.env';
 import {
   X_ENGAGEMENT_MAX_POSTS_PER_TICK,
+  X_PLUG_DM_BATCH_MAX_PER_TICK,
 } from '@gitroom/nestjs-libraries/integrations/social/x-plug-batch-rate-limit';
+import {
+  getXquikDmBatchMaxPerTick,
+  getXquikEngagementMaxPostsPerTick,
+  isXquikEngagementPollerEnabled,
+} from '@gitroom/helpers/x/xquik.env';
 import {
   addQueuedEstimate,
   buildXPlugBatchRateLimitStatus,
   createDmBatchGate,
   isXPlugDmWindowFull,
+  isXPlugApiReadPaused,
   decayQueuedEstimate,
 } from '@gitroom/nestjs-libraries/integrations/social/x-plug-batch-rate-limit.store';
+import { isTweetStreamEnabled } from '@gitroom/helpers/x/tweetstream.env';
+import { isTweetStreamWsConsumerActive } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.ws-state';
 import { XAccountActivityService } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.service';
 import { XAccountActivityHandler } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.handler';
 import {
@@ -87,7 +96,6 @@ import {
   isPostizBackendWorker,
   isTweetStreamFollowerPollingDisabled,
 } from '@gitroom/helpers/x/tweetstream.env';
-import { isTweetStreamWsConsumerActive } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.ws-state';
 import { TweetStreamService } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.service';
 
 dayjs.extend(utc);
@@ -104,6 +112,7 @@ export class IntegrationService implements OnModuleInit {
     private _refreshIntegrationService: RefreshIntegrationService,
     private _temporalService: TemporalService,
     private _xAccountActivity: XAccountActivityService,
+    @Inject(forwardRef(() => XAccountActivityHandler))
     private _xAccountActivityHandler: XAccountActivityHandler,
     private _tweetStream: TweetStreamService
   ) { }
@@ -303,6 +312,47 @@ export class IntegrationService implements OnModuleInit {
     return this._xAccountActivityHandler.handlePayload(payload);
   }
 
+  /** Inbound Xquik webhook payload (monitor events). */
+  async handleXquikPayload(payload: Record<string, unknown>): Promise<void> {
+    return this._xAccountActivityHandler.handleXquikPayload(payload);
+  }
+
+  /**
+   * Run engagement plugs immediately for published tweet ids (likes/RTs are poller-first;
+   * this reduces delay right after tweet.new or when a retweet hints at new engagers).
+   */
+  async runImmediateEngagementPollForReleaseIds(
+    releaseIds: string[]
+  ): Promise<void> {
+    const seen = new Set<string>();
+    for (const releaseId of releaseIds) {
+      const id = String(releaseId ?? '').trim();
+      if (!id || seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      const channels =
+        await this._integrationRepository.findXChannelsByPostReleaseId(id);
+      for (const ch of channels) {
+        if (!ch?.id || !ch.organizationId) {
+          continue;
+        }
+        try {
+          await this.runEngagementPlugsForReleaseId(
+            ch.organizationId,
+            ch.id,
+            id
+          );
+        } catch (err) {
+          console.error(
+            `Xquik immediate engagement poll failed release=${id} integration=${ch.id}:`,
+            err
+          );
+        }
+      }
+    }
+  }
+
   async syncXAccountActivitySubscription(
     integration: Integration
   ): Promise<void> {
@@ -374,6 +424,10 @@ export class IntegrationService implements OnModuleInit {
 
   async listTweetStreamRecentEvents(limit?: number) {
     return this._tweetStream.listRecentEvents(limit);
+  }
+
+  async clearTweetStreamRecentEvents() {
+    return this._tweetStream.clearRecentEvents();
   }
 
   private async syncTweetStreamForIntegration(integration: Integration) {
@@ -757,7 +811,44 @@ export class IntegrationService implements OnModuleInit {
           }
         : ctx;
 
+    const engagerSnapshotPrefix = `esnap:${data.postId}:`;
+    const loadEngagerSnapshotForPost = async (): Promise<Set<string>> => {
+      const rows = await this._integrationRepository.listExisingDataWithPrefix(
+        getPlugById.plugFunction,
+        integrationId,
+        engagerSnapshotPrefix
+      );
+      return new Set(
+        rows
+          .map((r: { value: string }) => r.value.slice(engagerSnapshotPrefix.length))
+          .filter(Boolean)
+      );
+    };
+    const saveEngagerSnapshotForPost = async (userIds: string[]) => {
+      const rows = await this._integrationRepository.listExisingDataWithPrefix(
+        getPlugById.plugFunction,
+        integrationId,
+        engagerSnapshotPrefix
+      );
+      if (rows.length) {
+        await this._integrationRepository.deleteExisingDataValues(
+          getPlugById.plugFunction,
+          integrationId,
+          rows.map((r: { value: string }) => r.value)
+        );
+      }
+      if (userIds.length) {
+        await this._integrationRepository.saveExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          userIds.map((uid) => `${engagerSnapshotPrefix}${uid}`)
+        );
+      }
+    };
+
     const engagementPlugContext = mergeDmBatchGate({
+      loadEngagerSnapshot: loadEngagerSnapshotForPost,
+      saveEngagerSnapshot: saveEngagerSnapshotForPost,
       // Returns the subset of `userIds` that have ALREADY been recorded for
       // this post (i.e., already DM'd in a prior run). Caller filters them out
       // before sending DMs.
@@ -784,6 +875,16 @@ export class IntegrationService implements OnModuleInit {
           integrationId,
           values
         );
+        if (
+          getPlugById.plugFunction === 'autoDmEngagers' &&
+          userIds.length > 0
+        ) {
+          await this._integrationRepository.incrementAutoDmSentCountForPost(
+            integrationId,
+            data.postId,
+            userIds.length
+          );
+        }
       },
     });
 
@@ -861,12 +962,48 @@ export class IntegrationService implements OnModuleInit {
       },
       removeFollowerTracking: async (userIds: string[]) => {
         if (!userIds.length) return;
-        const values = userIds.flatMap((uid) => [`fdm:${uid}`, `fds:${uid}`]);
+        const values = userIds.flatMap((uid) => [
+          `fdm:${uid}`,
+          `fds:${uid}`,
+          `fprev:${uid}`,
+        ]);
         await this._integrationRepository.deleteExisingDataValues(
           getPlugById.plugFunction,
           integrationId,
           values
         );
+      },
+      /** Follower ids seen on the previous poll tick (for unfollow/re-follow delta). */
+      loadPreviousFollowerPollIds: async (): Promise<Set<string>> => {
+        const rows = await this._integrationRepository.listExisingDataWithPrefix(
+          getPlugById.plugFunction,
+          integrationId,
+          'fprev:'
+        );
+        return new Set(
+          rows.map((r) => r.value.replace(/^fprev:/, '')).filter(Boolean)
+        );
+      },
+      savePreviousFollowerPollIds: async (userIds: string[]) => {
+        const rows = await this._integrationRepository.listExisingDataWithPrefix(
+          getPlugById.plugFunction,
+          integrationId,
+          'fprev:'
+        );
+        if (rows.length) {
+          await this._integrationRepository.deleteExisingDataValues(
+            getPlugById.plugFunction,
+            integrationId,
+            rows.map((r) => r.value)
+          );
+        }
+        if (userIds.length) {
+          await this._integrationRepository.saveExisingData(
+            getPlugById.plugFunction,
+            integrationId,
+            userIds.map((uid) => `fprev:${uid}`)
+          );
+        }
       },
     });
 
@@ -881,7 +1018,44 @@ export class IntegrationService implements OnModuleInit {
       }
     }
 
+    const pinnedSnapshotPrefix = `esnap:${engagementReleaseId}:`;
+    const loadPinnedEngagerSnapshot = async (): Promise<Set<string>> => {
+      const rows = await this._integrationRepository.listExisingDataWithPrefix(
+        getPlugById.plugFunction,
+        integrationId,
+        pinnedSnapshotPrefix
+      );
+      return new Set(
+        rows
+          .map((r: { value: string }) => r.value.slice(pinnedSnapshotPrefix.length))
+          .filter(Boolean)
+      );
+    };
+    const savePinnedEngagerSnapshot = async (userIds: string[]) => {
+      const rows = await this._integrationRepository.listExisingDataWithPrefix(
+        getPlugById.plugFunction,
+        integrationId,
+        pinnedSnapshotPrefix
+      );
+      if (rows.length) {
+        await this._integrationRepository.deleteExisingDataValues(
+          getPlugById.plugFunction,
+          integrationId,
+          rows.map((r: { value: string }) => r.value)
+        );
+      }
+      if (userIds.length) {
+        await this._integrationRepository.saveExisingData(
+          getPlugById.plugFunction,
+          integrationId,
+          userIds.map((uid) => `${pinnedSnapshotPrefix}${uid}`)
+        );
+      }
+    };
+
     const pinnedEngagementPlugContext = mergeDmBatchGate({
+      loadEngagerSnapshot: loadPinnedEngagerSnapshot,
+      saveEngagerSnapshot: savePinnedEngagerSnapshot,
       loadDmdUserIds: async (userIds: string[]): Promise<Set<string>> => {
         if (userIds.length === 0) return new Set();
         const candidates = userIds.map(
@@ -1091,13 +1265,10 @@ export class IntegrationService implements OnModuleInit {
   private async stopXFollowerDmPollerWorkflow(
     integrationId: string
   ): Promise<void> {
-    try {
-      await this._temporalService.terminateWorkflow(
-        xFollowerDmPollerWorkflowId(integrationId)
-      );
-    } catch {
-      /* workflow may not exist */
-    }
+    await this.terminateForeverPollerIfRunning(
+      xFollowerDmPollerWorkflowId(integrationId),
+      'TweetStream WebSocket active — follower-DM poller paused'
+    );
   }
 
   /**
@@ -1148,13 +1319,9 @@ export class IntegrationService implements OnModuleInit {
   private async stopXProfileAutomationsPollerWorkflow(
     integrationId: string
   ): Promise<void> {
-    try {
-      await this._temporalService.terminateWorkflow(
-        xProfileAutomationsPollerWorkflowId(integrationId)
-      );
-    } catch {
-      /* workflow may not exist */
-    }
+    await this.terminateForeverPollerIfRunning(
+      xProfileAutomationsPollerWorkflowId(integrationId)
+    );
   }
 
   private async syncProfileAutomationsPoller(
@@ -1213,6 +1380,27 @@ export class IntegrationService implements OnModuleInit {
     );
   }
 
+  /** Terminate only RUNNING forever pollers (avoids Temporal ERROR on completed workflows). */
+  private async terminateForeverPollerIfRunning(
+    workflowId: string,
+    reason = 'Stopped by Postiz'
+  ): Promise<void> {
+    const raw = this.getTemporalRawClientSafe();
+    if (!raw) {
+      return;
+    }
+    try {
+      const handle = raw.workflow.getHandle(workflowId);
+      const description = await handle.describe();
+      if (description.status.name !== 'RUNNING') {
+        return;
+      }
+      await handle.terminate(reason);
+    } catch {
+      /* workflow not found or already completed */
+    }
+  }
+
   private async startForeverPollerIfNotRunning(
     workflowType: string,
     workflowId: string,
@@ -1267,13 +1455,9 @@ export class IntegrationService implements OnModuleInit {
   private async stopXEngagementPollerWorkflow(
     integrationId: string
   ): Promise<void> {
-    try {
-      await this._temporalService.terminateWorkflow(
-        xEngagementPollerWorkflowId(integrationId)
-      );
-    } catch {
-      /* workflow may not exist */
-    }
+    await this.terminateForeverPollerIfRunning(
+      xEngagementPollerWorkflowId(integrationId)
+    );
   }
 
   private async syncEngagementPoller(
@@ -1311,9 +1495,15 @@ export class IntegrationService implements OnModuleInit {
       return;
     }
 
-    const plugsForPost = plugs.filter((plug) =>
+    let plugsForPost = plugs.filter((plug) =>
       this.isEngagementPlugActiveForPost(plug.plugFunction, postSettings)
     );
+    // Right after publish there are no engagers yet; realtime/poller handles DMs.
+    if (isTweetStreamEnabled() && !isXquikEngagementPollerEnabled()) {
+      plugsForPost = plugsForPost.filter(
+        (plug) => plug.plugFunction !== 'autoDmEngagers'
+      );
+    }
 
     for (const plug of plugsForPost) {
       try {
@@ -1357,6 +1547,20 @@ export class IntegrationService implements OnModuleInit {
       return;
     }
 
+    const xquikMode = isXquikEngagementPollerEnabled();
+
+    const readPause = await isXPlugApiReadPaused(integrationId);
+    if (readPause.paused && !xquikMode) {
+      console.warn(
+        `X engagement poller: skipping tick integration=${integrationId} — X API 429 cooldown until ${readPause.until}. TweetStream realtime DMs still work.`
+      );
+      return;
+    }
+
+    const tweetStreamWsActive = xquikMode
+      ? false
+      : await isTweetStreamWsConsumerActive();
+
     const plugs =
       await this._integrationRepository.listActiveEngagementPlugIds(
         integrationId
@@ -1371,9 +1575,83 @@ export class IntegrationService implements OnModuleInit {
         100
       );
 
-    const toProcess = posts
-      .filter((p) => !!p.releaseId?.trim())
-      .slice(0, X_ENGAGEMENT_MAX_POSTS_PER_TICK);
+    const maxPosts = xquikMode
+      ? getXquikEngagementMaxPostsPerTick()
+      : tweetStreamWsActive
+        ? Math.min(3, X_ENGAGEMENT_MAX_POSTS_PER_TICK)
+        : X_ENGAGEMENT_MAX_POSTS_PER_TICK;
+
+    const published = posts.filter((p) => !!p.releaseId?.trim());
+    let toProcess = published.slice(0, maxPosts);
+
+    if (xquikMode && published.length > 0) {
+      const integration = await this._integrationRepository.getIntegrationById(
+        organizationId,
+        integrationId
+      );
+      const xProvider = this._integrationManager.getSocialIntegration(
+        'x'
+      ) as XProvider;
+      const ownerId = integration?.internalId;
+      const scan = published.slice(0, Math.min(15, published.length));
+      const scored = await Promise.all(
+        scan.map(async (post) => ({
+          post,
+          repliers: await xProvider.countInboundRepliersViaXquik(
+            post.releaseId!.trim(),
+            ownerId
+          ),
+        }))
+      );
+      scored.sort((a, b) => b.repliers - a.repliers);
+      const withReplies = scored
+        .filter((s) => s.repliers > 0)
+        .map((s) => s.post);
+      const newestFirst = published.slice(0, Math.min(5, published.length));
+      const merged = new Map<string, (typeof published)[0]>();
+      for (const p of [...withReplies, ...newestFirst]) {
+        merged.set(p.releaseId!.trim(), p);
+      }
+      toProcess = Array.from(merged.values()).slice(0, maxPosts);
+      if (toProcess.length > 0) {
+        console.log(
+          `Xquik engagement poller: tick posts (ids=${toProcess.map((p) => p.releaseId).join(',')}${withReplies.length ? `; ${withReplies.length} with Xquik repliers` : ''})`
+        );
+      }
+    }
+
+    if (!xquikMode && tweetStreamWsActive && published.length > 0) {
+      const integration = await this._integrationRepository.getIntegrationById(
+        organizationId,
+        integrationId
+      );
+      const xProvider = this._integrationManager.getSocialIntegration(
+        'x'
+      ) as XProvider;
+      if (integration?.token) {
+        try {
+          const ids = published
+            .map((p) => p.releaseId!.trim())
+            .slice(0, 20);
+          const metrics = await xProvider.batchTweetPublicMetrics(
+            integration.token,
+            ids
+          );
+          const withEngagement = published.filter((p) => {
+            const m = metrics[p.releaseId!.trim()];
+            return (m?.replyCount ?? 0) > 0 || (m?.likeCount ?? 0) > 0;
+          });
+          if (withEngagement.length > 0) {
+            toProcess = withEngagement.slice(0, maxPosts);
+          }
+        } catch (err) {
+          console.warn(
+            `X engagement poller: metrics prefetch failed integration=${integrationId}:`,
+            err
+          );
+        }
+      }
+    }
 
     const skippedPosts = Math.max(0, posts.length - toProcess.length);
     if (skippedPosts > 0) {
@@ -1391,9 +1669,14 @@ export class IntegrationService implements OnModuleInit {
         }
       }
 
-      const plugsForPost = plugs.filter((plug) =>
+      let plugsForPost = plugs.filter((plug) =>
         this.isEngagementPlugActiveForPost(plug.plugFunction, postSettings)
       );
+      if (tweetStreamWsActive && !xquikMode) {
+        plugsForPost = plugsForPost.filter((plug) =>
+          ['autoDmPinnedPost', 'autoDmEngagers'].includes(plug.plugFunction)
+        );
+      }
       if (!plugsForPost.length) {
         continue;
       }
@@ -1455,7 +1738,7 @@ export class IntegrationService implements OnModuleInit {
    * restart API credit spikes). Skips kinds disabled via env / TweetStream.
    */
   async bootstrapXPlugPollers(): Promise<void> {
-    if (!isXEngagementPollingDisabled()) {
+    if (!isXEngagementPollingDisabled() && !isXquikEngagementPollerEnabled()) {
       const engagement =
         await this._integrationRepository.listXIntegrationsWithActiveEngagementPlugs();
       for (const row of engagement) {

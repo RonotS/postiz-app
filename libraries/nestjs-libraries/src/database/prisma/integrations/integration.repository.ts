@@ -668,6 +668,46 @@ export class IntegrationRepository {
     });
   }
 
+  /**
+   * Recent published X posts for a channel profile (for TweetStream parent-tweet inference).
+   */
+  findRecentPublishedXPostsByProfile(
+    profile: string,
+    hours = 72,
+    limit = 5
+  ) {
+    const normalized = profile.trim().replace(/^@+/i, '').toLowerCase();
+    if (!normalized) {
+      return Promise.resolve([]);
+    }
+    const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+    return this._posts.model.post.findMany({
+      where: {
+        deletedAt: null,
+        state: 'PUBLISHED',
+        publishDate: { gte: since },
+        releaseId: { not: null, notIn: ['', 'missing'] },
+        integration: {
+          providerIdentifier: 'x',
+          deletedAt: null,
+          disabled: false,
+          profile: {
+            equals: normalized,
+            mode: 'insensitive',
+          },
+        },
+      },
+      orderBy: { publishDate: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        releaseId: true,
+        publishDate: true,
+        content: true,
+      },
+    });
+  }
+
   /** Find X channel(s) that published this tweet id (releaseId). */
   findXChannelsByPostReleaseId(releaseId: string) {
     const id = String(releaseId ?? '').trim();

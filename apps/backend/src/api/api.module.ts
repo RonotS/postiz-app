@@ -34,6 +34,7 @@ import { MonitorController } from '@gitroom/backend/api/routes/monitor.controlle
 import { NoAuthIntegrationsController } from '@gitroom/backend/api/routes/no.auth.integrations.controller';
 import { XAccountActivityController } from '@gitroom/backend/api/routes/x.account-activity.controller';
 import { XTweetStreamController } from '@gitroom/backend/api/routes/x.tweetstream.controller';
+import { XquikController } from '@gitroom/backend/api/routes/x.xquik.controller';
 import { EnterpriseController } from '@gitroom/backend/api/routes/enterprise.controller';
 import { OAuthAppController } from '@gitroom/backend/api/routes/oauth-app.controller';
 import { ApprovedAppsController } from '@gitroom/backend/api/routes/approved-apps.controller';
@@ -45,6 +46,7 @@ import { GoogleProvider } from '@gitroom/backend/services/auth/providers/google.
 import { FarcasterProvider } from '@gitroom/backend/services/auth/providers/farcaster.provider';
 import { WalletProvider } from '@gitroom/backend/services/auth/providers/wallet.provider';
 import { OauthProvider } from '@gitroom/backend/services/auth/providers/oauth.provider';
+import { XquikService } from '@gitroom/nestjs-libraries/integrations/social/xquik.service';
 
 const authenticatedController = [
   UsersController,
@@ -78,6 +80,7 @@ const authenticatedController = [
     NoAuthIntegrationsController,
     XAccountActivityController,
     XTweetStreamController,
+    XquikController,
     OAuthController,
     ...authenticatedController,
   ],
@@ -100,6 +103,7 @@ const authenticatedController = [
     FarcasterProvider,
     WalletProvider,
     OauthProvider,
+    XquikService,
   ],
   get exports() {
     return [...this.imports, ...this.providers];

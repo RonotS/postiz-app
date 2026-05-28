@@ -54,4 +54,14 @@ export class XTweetStreamController {
       events: await this._integrationService.listTweetStreamRecentEvents(n),
     };
   }
+
+  /** Clear Redis event buffer (local debugging). */
+  @Post('events/clear')
+  @HttpCode(HttpStatus.OK)
+  async clearEvents() {
+    if (!isTweetStreamEnabled()) {
+      return { enabled: false };
+    }
+    return this._integrationService.clearTweetStreamRecentEvents();
+  }
 }

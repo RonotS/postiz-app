@@ -26,9 +26,20 @@ import { XDto } from '@gitroom/nestjs-libraries/dtos/posts/providers-settings/x.
 import { Rules } from '@gitroom/nestjs-libraries/chat/rules.description.decorator';
 import {
   isXApiRateLimitError,
+  isXPlugApiReadPaused,
   markPlugBatchLimitedFromError,
 } from '@gitroom/nestjs-libraries/integrations/social/x-plug-batch-rate-limit.store';
 import { getXWebhookDmDelayMs } from '@gitroom/helpers/x/x.account-activity.env';
+import { isTweetStreamWsConsumerActive } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.ws-state';
+import {
+  isTweetStreamPollLikesWhenWsActive,
+  isTweetStreamPollRepliesWhenWsActive,
+} from '@gitroom/helpers/x/tweetstream.env';
+import {
+  getXquikApiBase,
+  getXquikApiKey,
+  isXquikEnabled,
+} from '@gitroom/helpers/x/xquik.env';
 
 type XPlugDmBatchContext = {
   tryReserveDm?: () => Promise<boolean>;
@@ -381,8 +392,38 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         : fields.thread || '';
 
     try {
-      const likes = await client.v2.tweetLikedBy(id);
-      if ((likes?.meta?.result_count || 0) < threshold) {
+      const readPause = await isXPlugApiReadPaused(integration.id);
+      if (readPause.paused) {
+        return false;
+      }
+
+      let likeCount = 0;
+      if (this.canUseXquikReads()) {
+        try {
+          const payload = await this.xquikGetFirstAvailable([
+            `/x/tweets/${id}/favoriters`,
+            `/x/tweets/${id}/favoriters/list`,
+          ]);
+          const ids = this.extractXquikUserIds(payload);
+          likeCount =
+            Number(payload?.meta?.result_count ?? payload?.meta?.count) ||
+            ids.length;
+        } catch (err) {
+          if (isXApiRateLimitError(err)) {
+            await markPlugBatchLimitedFromError(integration.id, err);
+          }
+          console.warn(
+            'X AUTO THREAD REPLY: Xquik like count failed; skipping this run:',
+            err
+          );
+          return false;
+        }
+      } else {
+        const likes = await client.v2.tweetLikedBy(id);
+        likeCount = likes?.meta?.result_count || 0;
+      }
+
+      if (likeCount < threshold) {
         return false;
       }
 
@@ -460,13 +501,26 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       if (plugContext?.confirmDmSent) {
         await plugContext.confirmDmSent();
       }
+      console.log(
+        `X AUTO DM: sent DM to user ${targetUserId} from @${integration.profile ?? integration.id}`
+      );
       return true;
     } catch (dmErr: any) {
       await markPlugBatchLimitedFromError(integration.id, dmErr);
       const status = dmErr?.code ?? dmErr?.data?.status;
       if (status === 403) {
+        const detail = formatXApiErrorMessage(dmErr, 'Forbidden');
+        const detailLower = detail.toLowerCase();
+        const permissionIssue =
+          detailLower.includes('oauth1') ||
+          detailLower.includes('permission') ||
+          detailLower.includes('dm.write') ||
+          detailLower.includes('not enrolled');
+        const hint = permissionIssue
+          ? `Reconnect @${integration.profile ?? 'this channel'} in Postiz (X token may lack Direct Message scope on the app).`
+          : `X blocked the DM to user ${targetUserId} — they must follow @${integration.profile ?? 'you'} or allow DMs from non-followers (API cannot override privacy).`;
         console.warn(
-          `X AUTO DM: cannot DM user ${targetUserId} (403 — they must follow you or allow DMs from non-followers)`
+          `X AUTO DM: cannot DM user ${targetUserId} from @${integration.profile ?? integration.id} (403). ${hint} X says: ${detail}`
         );
       } else if (isXApiRateLimitError(dmErr)) {
         console.error(
@@ -483,6 +537,291 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     }
   }
 
+  private canUseXquikReads(): boolean {
+    return isXquikEnabled() && !!getXquikApiKey();
+  }
+
+  /** Inbound repliers on a tweet (strict inReplyToId match; excludes owner). */
+  async countInboundRepliersViaXquik(
+    tweetId: string,
+    ownerUserId?: string
+  ): Promise<number> {
+    if (!this.canUseXquikReads()) {
+      return 0;
+    }
+    return (await this.fetchXquikRepliers(tweetId, ownerUserId)).length;
+  }
+
+  private extractXquikNextCursor(payload: any): string | undefined {
+    const next = String(
+      payload?.next_cursor ?? payload?.nextCursor ?? ''
+    ).trim();
+    return next || undefined;
+  }
+
+  /**
+   * Resolve the original tweet id for a retweet/repost row (Xquik webhook often omits
+   * retweetedTweetId on tweet.retweet).
+   */
+  async resolveXquikRetweetedTweetId(
+    retweetRowId: string
+  ): Promise<string | undefined> {
+    if (!this.canUseXquikReads()) {
+      return undefined;
+    }
+    const id = String(retweetRowId ?? '').trim();
+    if (!id) {
+      return undefined;
+    }
+    try {
+      const payload = await this.xquikGetFirstAvailable([
+        `/x/tweets/${id}`,
+        `/x/tweet/${id}`,
+      ]);
+      return this.extractRetweetedTweetIdFromXquikPayload(payload);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** When Xquik omits retweetedTweetId, load the RT row via X API (uses RT author token). */
+  async resolveRetweetedTweetIdViaXApi(
+    integration: Integration,
+    retweetRowId: string
+  ): Promise<string | undefined> {
+    const id = String(retweetRowId ?? '').trim();
+    if (!id) {
+      return undefined;
+    }
+    try {
+      const client = this.buildClientForIntegration(integration);
+      const res = await client.v2.singleTweet(id, {
+        'tweet.fields': ['referenced_tweets'],
+      });
+      const refs = res?.data?.referenced_tweets ?? [];
+      for (const r of refs) {
+        const type = String(r?.type ?? '').toLowerCase();
+        if (type === 'retweeted' && r?.id) {
+          return String(r.id);
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `X AUTO DM: X API could not resolve retweet target for row ${id}:`,
+        err
+      );
+    }
+    return undefined;
+  }
+
+  private extractRetweetedTweetIdFromXquikPayload(
+    payload: any
+  ): string | undefined {
+    const roots = [
+      payload?.data?.tweet,
+      payload?.data,
+      payload?.tweet,
+      payload,
+    ];
+    for (const root of roots) {
+      if (!root || typeof root !== 'object') {
+        continue;
+      }
+      const direct = String(
+        root.retweetedTweetId ??
+          root.retweeted_tweet_id ??
+          root.retweetedStatusId ??
+          ''
+      ).trim();
+      if (direct) {
+        return direct;
+      }
+      const nested =
+        root.retweeted_status ??
+        root.retweetedStatus ??
+        root.retweetedTweet;
+      if (nested && typeof nested === 'object') {
+        const nestedId = String(
+          nested.id ?? nested.id_str ?? nested.tweetId ?? ''
+        ).trim();
+        if (nestedId) {
+          return nestedId;
+        }
+      }
+      const refs = root.referenced_tweets ?? root.referencedTweets;
+      if (Array.isArray(refs)) {
+        for (const r of refs) {
+          const type = String(r?.type ?? '').toLowerCase();
+          if (type === 'retweeted' || type === 'retweet') {
+            const refId = String(r?.id ?? r?.id_str ?? '').trim();
+            if (refId) {
+              return refId;
+            }
+          }
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private extractXquikUserIds(payload: any): string[] {
+    const rows =
+      (Array.isArray(payload?.users) && payload.users) ||
+      (Array.isArray(payload?.data?.users) && payload.data.users) ||
+      (Array.isArray(payload?.data) && payload.data) ||
+      (Array.isArray(payload?.results) && payload.results) ||
+      [];
+    const ids = new Set<string>();
+    for (const row of rows) {
+      const id = String(
+        row?.id ??
+          row?.user_id ??
+          row?.rest_id ??
+          row?.legacy?.id_str ??
+          ''
+      ).trim();
+      if (id) ids.add(id);
+    }
+    return Array.from(ids);
+  }
+
+  /** X user ids are snowflakes — always compare as strings, never as JS numbers. */
+  private normalizeXSnowflakeId(id: unknown): string {
+    if (id == null || id === '') {
+      return '';
+    }
+    if (typeof id === 'bigint') {
+      return id.toString();
+    }
+    if (typeof id === 'number' && Number.isFinite(id)) {
+      return String(id);
+    }
+    return String(id).trim();
+  }
+
+  /**
+   * Only true replies to `parentTweetId` (Xquik /replies can include unrelated tweets).
+   */
+  private extractXquikReplyAuthorIds(
+    payload: any,
+    parentTweetId: string,
+    ownerUserId?: string
+  ): string[] {
+    const rows =
+      (Array.isArray(payload?.tweets) && payload.tweets) ||
+      (Array.isArray(payload?.data?.tweets) && payload.data.tweets) ||
+      (Array.isArray(payload?.replies) && payload.replies) ||
+      (Array.isArray(payload?.data?.replies) && payload.data.replies) ||
+      (Array.isArray(payload?.data) && payload.data) ||
+      (Array.isArray(payload?.results) && payload.results) ||
+      [];
+    const parent = String(parentTweetId).trim();
+    const owner = this.normalizeXSnowflakeId(ownerUserId);
+    const ids = new Set<string>();
+    for (const row of rows) {
+      const tweetId = String(row?.id ?? row?.tweet_id ?? row?.tweetId ?? '').trim();
+      if (!tweetId || tweetId === parent) {
+        continue;
+      }
+      const replyParent = String(
+        row?.inReplyToId ??
+          row?.in_reply_to_tweet_id ??
+          row?.inReplyToTweetId ??
+          row?.in_reply_to_status_id ??
+          ''
+      ).trim();
+      if (replyParent !== parent) {
+        continue;
+      }
+      const authorId = this.normalizeXSnowflakeId(
+        row?.author_id ??
+          row?.author?.id ??
+          row?.user?.id ??
+          row?.user_id ??
+          ''
+      );
+      if (!authorId || (owner && authorId === owner)) {
+        continue;
+      }
+      ids.add(authorId);
+    }
+    return Array.from(ids);
+  }
+
+  private async fetchXquikRepliers(
+    tweetId: string,
+    ownerUserId?: string
+  ): Promise<string[]> {
+    const id = String(tweetId ?? '').trim();
+    if (!id) {
+      return [];
+    }
+    const ids = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const payload = await this.xquikGetFirstAvailable(
+        [`/x/tweets/${id}/replies`, `/x/tweets/${id}/reply`],
+        { limit: 100, cursor }
+      );
+      for (const authorId of this.extractXquikReplyAuthorIds(
+        payload,
+        id,
+        ownerUserId
+      )) {
+        ids.add(authorId);
+      }
+      const next = this.extractXquikNextCursor(payload);
+      if (!next || payload?.has_next_page === false) {
+        break;
+      }
+      cursor = next;
+    }
+    return Array.from(ids);
+  }
+
+  private async xquikGet(
+    path: string,
+    query?: Record<string, string | number | undefined>
+  ): Promise<any> {
+    const base = getXquikApiBase();
+    const key = getXquikApiKey();
+    if (!key) {
+      throw new Error('Xquik API key missing');
+    }
+    const params = new URLSearchParams();
+    for (const [k, v] of Object.entries(query || {})) {
+      if (v === undefined || v === null || String(v).trim() === '') continue;
+      params.set(k, String(v));
+    }
+    const url = `${base}${path}${params.toString() ? `?${params.toString()}` : ''}`;
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'x-api-key': key },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw { code: res.status, data: { status: res.status, detail: body } };
+    }
+    return res.json();
+  }
+
+  private async xquikGetFirstAvailable(
+    paths: string[],
+    query?: Record<string, string | number | undefined>
+  ): Promise<any> {
+    let lastErr: any;
+    for (const path of paths) {
+      try {
+        return await this.xquikGet(path, query);
+      } catch (err: any) {
+        lastErr = err;
+        if (err?.code === 404) continue;
+        throw err;
+      }
+    }
+    throw lastErr;
+  }
+
   // Fetch user IDs of accounts that LIKED a tweet.
   // Returns up to 100 user IDs (X V2 API page size).
   private async fetchLikers(
@@ -490,51 +829,265 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     tweetId: string,
     integrationId?: string
   ): Promise<string[]> {
+    if (this.canUseXquikReads()) {
+      try {
+        const payload = await this.xquikGetFirstAvailable([
+          `/x/tweets/${tweetId}/favoriters`,
+          `/x/tweets/${tweetId}/favoriters/list`,
+        ]);
+        const ids = this.extractXquikUserIds(payload);
+        console.log(
+          `X AUTO DM: Xquik favoriters for tweet ${tweetId}: ${ids.length} user(s)`
+        );
+        if (ids.length > 0) {
+          return ids;
+        }
+        console.log(
+          `X AUTO DM: Xquik returned 0 likers for ${tweetId} — falling back to X API liked_by`
+        );
+      } catch (err) {
+        if (integrationId && isXApiRateLimitError(err)) {
+          await markPlugBatchLimitedFromError(integrationId, err);
+        }
+        console.warn(
+          'X AUTO DM: Xquik likers fetch failed; falling back to X API:',
+          err
+        );
+      }
+    }
     try {
       const res = await client.v2.tweetLikedBy(tweetId, { max_results: 100 });
-      return (res?.data || []).map((u) => u.id);
+      const ids = (res?.data || []).map((u) => String(u.id)).filter(Boolean);
+      if (ids.length > 0) {
+        console.log(
+          `X AUTO DM: X API liked_by for tweet ${tweetId}: ${ids.length} user(s)`
+        );
+      }
+      return ids;
     } catch (err) {
       if (integrationId && isXApiRateLimitError(err)) {
         await markPlugBatchLimitedFromError(integrationId, err);
       }
-      console.error('X AUTO DM: failed to fetch likers:', err);
+      console.error('X AUTO DM: failed to fetch likers from X API:', err);
       return [];
     }
   }
 
   // Fetch user IDs of accounts that RETWEETED a tweet.
   // Same V2 endpoint shape as likers.
-  private async fetchRetweeters(client: TwitterApi, tweetId: string): Promise<string[]> {
+  private async fetchRetweeters(
+    client: TwitterApi,
+    tweetId: string,
+    integrationId?: string
+  ): Promise<string[]> {
+    if (this.canUseXquikReads()) {
+      try {
+        const payload = await this.xquikGetFirstAvailable([
+          `/x/tweets/${tweetId}/retweeters`,
+          `/x/tweets/${tweetId}/reposters`,
+        ]);
+        const ids = this.extractXquikUserIds(payload);
+        if (ids.length > 0) {
+          console.log(
+            `X AUTO DM: fetched ${ids.length} retweeters from Xquik for tweet ${tweetId}`
+          );
+          return ids;
+        }
+        console.log(
+          `X AUTO DM: Xquik returned 0 retweeters for ${tweetId} — falling back to X API`
+        );
+      } catch (err) {
+        if (integrationId && isXApiRateLimitError(err)) {
+          await markPlugBatchLimitedFromError(integrationId, err);
+        }
+        console.warn(
+          'X AUTO DM: Xquik retweeters fetch failed; falling back to X API:',
+          err
+        );
+      }
+    }
     try {
       const res = await client.v2.tweetRetweetedBy(tweetId, { max_results: 100 });
-      return (res?.data || []).map((u) => u.id);
+      const ids = (res?.data || []).map((u) => String(u.id)).filter(Boolean);
+      if (ids.length > 0) {
+        console.log(
+          `X AUTO DM: X API retweeted_by for tweet ${tweetId}: ${ids.length} user(s)`
+        );
+      }
+      return ids;
     } catch (err) {
       console.error('X AUTO DM: failed to fetch retweeters:', err);
       return [];
     }
   }
 
-  // Fetch user IDs of accounts that REPLIED to a tweet.
-  // X V2 has no direct "repliers" endpoint, so this uses recent search
-  // with conversation_id:<tweetId> to find replies, then extracts authors.
-  // Limited to ~100 most recent replies (one search page).
-  private async fetchRepliers(client: TwitterApi, tweetId: string): Promise<string[]> {
-    try {
-      const res = await client.v2.search(`conversation_id:${tweetId}`, {
-        max_results: 100,
-        'tweet.fields': ['author_id', 'in_reply_to_user_id'],
-      });
-      // The paginator's `data` is an iterator wrapper; the underlying tweets
-      // live on `res.tweets` (synchronous accessor for already-loaded page).
-      const tweets = (res as any)?.tweets || (res as any)?.data?.data || [];
-      const ids = new Set<string>();
-      for (const t of tweets) {
-        // Skip the original tweet itself (which has matching conversation_id).
-        if (t?.id === tweetId) continue;
-        if (t?.author_id) ids.add(t.author_id);
+  private collectReplierIdsFromTweets(
+    tweets: Iterable<{ id?: string; author_id?: string; referenced_tweets?: { type?: string; id?: string }[] }>,
+    parentTweetId: string
+  ): string[] {
+    const parent = String(parentTweetId).trim();
+    const ids = new Set<string>();
+    for (const t of tweets) {
+      if (!t?.id || String(t.id) === parent) {
+        continue;
       }
-      return Array.from(ids);
+      const refs = t.referenced_tweets ?? [];
+      const directReply = refs.some(
+        (r) => r.type === 'replied_to' && String(r.id ?? '') === parent
+      );
+      if (!directReply || !t.author_id) {
+        continue;
+      }
+      ids.add(String(t.author_id));
+    }
+    return Array.from(ids);
+  }
+
+  private async fetchRepliersViaConversationSearch(
+    client: TwitterApi,
+    tweetId: string,
+    integrationId?: string
+  ): Promise<string[]> {
+    const queries = [
+      `conversation_id:${tweetId} -is:retweet`,
+      `conversation_id:${tweetId} is:reply -is:retweet`,
+    ];
+    for (const query of queries) {
+      try {
+        const paginator = await client.v2.search(query, {
+          max_results: 100,
+          'tweet.fields': ['author_id', 'referenced_tweets'],
+        });
+        const collected: { id?: string; author_id?: string; referenced_tweets?: { type?: string; id?: string }[] }[] = [];
+        for await (const t of paginator) {
+          collected.push(t);
+        }
+        const ids = this.collectReplierIdsFromTweets(collected, tweetId);
+        const metaCount = (paginator as { meta?: { result_count?: number } })
+          .meta?.result_count;
+        if (ids.length > 0) {
+          console.log(
+            `X AUTO DM: fetchRepliers found ${ids.length} replier(s) on tweet ${tweetId} via search (meta=${metaCount ?? '?'})`
+          );
+          return ids;
+        }
+        console.log(
+          `X AUTO DM: search "${query}" returned meta=${metaCount ?? 0} for tweet ${tweetId}`
+        );
+      } catch (err) {
+        if (integrationId && isXApiRateLimitError(err)) {
+          await markPlugBatchLimitedFromError(integrationId, err);
+          throw err;
+        }
+        console.warn(`X AUTO DM: search failed query="${query}":`, err);
+      }
+    }
+    return [];
+  }
+
+  /** Replies that @mention the channel (misses reply-without-@). */
+  private async fetchRepliersViaMentionTimeline(
+    client: TwitterApi,
+    tweetId: string,
+    channelUserId: string,
+    integrationId?: string
+  ): Promise<string[]> {
+    const uid = String(channelUserId ?? '').trim();
+    if (!uid) {
+      return [];
+    }
+    try {
+      const paginator = await client.v2.userMentionTimeline(uid, {
+        max_results: 100,
+        'tweet.fields': ['author_id', 'referenced_tweets'],
+      });
+      const collected: { id?: string; author_id?: string; referenced_tweets?: { type?: string; id?: string }[] }[] = [];
+      for await (const t of paginator) {
+        collected.push(t);
+      }
+      const ids = this.collectReplierIdsFromTweets(collected, tweetId);
+      if (ids.length > 0) {
+        console.log(
+          `X AUTO DM: fetchRepliers found ${ids.length} replier(s) on tweet ${tweetId} via mention timeline`
+        );
+      }
+      return ids;
     } catch (err) {
+      if (integrationId && isXApiRateLimitError(err)) {
+        await markPlugBatchLimitedFromError(integrationId, err);
+        throw err;
+      }
+      console.warn('X AUTO DM: mention timeline repliers fetch failed:', err);
+      return [];
+    }
+  }
+
+  // Fetch user IDs of accounts that REPLIED to a tweet (search + mention fallback).
+  private async fetchRepliers(
+    client: TwitterApi,
+    tweetId: string,
+    integrationId?: string,
+    channelUserId?: string
+  ): Promise<string[]> {
+    const id = String(tweetId ?? '').trim();
+    if (!id) {
+      return [];
+    }
+    if (this.canUseXquikReads()) {
+      try {
+        let ids = await this.fetchXquikRepliers(id, channelUserId);
+        if (ids.length > 0) {
+          console.log(
+            `X AUTO DM: fetchRepliers found ${ids.length} replier(s) on tweet ${id} via Xquik`
+          );
+          return ids;
+        }
+        if (channelUserId) {
+          ids = await this.fetchRepliersViaMentionTimeline(
+            client,
+            id,
+            channelUserId,
+            integrationId
+          );
+          if (ids.length > 0) {
+            console.log(
+              `X AUTO DM: Xquik had 0 repliers on tweet ${id}; found ${ids.length} via X mention timeline (reply may be missing from Xquik)`
+            );
+          }
+        }
+        return ids;
+      } catch (err) {
+        if (integrationId && isXApiRateLimitError(err)) {
+          await markPlugBatchLimitedFromError(integrationId, err);
+        }
+        console.error('X AUTO DM: failed to fetch repliers from Xquik:', err);
+        return [];
+      }
+    }
+    try {
+      let ids = await this.fetchRepliersViaConversationSearch(
+        client,
+        id,
+        integrationId
+      );
+      if (ids.length === 0 && channelUserId) {
+        ids = await this.fetchRepliersViaMentionTimeline(
+          client,
+          id,
+          channelUserId,
+          integrationId
+        );
+      }
+      if (ids.length === 0) {
+        console.log(
+          `X AUTO DM: fetchRepliers found 0 users for tweet ${id} — X Search likely unavailable on your app tier (needs Basic + Search), or use TweetStream for realtime replies`
+        );
+      }
+      return ids;
+    } catch (err) {
+      if (integrationId && isXApiRateLimitError(err)) {
+        await markPlugBatchLimitedFromError(integrationId, err);
+      }
       console.error('X AUTO DM: failed to fetch repliers:', err);
       return [];
     }
@@ -574,6 +1127,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     },
     postSettings?: any,
     plugContext?: {
+      loadEngagerSnapshot?: () => Promise<Set<string>>;
+      saveEngagerSnapshot?: (userIds: string[]) => Promise<void>;
       loadDmdUserIds: (userIds: string[]) => Promise<Set<string>>;
       saveDmdUserIds: (userIds: string[]) => Promise<void>;
     }
@@ -625,52 +1180,81 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     }
 
     try {
+      const readPause = await isXPlugApiReadPaused(integration.id);
+      if (readPause.paused) {
+        return false;
+      }
+
+      const useXquik = this.canUseXquikReads();
+      const tweetStreamWsActive =
+        !useXquik && (await isTweetStreamWsConsumerActive());
+      const pollLikes = useXquik
+        ? effectiveTargetLikes
+        : effectiveTargetLikes &&
+          (!tweetStreamWsActive || isTweetStreamPollLikesWhenWsActive());
+      const pollRetweets = useXquik
+        ? effectiveTargetRetweets
+        : tweetStreamWsActive
+          ? false
+          : effectiveTargetRetweets;
+      const pollReplies = useXquik
+        ? effectiveTargetReplies
+        : effectiveTargetReplies &&
+          (!tweetStreamWsActive || isTweetStreamPollRepliesWhenWsActive());
+
+      if (
+        !useXquik &&
+        tweetStreamWsActive &&
+        !pollLikes &&
+        !pollRetweets &&
+        !pollReplies
+      ) {
+        return false;
+      }
+
       // Collect user IDs from each enabled target. Deduplicate so a user who
       // both liked and retweeted only gets DM'd once. No minimum engagement
       // count — even a single engager is enough to trigger a DM.
       const userIdSet = new Set<string>();
 
-      if (effectiveTargetLikes) {
+      if (pollLikes) {
         const ids = await this.fetchLikers(client, id, integration.id);
         ids.forEach((uid) => userIdSet.add(uid));
       }
-      if (effectiveTargetRetweets) {
-        const ids = await this.fetchRetweeters(client, id);
+      if (pollRetweets) {
+        const ids = await this.fetchRetweeters(client, id, integration.id);
         ids.forEach((uid) => userIdSet.add(uid));
       }
-      if (effectiveTargetReplies) {
-        const ids = await this.fetchRepliers(client, id);
+      if (pollReplies) {
+        const ids = await this.fetchRepliers(
+          client,
+          id,
+          integration.id,
+          integration.internalId
+        );
         ids.forEach((uid) => userIdSet.add(uid));
       }
 
-      const ownerId = String(integration.internalId || '').trim();
+      const ownerId = this.normalizeXSnowflakeId(integration.internalId);
       const allUserIds = Array.from(userIdSet).filter(
         (uid) => !ownerId || uid !== ownerId
       );
       if (allUserIds.length === 0) {
+        if (pollLikes || pollRetweets || pollReplies) {
+          const ownerFiltered =
+            userIdSet.size > 0 && ownerId && userIdSet.size === 1 && userIdSet.has(ownerId);
+          console.log(
+            `X AUTO DM: no engagers to DM on tweet ${id} after poller fetch (likes=${pollLikes} RT=${pollRetweets} replies=${pollReplies}; raw=${userIdSet.size}${ownerFiltered ? '; only engager was post owner' : ''})`
+          );
+        }
         return false;
       }
 
-      // Cross-run deduplication: skip users who were already DM'd in a
-      // previous run of this plug for this same post. Without this, a user
-      // who liked Run 1 and retweeted between Run 1 and Run 2 would receive
-      // a duplicate DM.
-      let alreadyDmd: Set<string> = new Set();
-      if (plugContext?.loadDmdUserIds) {
-        try {
-          alreadyDmd = await plugContext.loadDmdUserIds(allUserIds);
-        } catch (err) {
-          console.warn(
-            'X AUTO DM: failed to load already-DMd users (will proceed without cross-run dedup):',
-            err
-          );
-        }
-      }
-      const userIds = allUserIds.filter((uid) => !alreadyDmd.has(uid));
+      const { toDm: userIds } = await this.resolveEngagersToDm(
+        allUserIds,
+        plugContext
+      );
       if (userIds.length === 0) {
-        // Everyone who currently engages was already DM'd in a prior run.
-        // Return false so the workflow keeps the remaining scheduled runs;
-        // a later run may catch users who engage *after* this one.
         return false;
       }
 
@@ -691,6 +1275,13 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       // Persist the IDs we successfully DM'd so future runs of this plug
       // for this post skip them. Failures here are non-fatal — worst case
       // is a duplicate DM next run.
+      if (plugContext?.saveEngagerSnapshot) {
+        try {
+          await plugContext.saveEngagerSnapshot(allUserIds);
+        } catch (err) {
+          console.warn('X AUTO DM: failed to save engager snapshot:', err);
+        }
+      }
       if (successfullyDmd.length > 0 && plugContext?.saveDmdUserIds) {
         try {
           await plugContext.saveDmdUserIds(successfullyDmd);
@@ -700,6 +1291,10 @@ export class XProvider extends SocialAbstract implements SocialProvider {
             err
           );
         }
+      } else if (userIds.length > 0) {
+        console.warn(
+          `X AUTO DM: ${userIds.length} engager(s) on tweet ${id} but none DM'd (X 403/429, DM batch cap, or API gate — check logs above)`
+        );
       }
 
       // IMPORTANT: always return false (never `true`) so the post workflow
@@ -719,8 +1314,41 @@ export class XProvider extends SocialAbstract implements SocialProvider {
   private async fetchFollowerUserIds(
     client: TwitterApi,
     userId: string,
-    options: { maxPages: number; pageSize: number }
+    options: { maxPages: number; pageSize: number },
+    integrationId?: string
   ): Promise<string[]> {
+    if (this.canUseXquikReads()) {
+      const ids: string[] = [];
+      const pageSize = Math.min(Math.max(options.pageSize, 10), 1000);
+      let cursor: string | undefined;
+      for (let p = 0; p < options.maxPages; p++) {
+        try {
+          const payload = await this.xquikGetFirstAvailable(
+            [`/x/users/${userId}/followers`, `/x/followers`],
+            {
+              limit: pageSize,
+              userId,
+              ...(cursor ? { cursor } : {}),
+              ...(cursor ? { after: cursor } : {}),
+              ...(cursor ? { next_cursor: cursor } : {}),
+            }
+          );
+          ids.push(...this.extractXquikUserIds(payload));
+          cursor = this.extractXquikNextCursor(payload);
+          if (!cursor) break;
+        } catch (err) {
+          if (integrationId && isXApiRateLimitError(err)) {
+            await markPlugBatchLimitedFromError(integrationId, err);
+          }
+          console.error('X AUTO DM FOLLOWERS: Xquik followers fetch failed:', err);
+          break;
+        }
+      }
+      if (ids.length > 0) {
+        return Array.from(new Set(ids));
+      }
+      return [];
+    }
     const ids: string[] = [];
     const pageSize = Math.min(Math.max(options.pageSize, 10), 1000);
     let pagination_token: string | undefined;
@@ -853,6 +1481,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       saveFollowerSnapshotIds: (userIds: string[]) => Promise<void>;
       listFollowerSnapshotUserIds?: () => Promise<string[]>;
       removeFollowerTracking?: (userIds: string[]) => Promise<void>;
+      loadPreviousFollowerPollIds?: () => Promise<Set<string>>;
+      savePreviousFollowerPollIds?: (userIds: string[]) => Promise<void>;
     }
   ) {
     if (postSettings?.auto_dm_followers_enabled === false) {
@@ -903,44 +1533,52 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         const snapshotIds = await this.fetchFollowerUserIds(client, ownerId, {
           maxPages: 3,
           pageSize: 1000,
-        });
+        }, integration.id);
         if (snapshotIds.length > 0) {
           await plugContext.saveFollowerSnapshotIds(snapshotIds);
+        }
+        if (plugContext.savePreviousFollowerPollIds) {
+          await plugContext.savePreviousFollowerPollIds(snapshotIds);
         }
         await plugContext.setFollowerBaselineMarker();
         return false;
       }
 
+      const previousSet = plugContext.loadPreviousFollowerPollIds
+        ? await plugContext.loadPreviousFollowerPollIds()
+        : new Set<string>();
+
       const recentIds = await this.fetchFollowerUserIds(client, ownerId, {
         maxPages: 1,
         pageSize: 500,
-      });
+      }, integration.id);
+
+      const recentSet = new Set(recentIds);
+      const leftFollowers = [...previousSet].filter((uid) => !recentSet.has(uid));
+      if (leftFollowers.length && plugContext.removeFollowerTracking) {
+        await plugContext.removeFollowerTracking(leftFollowers);
+        console.log(
+          `X AUTO DM FOLLOWERS: ${leftFollowers.length} unfollow(s) detected on @${integration.profile} — cleared welcome-DM tracking`
+        );
+      }
+
+      if (plugContext.savePreviousFollowerPollIds) {
+        await plugContext.savePreviousFollowerPollIds(recentIds);
+      }
+
       if (recentIds.length === 0) {
         return false;
       }
 
-      const recentSet = new Set(recentIds);
-      const snapshotIds = plugContext.listFollowerSnapshotUserIds
-        ? await plugContext.listFollowerSnapshotUserIds()
-        : [];
-      const unfollowed = snapshotIds.filter((uid) => !recentSet.has(uid));
-      if (unfollowed.length && plugContext.removeFollowerTracking) {
-        await plugContext.removeFollowerTracking(unfollowed);
-      }
-
-      const inSnapshot = await plugContext.loadFollowerSnapshotContains(
-        recentIds
-      );
-
-      const unfollowedSet = new Set(unfollowed);
-      const toWelcome = recentIds.filter(
-        (uid) =>
-          uid !== ownerId &&
-          (!inSnapshot.has(uid) || unfollowedSet.has(uid))
-      );
+      const newFollowers = recentIds.filter((uid) => !previousSet.has(uid));
+      const toWelcome = newFollowers.filter((uid) => uid !== ownerId);
       if (toWelcome.length === 0) {
         return false;
       }
+
+      console.log(
+        `X AUTO DM FOLLOWERS: ${toWelcome.length} new follower(s) on @${integration.profile} since last poll`
+      );
 
       let dmSent = false;
       const successfullyDmd: string[] = [];
@@ -962,8 +1600,10 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       }
 
       if (successfullyDmd.length > 0) {
-        await plugContext.saveDmdUserIds(successfullyDmd);
         await plugContext.saveFollowerSnapshotIds(snapshotAdds);
+        console.log(
+          `X AUTO DM FOLLOWERS: welcome DM sent to ${successfullyDmd.length} follower(s) on @${integration.profile}`
+        );
       }
 
       return dmSent;
@@ -1388,6 +2028,8 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     },
     _postSettings?: unknown,
     plugContext?: {
+      loadEngagerSnapshot?: () => Promise<Set<string>>;
+      saveEngagerSnapshot?: (userIds: string[]) => Promise<void>;
       loadDmdUserIds: (userIds: string[]) => Promise<Set<string>>;
       saveDmdUserIds: (userIds: string[]) => Promise<void>;
     }
@@ -1438,8 +2080,7 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       );
       if (!candidates.length) return false;
 
-      const alreadyDmd = await plugContext.loadDmdUserIds(candidates);
-      const toDm = candidates.filter((uid) => !alreadyDmd.has(uid));
+      const { toDm } = await this.resolveEngagersToDm(candidates, plugContext);
       if (!toDm.length) return false;
 
       let sent = false;
@@ -1457,6 +2098,9 @@ export class XProvider extends SocialAbstract implements SocialProvider {
           sent = true;
         }
       }
+      if (plugContext.saveEngagerSnapshot) {
+        await plugContext.saveEngagerSnapshot(candidates);
+      }
       if (success.length) {
         await plugContext.saveDmdUserIds(success);
       }
@@ -1466,6 +2110,46 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     }
 
     return false;
+  }
+
+  /**
+   * DM users who newly appear in the current engager set (like/unlike/like sends again).
+   * Falls back to legacy per-user dedup when snapshot helpers are unavailable.
+   */
+  private async resolveEngagersToDm(
+    currentUserIds: string[],
+    plugContext?: {
+      loadEngagerSnapshot?: () => Promise<Set<string>>;
+      saveEngagerSnapshot?: (userIds: string[]) => Promise<void>;
+      loadDmdUserIds?: (userIds: string[]) => Promise<Set<string>>;
+    }
+  ): Promise<{ toDm: string[] }> {
+    if (
+      plugContext?.loadEngagerSnapshot &&
+      plugContext?.saveEngagerSnapshot
+    ) {
+      const previous = await plugContext.loadEngagerSnapshot();
+      const toDm = currentUserIds.filter((uid) => !previous.has(uid));
+      if (toDm.length > 0) {
+        console.log(
+          `X AUTO DM: ${toDm.length} new engager(s) since last poll (${currentUserIds.length} total)`
+        );
+      }
+      return { toDm };
+    }
+
+    let alreadyDmd: Set<string> = new Set();
+    if (plugContext?.loadDmdUserIds) {
+      try {
+        alreadyDmd = await plugContext.loadDmdUserIds(currentUserIds);
+      } catch (err) {
+        console.warn(
+          'X AUTO DM: failed to load already-DMd users (will proceed without dedup):',
+          err
+        );
+      }
+    }
+    return { toDm: currentUserIds.filter((uid) => !alreadyDmd.has(uid)) };
   }
 
   async refreshToken(): Promise<AuthTokenDetails> {
@@ -2471,7 +3155,9 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       saveDmdUserIds: (userIds: string[]) => Promise<void>;
     }
   ): Promise<boolean> {
-    if (!engagerUserId || engagerUserId === integration.internalId) {
+    const engagerId = this.normalizeXSnowflakeId(engagerUserId);
+    const ownerId = this.normalizeXSnowflakeId(integration.internalId);
+    if (!engagerId || (ownerId && engagerId === ownerId)) {
       return false;
     }
     if (postSettings?.auto_dm_enabled === false) {
@@ -2504,6 +3190,9 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       (eventType === 'retweet' && effectiveTargetRetweets) ||
       (eventType === 'reply' && effectiveTargetReplies);
     if (!enabled) {
+      console.log(
+        `X AUTO DM: skip ${eventType} for user ${engagerUserId} on tweet ${tweetId} (target disabled in post/plug settings)`
+      );
       return false;
     }
 
@@ -2515,13 +3204,6 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     const dmText = stripHtmlValidation('normal', rawMessage, true);
     if (!dmText.trim()) {
       return false;
-    }
-
-    if (plugContext?.loadDmdUserIds) {
-      const already = await plugContext.loadDmdUserIds([engagerUserId]);
-      if (already.has(engagerUserId)) {
-        return false;
-      }
     }
 
     const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
@@ -2543,6 +3225,10 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     );
     if (sent && plugContext?.saveDmdUserIds) {
       await plugContext.saveDmdUserIds([engagerUserId]);
+    } else if (!sent) {
+      console.warn(
+        `X AUTO DM: realtime ${eventType} DM to ${engagerUserId} on tweet ${tweetId} was not sent (X API or batch gate)`
+      );
     }
     return sent;
   }
@@ -2583,11 +3269,6 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       true
     );
     if (!dmText.trim()) return false;
-
-    if (plugContext?.loadDmdUserIds) {
-      const already = await plugContext.loadDmdUserIds([engagerUserId]);
-      if (already.has(engagerUserId)) return false;
-    }
 
     const client = this.buildClientForIntegration(integration);
     const sent = await this.sendDmWithBatchGate(
@@ -2676,8 +3357,10 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       { realtime: true }
     );
     if (sent) {
-      await plugContext.saveDmdUserIds([followerUserId]);
       await plugContext.saveFollowerSnapshotIds([followerUserId]);
+      console.log(
+        `X AUTO DM FOLLOWERS: realtime welcome DM to ${followerUserId} (@${integration.profile})`
+      );
     }
     return sent;
   }

@@ -237,6 +237,53 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
     );
   }, [current]);
 
+  const settingsPanel = (
+    <div
+      id="wrapper-settings"
+      className={clsx(
+        'pb-[20px] px-[20px] select-none',
+        showSettings && 'flex-1 flex pt-[20px]',
+        current === 'global' && 'hidden'
+      )}
+    >
+      <div className="flex-1 flex flex-col rounded-[12px] gap-[12px] overflow-hidden bg-newSettings">
+        <div
+          onClick={() => setShowSettings(!showSettings)}
+          className={clsx(
+            'bg-[#612BD3] rounded-[12px] flex items-center gap-[8px] cursor-pointer p-[12px]',
+            showSettings ? '!rounded-b-none' : ''
+          )}
+        >
+          <div className="flex-1 text-[14px] font-[600] text-white">
+            {currentIntegrationText}
+          </div>
+          <div>
+            <ChevronDownIcon
+              rotated={showSettings}
+              className="text-white"
+            />
+          </div>
+        </div>
+        <div
+          className={clsx(
+            !showSettings ? 'hidden' : 'flex-1',
+            'text-[14px] text-textColor font-[500] relative'
+          )}
+        >
+          <div className="absolute left-0 top-0 w-full h-full flex flex-col overflow-x-hidden overflow-y-auto scrollbar scrollbar-thumb-newBgColorInner scrollbar-track-newColColor">
+            <div
+              id="social-settings"
+              className="flex flex-col gap-[20px] bg-newBgColor"
+            />
+          </div>
+        </div>
+        <style>
+          {`#social-settings [data-id="${current}"] {display: block !important;}`}
+        </style>
+      </div>
+    </div>
+  );
+
   const changeCustomer = useCallback(
     (customer: string) => {
       const neededIntegrations = integrations.filter(
@@ -546,10 +593,10 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
       data-create-post-shell
       className="w-full h-full flex-1 flex flex-col relative min-h-0 mobile:h-[100dvh] mobile:max-h-[100dvh] mobile:max-w-none mobile:shrink-0 mobile:p-0 lg:p-[40px]"
     >
-      <div className="flex flex-1 flex-col bg-newBgColorInner mobile:rounded-none lg:rounded-[20px] min-h-0 mobile:w-[1400px] mobile:min-w-[1400px] mobile:max-w-[1400px] mobile:shrink-0 lg:min-w-0 lg:w-full lg:max-w-full overflow-hidden">
+      <div className="flex flex-1 flex-col bg-newBgColorInner mobile:rounded-none lg:rounded-[20px] min-h-0 w-full max-w-full overflow-hidden">
         <div
           data-create-post-hscroll
-          className="flex-1 min-h-0 min-w-0 lg:overflow-x-hidden"
+          className="flex-1 min-h-0 min-w-0 overflow-x-hidden mobile:overflow-y-auto mobile:max-h-[calc(100dvh-65px)]"
         >
           <div
             data-create-post-desktop-box
@@ -557,32 +604,14 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
           >
             <div
               data-create-post-layout
-              className="flex flex-1 flex-row min-h-0 min-w-0 overflow-hidden"
+              className="flex flex-1 min-h-0 min-w-0 overflow-hidden flex-col lg:flex-row mobile:overflow-y-visible"
             >
               <div
                 data-create-post-compose
-                className="flex flex-col flex-1 min-h-0 min-w-0 mobile:w-[820px] mobile:min-w-[820px] mobile:max-w-[820px] mobile:flex-none mobile:shrink-0 border-e border-newBorder"
+                className="flex flex-col flex-1 min-h-0 min-w-0 border-b lg:border-b-0 lg:border-e border-newBorder mobile:flex-none mobile:min-h-[56dvh]"
               >
             <div className="bg-newBgColor h-[65px] lg:rounded-s-[20px] !rounded-b-[0] flex items-center px-[20px] text-[20px] font-[600] shrink-0">
               <span className="flex-1">{t('create_post_title', 'Create Post')}</span>
-              {isMobileLayout && (
-                <div className="flex items-center gap-1 shrink-0 me-2">
-                  <button
-                    type="button"
-                    className="h-[32px] px-2 rounded-[6px] bg-newBgLineColor text-[12px] font-[600]"
-                    onClick={() => scrollCreatePostModal('left')}
-                  >
-                    ←
-                  </button>
-                  <button
-                    type="button"
-                    className="h-[32px] px-2 rounded-[6px] bg-newBgLineColor text-[12px] font-[600]"
-                    onClick={() => scrollCreatePostModal('right')}
-                  >
-                    →
-                  </button>
-                </div>
-              )}
               <button
                 type="button"
                 className="lg:hidden shrink-0 p-1"
@@ -599,20 +628,35 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
               <div
                 className={clsx(
                   'relative min-h-0 min-w-0 flex-1',
-                  showSettings && 'hidden'
+                  isMobileLayout && 'flex-none min-h-[420px]',
+                  showSettings && !isMobileLayout && 'hidden'
                 )}
               >
                 <div
                   id="social-content"
-                  className="gap-[32px] flex flex-col pe-[8px] pt-[20px] ps-[20px] overflow-x-hidden overflow-y-auto scrollbar scrollbar-thumb-newColColor scrollbar-track-newBgColorInner absolute top-0 left-0 w-full h-full min-h-0"
+                  className={clsx(
+                    'gap-[32px] flex flex-col pe-[8px] pt-[20px] ps-[20px] overflow-x-hidden overflow-y-auto scrollbar scrollbar-thumb-newColColor scrollbar-track-newBgColorInner absolute top-0 left-0 w-full h-full min-h-0',
+                    isMobileLayout &&
+                      'static h-auto min-h-[420px] overflow-y-visible pe-[20px] pb-[12px]'
+                  )}
                 >
                   <div className="flex w-full flex-col gap-3 min-w-0">
+                    {isMobileLayout && (
+                      <h3 className="text-[13px] font-[700] text-white/90">
+                        {t('choose_profile_section', 'Choose profile')}
+                      </h3>
+                    )}
                     <p className="text-xs text-newTableText px-1">
                       {t(
                         'pick_channels_hint',
                         'Choose one or more channels. The same content is sent to each selected profile.'
                       )}
                     </p>
+                    {isMobileLayout && (
+                      <h3 className="text-[13px] font-[700] text-white/90 mt-1">
+                        {t('audience_profile_section', 'Audience and profile')}
+                      </h3>
+                    )}
                     <div className="flex w-full min-w-0">
                       <div className="flex flex-1 min-w-0 overflow-hidden">
                         <PicksSocialsComponent toolTip={true} />
@@ -628,6 +672,11 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                     </div>
                   </div>
                   <div className="flex flex-col gap-3 min-w-0">
+                    {isMobileLayout && (
+                      <h3 className="text-[13px] font-[700] text-white/90">
+                        {t('write_something_section', 'Write something')}
+                      </h3>
+                    )}
                     <div className="min-w-0 overflow-x-auto">
                       {!existingData.integration && <SelectCurrent />}
                     </div>
@@ -641,55 +690,12 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                   </div>
                 </div>
               </div>
-              <div
-                id="wrapper-settings"
-                className={clsx(
-                  'pb-[20px] px-[20px] select-none',
-                  showSettings && 'flex-1 flex pt-[20px]',
-                  current === 'global' && 'hidden'
-                )}
-              >
-                <div className="flex-1 flex flex-col rounded-[12px] gap-[12px] overflow-hidden bg-newSettings">
-                  <div
-                    onClick={() => setShowSettings(!showSettings)}
-                    className={clsx(
-                      'bg-[#612BD3] rounded-[12px] flex items-center gap-[8px] cursor-pointer p-[12px]',
-                      showSettings ? '!rounded-b-none' : ''
-                    )}
-                  >
-                    <div className="flex-1 text-[14px] font-[600] text-white">
-                      {currentIntegrationText}
-                    </div>
-                    <div>
-                      <ChevronDownIcon
-                        rotated={showSettings}
-                        className="text-white"
-                      />
-                    </div>
-                  </div>
-                  <div
-                    className={clsx(
-                      !showSettings ? 'hidden' : 'flex-1',
-                      'text-[14px] text-textColor font-[500] relative'
-                    )}
-                  >
-                    <div className="absolute left-0 top-0 w-full h-full flex flex-col overflow-x-hidden overflow-y-auto scrollbar scrollbar-thumb-newBgColorInner scrollbar-track-newColColor">
-                      <div
-                        id="social-settings"
-                        className="flex flex-col gap-[20px] bg-newBgColor"
-                      />
-                    </div>
-                  </div>
-                  <style>
-                    {`#social-settings [data-id="${current}"] {display: block !important;}`}
-                  </style>
-                </div>
-              </div>
+              {!isMobileLayout && settingsPanel}
             </div>
               </div>
               <div
                 data-create-post-preview
-                className="w-[580px] min-w-[580px] max-w-[580px] shrink-0 flex flex-col flex-1 min-h-0 bg-newBgColorInner"
+                className="w-full lg:w-[580px] lg:min-w-[580px] lg:max-w-[580px] shrink-0 flex flex-col flex-1 min-h-0 bg-newBgColorInner border-b lg:border-b-0 border-newBorder mobile:flex-none mobile:min-h-[48dvh]"
               >
                 <div className="bg-newBgColor h-[65px] lg:rounded-e-[20px] !rounded-b-[0] flex items-center px-[20px] text-[20px] font-[600] shrink-0">
                   <div className="flex-1">{t('post_preview', 'Post Preview')}</div>
@@ -706,9 +712,10 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                   </Scrollable>
                 </div>
               </div>
+              {isMobileLayout && settingsPanel}
             </div>
-            <div className="select-none shrink-0 h-[84px] py-[20px] border-t border-newBorder flex flex-row items-center gap-0">
-              <div className="flex-1 flex flex-row ps-[20px] gap-[8px] min-w-0">
+            <div className="select-none shrink-0 border-t border-newBorder flex flex-col lg:flex-row lg:items-center gap-3 py-[14px] lg:py-[20px]">
+              <div className="flex-1 flex flex-col lg:flex-row ps-[20px] pe-[20px] lg:pe-0 gap-[8px] min-w-0">
             {!dummy && (
               <TagsComponent
                 name="tags"
@@ -724,7 +731,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
               <RepeatComponent repeat={repeater} onChange={setRepeater} />
             )}
           </div>
-          <div className="flex flex-row pe-[20px] items-center justify-end gap-[8px] min-w-0">
+          <div className="flex flex-col lg:flex-row pe-[20px] ps-[20px] lg:ps-0 items-stretch lg:items-center justify-end gap-[8px] min-w-0">
             {existingData?.integration && (
               <button
                 onClick={deletePost}
@@ -737,16 +744,26 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
               </button>
             )}
             <div>
+              {isMobileLayout && (
+                <div className="text-[13px] font-[700] text-white/90 mb-[6px]">
+                  {t('date_section', 'Date')}
+                </div>
+              )}
               <DatePicker onChange={setDate} date={date} />
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 w-full lg:w-auto">
+            {isMobileLayout && (
+              <div className="text-[13px] font-[700] text-white/90 w-full mb-[6px]">
+                {t('save_actions_section', 'Save as draft and add to calendar')}
+              </div>
+            )}
             {!addEditSets && (
               <button
                 disabled={
                   selectedIntegrations.length === 0 || loading || locked
                 }
                 onClick={schedule('draft')}
-                className="relative cursor-pointer disabled:cursor-not-allowed px-[20px] h-[44px] bg-btnSimple justify-center items-center flex rounded-[8px] text-[15px] font-[600] shrink-0"
+                className="relative cursor-pointer disabled:cursor-not-allowed px-[20px] h-[44px] bg-btnSimple justify-center items-center flex rounded-[8px] text-[15px] font-[600] shrink-0 flex-1 lg:flex-none"
               >
                 {loading && (
                   <div className="absolute left-[50%] top-[50%] -translate-y-[50%] -translate-x-[50%]">
@@ -776,7 +793,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
                     selectedIntegrations.length === 0 || loading || locked
                   }
                   onClick={schedule('schedule')}
-                  className="text-white relative min-w-[180px] btnSub disabled:cursor-not-allowed disabled:opacity-80 outline-none gap-[8px] flex justify-center items-center h-[44px] rounded-[8px] bg-[#612BD3] ps-[20px] pe-[16px]"
+                  className="text-white relative min-w-[180px] w-full lg:w-auto btnSub disabled:cursor-not-allowed disabled:opacity-80 outline-none gap-[8px] flex justify-center items-center h-[44px] rounded-[8px] bg-[#612BD3] ps-[20px] pe-[16px]"
                 >
                   {loading && (
                     <div className="absolute left-[50%] top-[50%] -translate-y-[50%] -translate-x-[50%]">

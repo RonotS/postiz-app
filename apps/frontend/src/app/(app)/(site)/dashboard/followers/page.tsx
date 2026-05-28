@@ -142,7 +142,7 @@ function FollowAutomationsContent() {
       </header>
 
       {tab === 'explorer' ? (
-        <XFollowersExplorerPanel />
+        <XFollowersExplorerPanel integrationId={integrationId} />
       ) : integrationsLoading ? (
         <div className="h-48 animate-pulse rounded-2xl bg-newBgLineColor/40" />
       ) : !xIntegrations.length ? (
@@ -163,7 +163,7 @@ function FollowAutomationsContent() {
             title={t('queue_status', 'Queue status')}
             subtitle={t(
               'queue_status_sub',
-              'Pending follows with estimated run times. Up to 50 per 15 minutes and 400 per day (X API limits).'
+              'Pending follows with estimated run times. The system automatically paces actions within X API limits.'
             )}
             icon={
               <ProfileAutomationsSectionIcon>

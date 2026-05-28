@@ -448,47 +448,47 @@ export const AddEditModalInnerInner: FC<AddEditModalProps> = (props) => {
             display: none !important;
           }
           #add-edit-modal {
-            overflow-x: scroll !important;
-            overflow-y: hidden !important;
+            overflow-x: hidden !important;
+            overflow-y: auto !important;
             height: 100dvh !important;
             max-height: 100dvh !important;
             width: 100vw !important;
             max-width: 100vw !important;
             -webkit-overflow-scrolling: touch;
-            touch-action: pan-x pan-y;
+            touch-action: pan-y;
           }
           #add-edit-modal > div {
-            width: 1400px !important;
-            min-width: 1400px !important;
-            max-width: 1400px !important;
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
             height: 100% !important;
-            flex-shrink: 0 !important;
+            flex-shrink: 1 !important;
           }
           [data-create-post-hscroll] {
-            overflow: visible !important;
+            overflow: auto !important;
             flex: 1 1 auto !important;
             min-height: 0 !important;
           }
           [data-create-post-desktop-box] {
-            width: 1400px !important;
-            min-width: 1400px !important;
-            max-width: 1400px !important;
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
           }
           [data-create-post-layout] {
-            flex-direction: row !important;
+            flex-direction: column !important;
             flex-wrap: nowrap !important;
           }
           [data-create-post-compose] {
-            flex: 0 0 820px !important;
-            width: 820px !important;
-            min-width: 820px !important;
-            max-width: 820px !important;
+            flex: 0 0 auto !important;
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
           }
           [data-create-post-preview] {
-            flex: 0 0 580px !important;
-            width: 580px !important;
-            min-width: 580px !important;
-            max-width: 580px !important;
+            flex: 0 0 auto !important;
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
           }
           [data-create-post-compose-scroll],
           #social-content {

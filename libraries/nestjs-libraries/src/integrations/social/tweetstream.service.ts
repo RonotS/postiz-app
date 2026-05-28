@@ -7,6 +7,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
+import { shouldDisableTweetStreamForXquik } from '@gitroom/helpers/x/xquik.env';
 import {
   getTweetStreamApiKey,
   getTweetStreamRecentEventsMax,
@@ -21,17 +22,24 @@ import {
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
 import { XAccountActivityHandler } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.handler';
-import { TweetStreamApiClient } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.api';
+import {
+  TweetStreamAccountOpResult,
+  TweetStreamApiClient,
+} from '@gitroom/nestjs-libraries/integrations/social/tweetstream.api';
 import { TweetStreamWebSocketClient } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.client';
 import {
   buildMappedFromTweetContent,
   mapTweetStreamEnvelope,
 } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.mapper';
-import { TweetStreamTweetContent } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.types';
+import {
+  TweetStreamEnvelope,
+  TweetStreamTweetContent,
+  TweetStreamTweetUpdate,
+} from '@gitroom/nestjs-libraries/integrations/social/tweetstream.types';
 import { normalizeTweetStreamHandle } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.normalize';
-import { TweetStreamEnvelope } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.types';
 import {
   clearTweetStreamWsConsumerActive,
+  isTweetStreamWsConsumerActive,
   markTweetStreamWsConsumerActive,
 } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.ws-state';
 
@@ -44,6 +52,19 @@ export class TweetStreamService implements OnModuleInit, OnModuleDestroy {
   private wsLeaderToken: string | null = null;
   private wsStartTimer: ReturnType<typeof setTimeout> | undefined;
   private wsActiveRefreshTimer: ReturnType<typeof setInterval> | undefined;
+  /** TweetStream sends `content` before `update` with reply ref — buffer until merged. */
+  private readonly pendingTweetContent = new Map<
+    string,
+    { tweet: TweetStreamTweetContent; receivedAt: number }
+  >();
+  /** `update` can arrive before `content` or after we processed a non-reply tweet. */
+  private readonly pendingTweetUpdates = new Map<
+    string,
+    { update: TweetStreamTweetUpdate; receivedAt: number }
+  >();
+  private readonly processedEngagementKeys = new Set<string>();
+  private static readonly PENDING_TWEET_TTL_MS = 120_000;
+  private static readonly PROCESSED_ENGAGEMENT_MAX = 10_000;
 
   constructor(
     private readonly _integrationRepository: IntegrationRepository,
@@ -53,6 +74,9 @@ export class TweetStreamService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   isEnabled(): boolean {
+    if (shouldDisableTweetStreamForXquik()) {
+      return false;
+    }
     return isTweetStreamEnabled() && !!getTweetStreamApiKey();
   }
 
@@ -316,13 +340,12 @@ export class TweetStreamService implements OnModuleInit, OnModuleDestroy {
       )
     );
     const toAdd = desired.filter((h) => !tracked.has(h));
-    const addResult =
+    const addResult: TweetStreamAccountOpResult =
       toAdd.length > 0
         ? await client.addAccounts(toAdd)
         : {
             results: [],
             summary: { total: 0, succeeded: 0, failed: 0 },
-            skippedAlreadyTracked: desired.length,
           };
 
     let removeResult;
@@ -372,31 +395,240 @@ export class TweetStreamService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async onEnvelope(envelope: TweetStreamEnvelope): Promise<void> {
-    let mapped = mapTweetStreamEnvelope(envelope);
+    if (envelope.t === 'tweet' && envelope.op === 'content' && envelope.d) {
+      await this.onTweetContent(envelope.d as TweetStreamTweetContent);
+      return;
+    }
+    if (envelope.t === 'tweet' && envelope.op === 'update' && envelope.d) {
+      await this.onTweetUpdate(envelope.d as TweetStreamTweetUpdate);
+      return;
+    }
+
+    const mapped = mapTweetStreamEnvelope(envelope);
+    if (!mapped) {
+      return;
+    }
+    await this.dispatchMappedRealtime(mapped);
+  }
+
+  private prunePendingTweets(): void {
+    const now = Date.now();
+    for (const [id, entry] of this.pendingTweetContent) {
+      if (now - entry.receivedAt > TweetStreamService.PENDING_TWEET_TTL_MS) {
+        this.pendingTweetContent.delete(id);
+      }
+    }
+    for (const [id, entry] of this.pendingTweetUpdates) {
+      if (now - entry.receivedAt > TweetStreamService.PENDING_TWEET_TTL_MS) {
+        this.pendingTweetUpdates.delete(id);
+      }
+    }
+  }
+
+  private cacheTweetContent(tweet: TweetStreamTweetContent): void {
+    const tweetId = String(tweet.tweetId ?? '').trim();
+    if (!tweetId) {
+      return;
+    }
+    this.prunePendingTweets();
+    this.pendingTweetContent.set(tweetId, {
+      tweet,
+      receivedAt: Date.now(),
+    });
+  }
+
+  private needsTweetUpdateBeforeProcess(tweet: TweetStreamTweetContent): boolean {
+    const ref = tweet.ref;
+    if (!ref?.type || ref.type === 'quote') {
+      return false;
+    }
+    if (ref.type !== 'reply' && ref.type !== 'retweet') {
+      return false;
+    }
+    return !String(ref.tweetId ?? '').trim();
+  }
+
+  private engagementDedupKey(tweet: TweetStreamTweetContent): string | null {
+    const engagerId = String(tweet.author?.id ?? '').trim();
+    const parentId = String(tweet.ref?.tweetId ?? '').trim();
+    const kind = tweet.ref?.type;
+    if (!engagerId || !parentId || (kind !== 'reply' && kind !== 'retweet')) {
+      return null;
+    }
+    return `${kind}:${parentId}:${engagerId}`;
+  }
+
+  private markEngagementProcessed(key: string): boolean {
+    if (this.processedEngagementKeys.has(key)) {
+      return false;
+    }
     if (
-      !mapped &&
-      envelope.t === 'tweet' &&
-      envelope.op === 'content' &&
-      envelope.d
+      this.processedEngagementKeys.size >=
+      TweetStreamService.PROCESSED_ENGAGEMENT_MAX
     ) {
-      mapped = await this.resolveMappedFromPublishedPost(
-        envelope.d as TweetStreamTweetContent
+      this.processedEngagementKeys.clear();
+    }
+    this.processedEngagementKeys.add(key);
+    return true;
+  }
+
+  private mergeContentWithUpdate(
+    tweet: TweetStreamTweetContent,
+    update: TweetStreamTweetUpdate
+  ): TweetStreamTweetContent {
+    return {
+      ...tweet,
+      text: update.text ?? tweet.text,
+      ref: this.mergeTweetRef(tweet.ref, update.ref),
+    };
+  }
+
+  private async onTweetContent(tweet: TweetStreamTweetContent): Promise<void> {
+    this.cacheTweetContent(tweet);
+    const tweetId = String(tweet.tweetId ?? '').trim();
+    const bufferedUpdate = tweetId
+      ? this.pendingTweetUpdates.get(tweetId)
+      : undefined;
+    if (bufferedUpdate) {
+      this.pendingTweetUpdates.delete(tweetId);
+      this.pendingTweetContent.delete(tweetId);
+      const merged = this.mergeContentWithUpdate(tweet, bufferedUpdate.update);
+      await this.processTweetContent(merged);
+      return;
+    }
+    if (this.needsTweetUpdateBeforeProcess(tweet)) {
+      return;
+    }
+    await this.processTweetContent(tweet);
+    if (tweetId) {
+      this.pendingTweetContent.delete(tweetId);
+    }
+  }
+
+  private mergeTweetRef(
+    base: TweetStreamTweetContent['ref'],
+    patch: TweetStreamTweetContent['ref']
+  ): TweetStreamTweetContent['ref'] {
+    if (!patch) {
+      return base;
+    }
+    if (!base) {
+      return patch;
+    }
+    return {
+      ...base,
+      ...patch,
+      type: patch.type ?? base.type,
+      tweetId: patch.tweetId ?? base.tweetId,
+      text: patch.text ?? base.text,
+      author: patch.author ?? base.author,
+    };
+  }
+
+  private async onTweetUpdate(update: TweetStreamTweetUpdate): Promise<void> {
+    const tweetId = String(update.tweetId ?? '').trim();
+    if (!tweetId) {
+      return;
+    }
+    this.prunePendingTweets();
+
+    const pending = this.pendingTweetContent.get(tweetId);
+    if (pending) {
+      this.pendingTweetContent.delete(tweetId);
+      this.pendingTweetUpdates.delete(tweetId);
+      const merged = this.mergeContentWithUpdate(pending.tweet, update);
+      if (!merged.author?.id) {
+        this.log.warn(
+          `TweetStream: merged update for tweet ${tweetId} missing author.id — cannot map reply/RT`
+        );
+        return;
+      }
+      const parentId = String(merged.ref?.tweetId ?? '').trim();
+      if (merged.ref?.type === 'reply' || merged.ref?.type === 'retweet') {
+        this.log.log(
+          `TweetStream: update ${merged.ref?.type} tweet ${tweetId} → parent ${parentId || '(pending)'}`
+        );
+      }
+      await this.processTweetContent(merged);
+      return;
+    }
+
+    const isEngagementRef =
+      update.ref?.type === 'reply' || update.ref?.type === 'retweet';
+    if (isEngagementRef) {
+      this.pendingTweetUpdates.set(tweetId, {
+        update,
+        receivedAt: Date.now(),
+      });
+      this.log.log(
+        `TweetStream: buffering ${update.ref?.type} update for tweet ${tweetId} until content envelope arrives`
+      );
+      return;
+    }
+
+    // URL expansion / media on own posts — no content buffer left; safe to ignore.
+  }
+
+  private async processTweetContent(
+    tweet: TweetStreamTweetContent
+  ): Promise<void> {
+    const ref = tweet.ref;
+    if (
+      (ref?.type === 'reply' || ref?.type === 'retweet') &&
+      tweet.author?.id
+    ) {
+      this.log.log(
+        `TweetStream: inbound ${ref.type} from @${normalizeTweetStreamHandle(tweet.author?.handle) || tweet.author?.id} ` +
+          `→ @${normalizeTweetStreamHandle(ref.author?.handle) || '?'} parent=${ref.tweetId || '(no id yet)'}`
       );
     }
 
+    const dedupKey = this.engagementDedupKey(tweet);
+    if (dedupKey && !this.markEngagementProcessed(dedupKey)) {
+      return;
+    }
+
+    let mapped = mapTweetStreamEnvelope({
+      t: 'tweet',
+      op: 'content',
+      d: tweet,
+    });
     if (!mapped) {
+      mapped = await this.resolveMappedFromPublishedPost(tweet);
+    }
+    if (!mapped) {
+      mapped = await this.resolveMappedWithInferredParent(tweet);
+    }
+    if (!mapped && tweet.ref?.tweetId) {
+      const parentAuthor = normalizeTweetStreamHandle(tweet.ref.author?.handle);
       if (
-        isTweetStreamPublishEvents() &&
-        envelope.t === 'tweet' &&
-        envelope.op === 'content'
+        parentAuthor &&
+        (tweet.ref.type === 'reply' || tweet.ref.type === 'retweet')
       ) {
-        void this.publishRawTweetEnvelope(
-          envelope.d as TweetStreamTweetContent
-        ).catch((err) => this.log.error('publishRawTweetEnvelope:', err));
+        mapped = buildMappedFromTweetContent(tweet, parentAuthor);
+        if (mapped) {
+          this.log.log(
+            `TweetStream: mapped ${tweet.ref?.type} on @${parentAuthor} via ref.author (parent tweet ${tweet.ref.tweetId})`
+          );
+        }
+      }
+    }
+
+    if (!mapped) {
+      if (isTweetStreamPublishEvents()) {
+        void this.publishRawTweetEnvelope(tweet, await this.rawUnmappedReason(tweet)).catch(
+          (err) => this.log.error('publishRawTweetEnvelope:', err)
+        );
       }
       return;
     }
 
+    await this.dispatchMappedRealtime(mapped);
+  }
+
+  private async dispatchMappedRealtime(
+    mapped: NonNullable<ReturnType<typeof mapTweetStreamEnvelope>>
+  ): Promise<void> {
     if (isTweetStreamPublishEvents()) {
       void this.publishRecentEvent(mapped.monitoredHandle, mapped).catch((err) =>
         this.log.error('publishRecentEvent:', err)
@@ -409,16 +641,21 @@ export class TweetStreamService implements OnModuleInit, OnModuleDestroy {
     );
 
     const releaseId = mapped.eventSummary?.tweetId?.trim();
+    const kind = mapped.eventSummary?.kind;
     if (
       releaseId &&
-      (mapped.eventSummary?.kind === 'reply' ||
-        mapped.eventSummary?.kind === 'retweet')
+      (kind === 'reply' || kind === 'retweet') &&
+      !(await isTweetStreamWsConsumerActive())
     ) {
       void this.triggerImmediateEngagementPlugs(
         mapped.monitoredHandle,
         releaseId
       ).catch((err) =>
         this.log.error('triggerImmediateEngagementPlugs:', err)
+      );
+    } else if (releaseId && (kind === 'reply' || kind === 'retweet')) {
+      this.log.log(
+        `TweetStream: ${kind} on ${mapped.monitoredHandle} tweet ${releaseId} — realtime DM handled via WebSocket (skipped poller liker fetch)`
       );
     }
   }
@@ -470,11 +707,121 @@ export class TweetStreamService implements OnModuleInit, OnModuleDestroy {
         return built;
       }
     }
+    if (channels.length === 0) {
+      this.log.warn(
+        `TweetStream: parent tweet ${releaseId} not in Postiz DB (releaseId on published post row?)`
+      );
+    }
     return null;
   }
 
-  private async publishRawTweetEnvelope(
+  /**
+   * TweetStream often sends ref.author without ref.tweetId on `content`; infer parent
+   * when exactly one recent Postiz-published post exists on that channel.
+   */
+  private async resolveMappedWithInferredParent(
     tweet: TweetStreamTweetContent
+  ): Promise<ReturnType<typeof mapTweetStreamEnvelope>> {
+    const ref = tweet.ref;
+    if (ref?.type !== 'reply' && ref?.type !== 'retweet') {
+      return null;
+    }
+    const parentAuthor = normalizeTweetStreamHandle(ref?.author?.handle);
+    if (!parentAuthor) {
+      return null;
+    }
+    if (String(ref?.tweetId ?? '').trim()) {
+      return null;
+    }
+
+    const recent =
+      await this._integrationRepository.findRecentPublishedXPostsByProfile(
+        parentAuthor,
+        72,
+        10
+      );
+    if (!recent.length) {
+      return null;
+    }
+
+    let chosen = recent.length === 1 ? recent[0] : null;
+    const refText = (ref?.text ?? '').trim().toLowerCase();
+    if (!chosen && refText) {
+      chosen =
+        recent.find((p) => {
+          const content = (p.content ?? '').trim().toLowerCase();
+          return (
+            content &&
+            (content.includes(refText) ||
+              refText.includes(content.slice(0, 80)))
+          );
+        }) ?? null;
+    }
+    if (!chosen) {
+      chosen = recent[0];
+      this.log.warn(
+        `TweetStream: reply on @${parentAuthor} without parent tweet id — using latest Postiz post ${chosen.releaseId} (${recent.length} recent posts)`
+      );
+    }
+
+    const releaseId = String(chosen.releaseId ?? '').trim();
+    if (!releaseId) {
+      return null;
+    }
+
+    const enriched: TweetStreamTweetContent = {
+      ...tweet,
+      ref: { ...ref, tweetId: releaseId },
+    };
+    const built = buildMappedFromTweetContent(enriched, parentAuthor);
+    if (built) {
+      this.log.log(
+        `TweetStream: mapped ${ref.type} on @${parentAuthor} via inferred Postiz post releaseId ${releaseId}`
+      );
+    }
+    return built;
+  }
+
+  private async rawUnmappedReason(
+    tweet: TweetStreamTweetContent
+  ): Promise<string> {
+    const ref = tweet.ref;
+    if (ref?.type === 'reply' || ref?.type === 'retweet') {
+      const parentAuthor = normalizeTweetStreamHandle(ref.author?.handle);
+      const parentId = String(ref.tweetId ?? '').trim();
+      if (!parentId && parentAuthor) {
+        const recent =
+          await this._integrationRepository.findRecentPublishedXPostsByProfile(
+            parentAuthor,
+            72,
+            5
+          );
+        if (recent.length === 0) {
+          return `Reply to @${parentAuthor} but no parent tweet id from TweetStream and no recent Postiz-published posts to infer from.`;
+        }
+        if (recent.length > 1) {
+          return `Reply to @${parentAuthor} without parent tweet id; ${recent.length} recent Postiz posts — restart backend for inference fix, or wait for TweetStream update envelope.`;
+        }
+      }
+      if (parentId) {
+        const channels =
+          await this._integrationRepository.findXChannelsByPostReleaseId(
+            parentId
+          );
+        if (!channels.length) {
+          return `Parent tweet ${parentId} not linked in Postiz (releaseId missing on queue row?). Use attach-published-tweet if posted outside Postiz.`;
+        }
+      }
+      if (!parentAuthor) {
+        return 'Reply/RT without ref.author — wait for TweetStream update envelope or restart backend.';
+      }
+    }
+    return 'Not a reply/RT to a mapped channel, or channel author tweet (own posts are not auto-DM targets).';
+  }
+
+  private async publishRawTweetEnvelope(
+    tweet: TweetStreamTweetContent,
+    note?: string
   ): Promise<void> {
     const key = getTweetStreamRecentEventsRedisKey();
     const max = getTweetStreamRecentEventsMax();
@@ -488,7 +835,8 @@ export class TweetStreamService implements OnModuleInit, OnModuleDestroy {
       refAuthorHandle: normalizeTweetStreamHandle(tweet.ref?.author?.handle),
       textPreview: (tweet.text ?? '').slice(0, 120),
       note:
-        'Received on WebSocket but not mapped to a Postiz channel. Parent tweet may not be a Postiz-published releaseId, or TweetStream omitted ref.author.',
+        note ??
+        'Received on WebSocket but not mapped to a Postiz channel.',
     };
     await ioRedis
       .multi()
@@ -541,5 +889,11 @@ export class TweetStreamService implements OnModuleInit, OnModuleDestroy {
         }
       })
       .filter(Boolean);
+  }
+
+  async clearRecentEvents(): Promise<{ cleared: number }> {
+    const key = getTweetStreamRecentEventsRedisKey();
+    const cleared = await ioRedis.del(key);
+    return { cleared };
   }
 }
