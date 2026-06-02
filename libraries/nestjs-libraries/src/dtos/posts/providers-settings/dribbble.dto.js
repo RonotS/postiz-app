@@ -1,0 +1,23 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DribbbleDto = void 0;
+const tslib_1 = require("tslib");
+const class_validator_1 = require("class-validator");
+class DribbbleDto {
+}
+exports.DribbbleDto = DribbbleDto;
+tslib_1.__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsDefined)(),
+    (0, class_validator_1.MinLength)(1, {
+        message: 'Title is required',
+    }),
+    tslib_1.__metadata("design:type", String)
+], DribbbleDto.prototype, "title", void 0);
+tslib_1.__decorate([
+    (0, class_validator_1.IsString)(),
+    (0, class_validator_1.IsOptional)(),
+    (0, class_validator_1.IsUrl)(),
+    tslib_1.__metadata("design:type", String)
+], DribbbleDto.prototype, "team", void 0);
+//# sourceMappingURL=dribbble.dto.js.map

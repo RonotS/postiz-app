@@ -27,7 +27,16 @@ try {
     );
   }
 
-  run('pnpm run --parallel pm2');
+  const xMonitorOn =
+    process.env.X_MONITOR_ENABLED?.trim() === 'true' ||
+    process.env.X_MONITOR_ENABLED?.trim() === '1';
+  const pm2Cmd = xMonitorOn
+    ? 'pnpm run --parallel --filter ./apps/backend --filter ./apps/frontend --filter ./apps/orchestrator --filter ./apps/x-monitor pm2'
+    : 'pnpm run --parallel --filter ./apps/backend --filter ./apps/frontend --filter ./apps/orchestrator pm2';
+  if (xMonitorOn) {
+    console.log('[pm2-run] Starting x-monitor (X_MONITOR_ENABLED=true)');
+  }
+  run(pm2Cmd);
   run('pm2 logs');
 } catch (err) {
   process.exit(err.status ?? 1);

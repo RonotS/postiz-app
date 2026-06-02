@@ -40,6 +40,7 @@ import {
   getXquikApiKey,
   isXquikEnabled,
 } from '@gitroom/helpers/x/xquik.env';
+import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 
 type XPlugDmBatchContext = {
   tryReserveDm?: () => Promise<boolean>;
@@ -204,7 +205,14 @@ export class XProvider extends SocialAbstract implements SocialProvider {
     integration: Integration,
     id: string,
     fields: { likesAmount: string },
-    postSettings?: any
+    postSettings?: any,
+    plugContext?: {
+      getAutoRetweetState?: () => Promise<{ count: number; lastAtMs: number }>;
+      saveAutoRetweetState?: (
+        count: number,
+        lastAtMs: number
+      ) => Promise<void>;
+    }
   ) {
     // Per-post opt-out — composer can disable auto-retweet for a specific tweet
     // even when the plug itself is active.
@@ -221,6 +229,40 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       accessToken: accessTokenSplit,
       accessSecret: accessSecretSplit,
     });
+
+    const intervalHours = Number(postSettings?.auto_retweet_interval_hours);
+    const maxTimes = Number(postSettings?.auto_retweet_times);
+    const useScheduledRetweet =
+      postSettings?.auto_retweet_enabled === true &&
+      intervalHours > 0 &&
+      maxTimes > 0 &&
+      typeof plugContext?.getAutoRetweetState === 'function' &&
+      typeof plugContext?.saveAutoRetweetState === 'function';
+
+    if (useScheduledRetweet) {
+      try {
+        const state = await plugContext.getAutoRetweetState!();
+        const runsDone = state.count;
+        if (runsDone >= maxTimes) {
+          return true;
+        }
+        const intervalMs = Math.max(
+          3_600_000,
+          Math.floor(intervalHours) * 3_600_000
+        );
+        const now = Date.now();
+        if (runsDone > 0 && now - state.lastAtMs < intervalMs) {
+          return false;
+        }
+        await timer(2000);
+        await client.v2.retweet(integration.internalId, id);
+        await plugContext.saveAutoRetweetState!(runsDone + 1, now);
+        return runsDone + 1 >= maxTimes;
+      } catch (err) {
+        console.error('X AUTO REPOST (scheduled) ERROR:', err);
+      }
+      return false;
+    }
 
     try {
       const likes = await client.v2.tweetLikedBy(id);
@@ -535,6 +577,60 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       }
       return false;
     }
+  }
+
+  private autoDmSentKey(
+    integrationId: string,
+    tweetId: string,
+    userId: string
+  ): string {
+    return `x:auto-dm:sent:${integrationId}:${tweetId}:${userId}`;
+  }
+
+  private autoDmLockKey(
+    integrationId: string,
+    tweetId: string,
+    userId: string
+  ): string {
+    return `x:auto-dm:lock:${integrationId}:${tweetId}:${userId}`;
+  }
+
+  /**
+   * Prevent duplicate DMs when parallel plug runs see the same engager.
+   * Returns false when this (integration,tweet,user) already sent or is in-flight.
+   */
+  private async reserveAutoDmSend(
+    integrationId: string,
+    tweetId: string,
+    userId: string
+  ): Promise<boolean> {
+    const sentKey = this.autoDmSentKey(integrationId, tweetId, userId);
+    const alreadySent = await ioRedis.get(sentKey);
+    if (alreadySent) {
+      return false;
+    }
+    const lockKey = this.autoDmLockKey(integrationId, tweetId, userId);
+    const lock = await ioRedis.set(lockKey, '1', 'EX', 60, 'NX');
+    return lock === 'OK';
+  }
+
+  private async confirmAutoDmSend(
+    integrationId: string,
+    tweetId: string,
+    userId: string
+  ): Promise<void> {
+    const sentKey = this.autoDmSentKey(integrationId, tweetId, userId);
+    const lockKey = this.autoDmLockKey(integrationId, tweetId, userId);
+    await ioRedis.set(sentKey, '1', 'EX', 60 * 60 * 24 * 30);
+    await ioRedis.del(lockKey);
+  }
+
+  private async releaseAutoDmReservation(
+    integrationId: string,
+    tweetId: string,
+    userId: string
+  ): Promise<void> {
+    await ioRedis.del(this.autoDmLockKey(integrationId, tweetId, userId));
   }
 
   private canUseXquikReads(): boolean {
@@ -1260,15 +1356,31 @@ export class XProvider extends SocialAbstract implements SocialProvider {
 
       const successfullyDmd: string[] = [];
       for (const userId of userIds) {
-        const sent = await this.sendDmWithBatchGate(
-          integration,
-          client,
-          userId,
-          dmText,
-          plugContext as XPlugDmBatchContext | undefined
+        const reserved = await this.reserveAutoDmSend(
+          integration.id,
+          id,
+          userId
         );
-        if (sent) {
-          successfullyDmd.push(userId);
+        if (!reserved) {
+          continue;
+        }
+        try {
+          const sent = await this.sendDmWithBatchGate(
+            integration,
+            client,
+            userId,
+            dmText,
+            plugContext as XPlugDmBatchContext | undefined
+          );
+          if (sent) {
+            successfullyDmd.push(userId);
+            await this.confirmAutoDmSend(integration.id, id, userId);
+          } else {
+            await this.releaseAutoDmReservation(integration.id, id, userId);
+          }
+        } catch (err) {
+          await this.releaseAutoDmReservation(integration.id, id, userId);
+          throw err;
         }
       }
 
@@ -2124,24 +2236,20 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       loadDmdUserIds?: (userIds: string[]) => Promise<Set<string>>;
     }
   ): Promise<{ toDm: string[] }> {
+    let toDm = [...currentUserIds];
+
     if (
       plugContext?.loadEngagerSnapshot &&
       plugContext?.saveEngagerSnapshot
     ) {
       const previous = await plugContext.loadEngagerSnapshot();
-      const toDm = currentUserIds.filter((uid) => !previous.has(uid));
-      if (toDm.length > 0) {
-        console.log(
-          `X AUTO DM: ${toDm.length} new engager(s) since last poll (${currentUserIds.length} total)`
-        );
-      }
-      return { toDm };
+      toDm = toDm.filter((uid) => !previous.has(uid));
     }
 
-    let alreadyDmd: Set<string> = new Set();
-    if (plugContext?.loadDmdUserIds) {
+    if (plugContext?.loadDmdUserIds && toDm.length > 0) {
       try {
-        alreadyDmd = await plugContext.loadDmdUserIds(currentUserIds);
+        const alreadyDmd = await plugContext.loadDmdUserIds(toDm);
+        toDm = toDm.filter((uid) => !alreadyDmd.has(uid));
       } catch (err) {
         console.warn(
           'X AUTO DM: failed to load already-DMd users (will proceed without dedup):',
@@ -2149,7 +2257,14 @@ export class XProvider extends SocialAbstract implements SocialProvider {
         );
       }
     }
-    return { toDm: currentUserIds.filter((uid) => !alreadyDmd.has(uid)) };
+
+    if (toDm.length > 0) {
+      console.log(
+        `X AUTO DM: ${toDm.length} engager(s) to DM (${currentUserIds.length} in current set)`
+      );
+    }
+
+    return { toDm };
   }
 
   async refreshToken(): Promise<AuthTokenDetails> {
@@ -3206,6 +3321,35 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       return false;
     }
 
+    if (plugContext?.loadDmdUserIds) {
+      try {
+        const alreadyDmd = await plugContext.loadDmdUserIds([engagerUserId]);
+        if (alreadyDmd.has(engagerUserId)) {
+          console.log(
+            `X AUTO DM: skip ${eventType} for user ${engagerUserId} on tweet ${tweetId} (already DM'd)`
+          );
+          return false;
+        }
+      } catch (err) {
+        console.warn(
+          'X AUTO DM: failed to check already-DMd user before realtime send:',
+          err
+        );
+      }
+    }
+
+    const reserved = await this.reserveAutoDmSend(
+      integration.id,
+      tweetId,
+      engagerId
+    );
+    if (!reserved) {
+      console.log(
+        `X AUTO DM: skip ${eventType} for user ${engagerId} on tweet ${tweetId} (duplicate in-flight or already sent)`
+      );
+      return false;
+    }
+
     const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
     const client = this.buildTwitterApi({
       appKey: process.env.X_API_KEY!,
@@ -3214,23 +3358,32 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       accessSecret: accessSecretSplit,
     });
 
-    const sent = await this.sendDmWithBatchGate(
-      integration,
-      client,
-      engagerUserId,
-      dmText,
-      plugContext as XPlugDmBatchContext | undefined,
-      getXWebhookDmDelayMs(),
-      { realtime: true }
-    );
-    if (sent && plugContext?.saveDmdUserIds) {
-      await plugContext.saveDmdUserIds([engagerUserId]);
-    } else if (!sent) {
-      console.warn(
-        `X AUTO DM: realtime ${eventType} DM to ${engagerUserId} on tweet ${tweetId} was not sent (X API or batch gate)`
+    try {
+      const sent = await this.sendDmWithBatchGate(
+        integration,
+        client,
+        engagerUserId,
+        dmText,
+        plugContext as XPlugDmBatchContext | undefined,
+        getXWebhookDmDelayMs(),
+        { realtime: true }
       );
+      if (sent) {
+        await this.confirmAutoDmSend(integration.id, tweetId, engagerId);
+        if (plugContext?.saveDmdUserIds) {
+          await plugContext.saveDmdUserIds([engagerUserId]);
+        }
+      } else {
+        await this.releaseAutoDmReservation(integration.id, tweetId, engagerId);
+        console.warn(
+          `X AUTO DM: realtime ${eventType} DM to ${engagerUserId} on tweet ${tweetId} was not sent (X API or batch gate)`
+        );
+      }
+      return sent;
+    } catch (err) {
+      await this.releaseAutoDmReservation(integration.id, tweetId, engagerId);
+      throw err;
     }
-    return sent;
   }
 
   /** Account Activity: DM engagers on the account's pinned tweet only. */
@@ -3339,6 +3492,40 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       return false;
     }
 
+    const alreadyWelcomed =
+      await plugContext.loadFollowerSnapshotContains([followerUserId]);
+    if (alreadyWelcomed.has(followerUserId)) {
+      console.log(
+        `X AUTO DM FOLLOWERS: skip welcome DM to ${followerUserId} (already sent)`
+      );
+      return false;
+    }
+
+    const alreadyDmd = await plugContext.loadDmdUserIds([followerUserId]);
+    if (alreadyDmd.has(followerUserId)) {
+      console.log(
+        `X AUTO DM FOLLOWERS: skip welcome DM to ${followerUserId} (already recorded)`
+      );
+      return false;
+    }
+
+    const followerId = this.normalizeXSnowflakeId(followerUserId);
+    if (!followerId) {
+      return false;
+    }
+    const followScope = '__follow__';
+    const reserved = await this.reserveAutoDmSend(
+      integration.id,
+      followScope,
+      followerId
+    );
+    if (!reserved) {
+      console.log(
+        `X AUTO DM FOLLOWERS: skip welcome DM to ${followerId} (duplicate in-flight or already sent)`
+      );
+      return false;
+    }
+
     const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
     const client = this.buildTwitterApi({
       appKey: process.env.X_API_KEY!,
@@ -3347,22 +3534,39 @@ export class XProvider extends SocialAbstract implements SocialProvider {
       accessSecret: accessSecretSplit,
     });
 
-    const sent = await this.sendDmWithBatchGate(
-      integration,
-      client,
-      followerUserId,
-      dmText,
-      plugContext as XPlugDmBatchContext | undefined,
-      getXWebhookDmDelayMs(),
-      { realtime: true }
-    );
-    if (sent) {
-      await plugContext.saveFollowerSnapshotIds([followerUserId]);
-      console.log(
-        `X AUTO DM FOLLOWERS: realtime welcome DM to ${followerUserId} (@${integration.profile})`
+    try {
+      const sent = await this.sendDmWithBatchGate(
+        integration,
+        client,
+        followerUserId,
+        dmText,
+        plugContext as XPlugDmBatchContext | undefined,
+        getXWebhookDmDelayMs(),
+        { realtime: true }
       );
+      if (sent) {
+        await this.confirmAutoDmSend(integration.id, followScope, followerId);
+        await plugContext.saveFollowerSnapshotIds([followerUserId]);
+        await plugContext.saveDmdUserIds([followerUserId]);
+        console.log(
+          `X AUTO DM FOLLOWERS: realtime welcome DM to ${followerUserId} (@${integration.profile})`
+        );
+      } else {
+        await this.releaseAutoDmReservation(
+          integration.id,
+          followScope,
+          followerId
+        );
+      }
+      return sent;
+    } catch (err) {
+      await this.releaseAutoDmReservation(
+        integration.id,
+        followScope,
+        followerId
+      );
+      throw err;
     }
-    return sent;
   }
 
   /**

@@ -44,6 +44,9 @@ import { AnnouncementsService } from '@gitroom/nestjs-libraries/database/prisma/
 import { XAccountActivityService } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.service';
 import { XAccountActivityHandler } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.handler';
 import { TweetStreamService } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.service';
+import { XActivityStreamService } from '@gitroom/nestjs-libraries/integrations/social/x-activity-stream.service';
+import { XCustomIngestService } from '@gitroom/nestjs-libraries/integrations/social/x.custom-ingest.service';
+import { XCustomIngestConsumer } from '@gitroom/nestjs-libraries/integrations/social/x.custom-ingest.consumer';
 import { XquikEngagementPollerService } from '@gitroom/nestjs-libraries/integrations/social/xquik.engagement.poller.service';
 import { AutomationPagesFlagsService } from '@gitroom/nestjs-libraries/platform/automation-pages-flags.service';
 
@@ -99,6 +102,9 @@ import { AutomationPagesFlagsService } from '@gitroom/nestjs-libraries/platform/
     XAccountActivityService,
     XAccountActivityHandler,
     TweetStreamService,
+    XActivityStreamService,
+    XCustomIngestService,
+    XCustomIngestConsumer,
     XquikEngagementPollerService,
     AutomationPagesFlagsService,
   ],

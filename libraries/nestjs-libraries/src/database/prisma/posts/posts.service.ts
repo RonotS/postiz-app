@@ -945,7 +945,9 @@ export class PostsService {
       const { posts } = await this._postRepository.createOrUpdatePost(
         body.type,
         orgId,
-        body.type === 'now' ? dayjs().format('YYYY-MM-DDTHH:mm:00') : body.date,
+        body.type === 'now'
+          ? dayjs().format('YYYY-MM-DDTHH:mm:ss')
+          : body.date,
         post,
         body.tags,
         body.inter
@@ -966,13 +968,21 @@ export class PostsService {
         );
 
       if (body.type !== 'update') {
-        this.startWorkflow(
-          post.settings.__type.split('-')[0].toLowerCase(),
-          posts[0].id,
-          orgId,
-          posts[0].state,
-          body.type === 'now'
-        ).catch((err) => { });
+        const postNow = body.type === 'now';
+        try {
+          await this.startWorkflow(
+            post.settings.__type.split('-')[0].toLowerCase(),
+            posts[0].id,
+            orgId,
+            posts[0].state,
+            postNow
+          );
+        } catch (err) {
+          console.error(
+            `[createPost] startWorkflow failed postId=${posts[0].id} postNow=${postNow}:`,
+            err
+          );
+        }
       }
 
       Sentry.metrics.count('post_created', 1);

@@ -15,6 +15,7 @@ export type XFollowQueueItem = {
   createdAt: string;
   processedAt?: string;
   error?: string;
+  creditHold?: boolean;
   scheduledFollowAt?: string;
 };
 
@@ -40,6 +41,7 @@ export type XFollowQueueStatus = {
   dailyLimit: number;
   dailyRemaining: number;
   nextWindowAt: string | null;
+  creditsPaused?: boolean;
 };
 
 export function useXFollowQueue(integrationId: string | undefined) {

@@ -62,6 +62,7 @@ export default function DashboardFollowQueuePage() {
     rateLimit: followRateLimit,
     countdown: followCountdown,
     dailyCountdown: followDailyCountdown,
+    usesDailyTimer: followUsesDailyTimer,
   } = useXFollowRateLimit(integrationId);
 
   return (
@@ -108,6 +109,7 @@ export default function DashboardFollowQueuePage() {
               rateLimit={followRateLimit}
               countdown={followCountdown}
               dailyCountdown={followDailyCountdown}
+              usesDailyTimer={followUsesDailyTimer}
               action="follow"
             />
           )}

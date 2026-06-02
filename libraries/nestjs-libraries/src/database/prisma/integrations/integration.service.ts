@@ -81,10 +81,12 @@ import {
 import {
   cancelXFollowQueueItem,
   clearXFollowQueueCompleted,
+  clearXFollowQueueItems,
   enqueueXFollowQueueItems,
   getXFollowQueueStatus,
   listIntegrationIdsWithPendingQueue,
   processXFollowQueueBatch,
+  resumeXFollowQueueAfterCredits,
 } from '@gitroom/nestjs-libraries/integrations/social/x-follow-queue.store';
 import {
   getXAccountActivityRedisSubscribedKey,
@@ -92,6 +94,17 @@ import {
   isXAccountActivityWebhooksEnabled,
   isXEngagementPollingDisabled,
 } from '@gitroom/helpers/x/x.account-activity.env';
+import {
+  isCustomRealtimeIngest,
+  shouldSkipXEngagerPlugPolling,
+  shouldSyncXAccountActivitySubscriptions,
+} from '@gitroom/helpers/x/x.realtime.env';
+import {
+  getXAccountActivityVipHandles,
+  getXAccountActivityVipMaxSubscriptions,
+  isXAccountActivityVipHandle,
+  isXRealtimeHybridEnabled,
+} from '@gitroom/helpers/x/x.realtime-hybrid.env';
 import {
   isPostizBackendWorker,
   isTweetStreamFollowerPollingDisabled,
@@ -123,15 +136,25 @@ export class IntegrationService implements OnModuleInit {
         console.error('bootstrapXPlugPollers:', err)
       );
     }
+
+    if (!isPostizBackendWorker()) {
+      return;
+    }
+
     const queueIntervalMs = Math.max(
       15_000,
       Number(process.env.X_FOLLOW_QUEUE_POLL_MS) || 60_000
     );
-    setInterval(() => {
+    const runFollowQueueWorker = () => {
       void this.processAllPendingXFollowQueues().catch((err) =>
-        console.error('processAllPendingXFollowQueues:', err)
+        console.error('[x-follow-queue] worker tick failed:', err)
       );
-    }, queueIntervalMs);
+    };
+    console.log(
+      `[x-follow-queue] worker started (poll every ${queueIntervalMs}ms, file=${process.env.X_FOLLOW_QUEUE_FILE?.trim() || '.data/x-follow-queue.json'})`
+    );
+    runFollowQueueWorker();
+    setInterval(runFollowQueueWorker, queueIntervalMs);
   }
 
   async changeActiveCron(orgId: string) {
@@ -358,9 +381,30 @@ export class IntegrationService implements OnModuleInit {
   ): Promise<void> {
     if (
       integration.providerIdentifier !== 'x' ||
-      !this._xAccountActivity.isEnabled()
+      !this._xAccountActivity.isEnabled() ||
+      !shouldSyncXAccountActivitySubscriptions()
     ) {
       return;
+    }
+    if (isXRealtimeHybridEnabled()) {
+      const vip = getXAccountActivityVipHandles();
+      if (!vip.length) {
+        console.warn(
+          'X_REALTIME_HYBRID=true but X_ACCOUNT_ACTIVITY_VIP_HANDLES is empty — no webhook subscriptions for likes/follows'
+        );
+        return;
+      }
+      if (!isXAccountActivityVipHandle(integration.profile)) {
+        void this.unsyncXAccountActivitySubscription(integration).catch(
+          () => undefined
+        );
+        return;
+      }
+      if (vip.length > getXAccountActivityVipMaxSubscriptions()) {
+        console.warn(
+          `X_ACCOUNT_ACTIVITY_VIP_HANDLES has ${vip.length} entries but X_ACCOUNT_ACTIVITY_VIP_MAX=${getXAccountActivityVipMaxSubscriptions()} — only list up to your X tier limit`
+        );
+      }
     }
     const webhookId = await this._xAccountActivity.ensureWebhookRegistered();
     if (!webhookId) {
@@ -846,7 +890,62 @@ export class IntegrationService implements OnModuleInit {
       }
     };
 
+    const autoRetweetMetaPrefix = `rtmeta:${data.postId}:`;
+    const autoRetweetRunsPrefix = `${autoRetweetMetaPrefix}runs:`;
+    const autoRetweetPlugExtras =
+      getPlugById.plugFunction === 'autoRepostPost'
+        ? {
+            getAutoRetweetState: async (): Promise<{
+              count: number;
+              lastAtMs: number;
+            }> => {
+              const rows =
+                await this._integrationRepository.listExisingDataWithPrefix(
+                  getPlugById.plugFunction,
+                  integrationId,
+                  autoRetweetMetaPrefix
+                );
+              const meta = rows.find((r) =>
+                r.value.startsWith(autoRetweetRunsPrefix)
+              );
+              if (!meta?.value) {
+                return { count: 0, lastAtMs: 0 };
+              }
+              const payload = meta.value.slice(autoRetweetRunsPrefix.length);
+              const [countRaw, lastRaw] = payload.split(':');
+              return {
+                count: Math.max(0, Number(countRaw) || 0),
+                lastAtMs: Math.max(0, Number(lastRaw) || 0),
+              };
+            },
+            saveAutoRetweetState: async (
+              count: number,
+              lastAtMs: number
+            ): Promise<void> => {
+              const rows =
+                await this._integrationRepository.listExisingDataWithPrefix(
+                  getPlugById.plugFunction,
+                  integrationId,
+                  autoRetweetMetaPrefix
+                );
+              if (rows.length) {
+                await this._integrationRepository.deleteExisingDataValues(
+                  getPlugById.plugFunction,
+                  integrationId,
+                  rows.map((r) => r.value)
+                );
+              }
+              await this._integrationRepository.saveExisingData(
+                getPlugById.plugFunction,
+                integrationId,
+                [`${autoRetweetRunsPrefix}${count}:${lastAtMs}`]
+              );
+            },
+          }
+        : {};
+
     const engagementPlugContext = mergeDmBatchGate({
+      ...autoRetweetPlugExtras,
       loadEngagerSnapshot: loadEngagerSnapshotForPost,
       saveEngagerSnapshot: saveEngagerSnapshotForPost,
       // Returns the subset of `userIds` that have ALREADY been recorded for
@@ -1162,9 +1261,8 @@ export class IntegrationService implements OnModuleInit {
     }
 
     if (s.auto_retweet_enabled === true) {
-      // autoRepostPost only uses likesAmount today. Homepage interval / #times are
-      // stored on the post but not yet read by the plug (fixed poll interval in
-      // @Plug metadata). Optional post setting auto_retweet_like_threshold if added later.
+      // Per-post interval/times live on post.settings; plug row keeps a fallback
+      // likes threshold for legacy like-triggered retweets.
       const likesTrigger = String(
         Math.max(1, Number(s.auto_retweet_like_threshold ?? 1) || 1)
       );
@@ -1213,6 +1311,9 @@ export class IntegrationService implements OnModuleInit {
    * TWEETSTREAM_DISABLE_FOLLOWER_POLLING=true (that flag only applies while WS is live).
    */
   private async shouldRunFollowerDmPoller(): Promise<boolean> {
+    if (isCustomRealtimeIngest()) {
+      return false;
+    }
     if (isXAccountActivityPollingDisabled()) {
       return false;
     }
@@ -1303,9 +1404,6 @@ export class IntegrationService implements OnModuleInit {
     organizationId: string,
     integrationId: string
   ): Promise<void> {
-    if (isXEngagementPollingDisabled()) {
-      return;
-    }
     const pollIntervalMs = resolveXPollIntervalMs(
       'X_PROFILE_AUTOMATIONS_POLL_INTERVAL_MS'
     );
@@ -1498,8 +1596,11 @@ export class IntegrationService implements OnModuleInit {
     let plugsForPost = plugs.filter((plug) =>
       this.isEngagementPlugActiveForPost(plug.plugFunction, postSettings)
     );
-    // Right after publish there are no engagers yet; realtime/poller handles DMs.
-    if (isTweetStreamEnabled() && !isXquikEngagementPollerEnabled()) {
+    // Right after publish there are no engagers yet; realtime handles DMs.
+    if (
+      shouldSkipXEngagerPlugPolling() ||
+      (isTweetStreamEnabled() && !isXquikEngagementPollerEnabled())
+    ) {
       plugsForPost = plugsForPost.filter(
         (plug) => plug.plugFunction !== 'autoDmEngagers'
       );
@@ -1672,7 +1773,11 @@ export class IntegrationService implements OnModuleInit {
       let plugsForPost = plugs.filter((plug) =>
         this.isEngagementPlugActiveForPost(plug.plugFunction, postSettings)
       );
-      if (tweetStreamWsActive && !xquikMode) {
+      if (shouldSkipXEngagerPlugPolling()) {
+        plugsForPost = plugsForPost.filter(
+          (plug) => plug.plugFunction !== 'autoDmEngagers'
+        );
+      } else if (tweetStreamWsActive && !xquikMode) {
         plugsForPost = plugsForPost.filter((plug) =>
           ['autoDmPinnedPost', 'autoDmEngagers'].includes(plug.plugFunction)
         );
@@ -2109,19 +2214,35 @@ export class IntegrationService implements OnModuleInit {
   }
 
   async processAllPendingXFollowQueues(): Promise<void> {
+    if (!isPostizBackendWorker()) {
+      return;
+    }
+
     const pending = await listIntegrationIdsWithPendingQueue();
+    if (!pending.length) {
+      return;
+    }
+
     for (const { integrationId, orgId } of pending) {
       try {
-        await this.processXFollowQueue(orgId, integrationId);
-      } catch {
-        // skip invalid/disabled integrations until user fixes
+        const result = await this.processXFollowQueue(orgId, integrationId);
+        if (result.processed > 0) {
+          console.log(
+            `[x-follow-queue] integration=${integrationId} batch processed=${result.processed} succeeded=${result.succeeded} failed=${result.failed}`
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[x-follow-queue] integration=${integrationId} org=${orgId} error:`,
+          err
+        );
       }
     }
   }
 
   async getXFollowQueue(orgId: string, integrationId: string) {
     await this.assertActiveXIntegration(orgId, integrationId);
-    await this.processXFollowQueue(orgId, integrationId);
+    // Status reads must not drain the queue — background polling processes batches.
     return getXFollowQueueStatus(integrationId, orgId);
   }
 
@@ -2132,37 +2253,52 @@ export class IntegrationService implements OnModuleInit {
       targetUserId: string;
       targetUsername?: string;
       targetName?: string;
-    }[]
+    }[],
+    options?: { processFirstBatch?: boolean }
   ) {
     await this.assertActiveXIntegration(orgId, integrationId);
     const result = await enqueueXFollowQueueItems(
       integrationId,
       orgId,
-      entries
+      entries,
+      { firstBatchNow: options?.processFirstBatch }
     );
-    await this.processXFollowQueue(orgId, integrationId);
+    const batch = options?.processFirstBatch
+      ? await this.processXFollowQueue(orgId, integrationId, {
+          limitToItemIds: result.addedItemIds,
+        })
+      : null;
     const status = await getXFollowQueueStatus(integrationId, orgId);
-    return { ...result, status };
+    return { ...result, batch, status };
   }
 
-  async processXFollowQueue(orgId: string, integrationId: string) {
+  async processXFollowQueue(
+    orgId: string,
+    integrationId: string,
+    options?: { limitToItemIds?: string[] }
+  ) {
     const integration = await this.assertActiveXIntegration(
       orgId,
       integrationId
     );
     const x = this._integrationManager.getSocialIntegration('x') as XProvider;
-    return processXFollowQueueBatch(integrationId, orgId, async (userIds) => {
-      try {
-        return await x.followUsers(integration, userIds);
-      } catch (err: any) {
-        const msg =
-          err?.data?.detail ||
-          err?.data?.title ||
-          err?.message ||
-          'Follow request failed';
-        throw new HttpException(String(msg), HttpStatus.BAD_REQUEST);
-      }
-    });
+    return processXFollowQueueBatch(
+      integrationId,
+      orgId,
+      async (userIds) => {
+        try {
+          return await x.followUsers(integration, userIds);
+        } catch (err: any) {
+          const msg =
+            err?.data?.detail ||
+            err?.data?.title ||
+            err?.message ||
+            'Follow request failed';
+          throw new HttpException(String(msg), HttpStatus.BAD_REQUEST);
+        }
+      },
+      options
+    );
   }
 
   async cancelXFollowQueueItem(
@@ -2182,6 +2318,30 @@ export class IntegrationService implements OnModuleInit {
     await this.assertActiveXIntegration(orgId, integrationId);
     const removed = await clearXFollowQueueCompleted(integrationId);
     return { removed, status: await getXFollowQueueStatus(integrationId, orgId) };
+  }
+
+  async clearXFollowQueueItems(
+    orgId: string,
+    integrationId: string,
+    itemIds: string[]
+  ) {
+    await this.assertActiveXIntegration(orgId, integrationId);
+    const removed = await clearXFollowQueueItems(
+      integrationId,
+      orgId,
+      itemIds
+    );
+    return { removed, status: await getXFollowQueueStatus(integrationId, orgId) };
+  }
+
+  async resumeXFollowQueueAfterCredits(orgId: string, integrationId: string) {
+    await this.assertActiveXIntegration(orgId, integrationId);
+    const cleared = await resumeXFollowQueueAfterCredits(integrationId, orgId);
+    await this.processXFollowQueue(orgId, integrationId);
+    return {
+      cleared,
+      status: await getXFollowQueueStatus(integrationId, orgId),
+    };
   }
 
   async findFreeDateTime(

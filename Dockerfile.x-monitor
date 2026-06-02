@@ -1,0 +1,28 @@
+# Tweetmax X monitor — build from monorepo root: docker compose build postiz-x-monitor
+FROM node:22.20-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends g++ make python3 \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm --no-update-notifier --global install pnpm@10.6.1
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/backend/package.json apps/backend/
+COPY apps/orchestrator/package.json apps/orchestrator/
+COPY apps/frontend/package.json apps/frontend/
+COPY apps/x-monitor/package.json apps/x-monitor/
+COPY apps/commands/package.json apps/commands/
+COPY apps/extension/package.json apps/extension/
+
+ENV DATABASE_URL="postgresql://build:build@127.0.0.1:5432/build"
+RUN pnpm install --frozen-lockfile
+
+COPY . .
+RUN pnpm run prisma-generate
+RUN pnpm --filter ./apps/x-monitor run build
+
+ENV NODE_ENV=production
+
+CMD ["node", "apps/x-monitor/dist/apps/x-monitor/src/main.js"]

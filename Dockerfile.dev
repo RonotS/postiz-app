@@ -29,6 +29,7 @@ COPY apps/extension/package.json apps/extension/package.json
 COPY apps/frontend/package.json apps/frontend/package.json
 COPY apps/landingpage/package.json apps/landingpage/package.json
 COPY apps/orchestrator/package.json apps/orchestrator/package.json
+COPY apps/x-monitor/package.json apps/x-monitor/package.json
 COPY apps/sdk/package.json apps/sdk/package.json
 RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
     pnpm fetch --frozen-lockfile
@@ -57,7 +58,8 @@ ENV FRONTEND_URL=${FRONTEND_URL}
 ENV MAIN_URL=${MAIN_URL}
 
 RUN --mount=type=cache,id=next-cache,target=/app/apps/frontend/.next/cache \
-    NODE_OPTIONS="--max-old-space-size=4096" pnpm run build
+    NODE_OPTIONS="--max-old-space-size=4096" pnpm run build \
+    && pnpm run build:x-monitor
 
 # Use envsubst to replace $PORT in nginx.conf at runtime (Railway sets PORT dynamically)
 # Default to 5000 if PORT is not set (local Docker usage)

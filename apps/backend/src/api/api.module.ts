@@ -34,6 +34,8 @@ import { MonitorController } from '@gitroom/backend/api/routes/monitor.controlle
 import { NoAuthIntegrationsController } from '@gitroom/backend/api/routes/no.auth.integrations.controller';
 import { XAccountActivityController } from '@gitroom/backend/api/routes/x.account-activity.controller';
 import { XTweetStreamController } from '@gitroom/backend/api/routes/x.tweetstream.controller';
+import { XActivityStreamController } from '@gitroom/backend/api/routes/x.activity-stream.controller';
+import { XActivityIngestController } from '@gitroom/backend/api/routes/x.activity-ingest.controller';
 import { XquikController } from '@gitroom/backend/api/routes/x.xquik.controller';
 import { EnterpriseController } from '@gitroom/backend/api/routes/enterprise.controller';
 import { OAuthAppController } from '@gitroom/backend/api/routes/oauth-app.controller';
@@ -79,6 +81,8 @@ const authenticatedController = [
     EnterpriseController,
     NoAuthIntegrationsController,
     XAccountActivityController,
+    XActivityStreamController,
+    XActivityIngestController,
     XTweetStreamController,
     XquikController,
     OAuthController,

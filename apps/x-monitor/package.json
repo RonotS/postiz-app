@@ -1,0 +1,12 @@
+{
+  "name": "postiz-x-monitor",
+  "version": "1.0.0",
+  "description": "Tweetmax X filtered-stream detector (push) + WebSocket → Postiz ingest",
+  "scripts": {
+    "dev": "dotenv -e ../../.env -- nest start --watch --entryFile=./apps/x-monitor/src/main",
+    "build": "cross-env NODE_ENV=production nest build",
+    "start": "node ./dist/apps/x-monitor/src/main.js",
+    "pm2": "pm2 start node --name x-monitor -- ./dist/apps/x-monitor/src/main.js"
+  },
+  "license": "ISC"
+}

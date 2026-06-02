@@ -300,16 +300,26 @@ export const ProfileAutomationsPanel: FC = () => {
       }
       setSavingKey(key);
       try {
+        let res: Response;
         if (enabled) {
-          await fetch(`/integrations/${pickedId}/plugs`, {
+          res = await fetch(`/integrations/${pickedId}/plugs`, {
             method: 'POST',
             body: JSON.stringify({ func, fields }),
           });
         } else if (existing?.id) {
-          await fetch(`/integrations/plugs/${existing.id}/activate`, {
+          res = await fetch(`/integrations/plugs/${existing.id}/activate`, {
             method: 'PUT',
             body: JSON.stringify({ status: false }),
           });
+        } else {
+          await refetch();
+          toast.show(t('saved', 'Saved'), 'success');
+          return;
+        }
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          toast.show(errText || t('save_failed', 'Save failed'), 'warning');
+          return;
         }
         await refetch();
         toast.show(t('saved', 'Saved'), 'success');
@@ -472,7 +482,18 @@ export const ProfileAutomationsPanel: FC = () => {
       <ProfileAutomationsCard borderless>
         <AutomationCardHeader
           enabled={autoDeleteEnabled}
-          onToggle={setAutoDeleteEnabled}
+          onToggle={(v) => {
+            setAutoDeleteEnabled(v);
+            if (
+              v &&
+              !applyPosts &&
+              !applyReposts &&
+              !applyQuotes &&
+              !applyReplies
+            ) {
+              setApplyPosts(true);
+            }
+          }}
           disabled={busy}
           title={t('auto_delete', 'Auto-Delete')}
           description={t(

@@ -16,33 +16,32 @@ import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { TypedSearchAttributes } from '@temporalio/common';
 import { postId as postIdSearchParam } from '@gitroom/nestjs-libraries/temporal/temporal.search.attribute';
 
-const proxyTaskQueue = (taskQueue: string) => {
+const POST_ACTIVITY_RETRY_SLOW = {
+  maximumAttempts: 3,
+  backoffCoefficient: 1,
+  initialInterval: '2 minutes' as const,
+};
+
+/** Immediate "Tweet now" should not wait 2 minutes between activity retries. */
+const POST_ACTIVITY_RETRY_NOW = {
+  maximumAttempts: 3,
+  backoffCoefficient: 1,
+  initialInterval: '5 seconds' as const,
+};
+
+const proxyTaskQueue = (taskQueue: string, postNow: boolean) => {
   return proxyActivities<PostActivity>({
     startToCloseTimeout: '10 minute',
     taskQueue,
-    retry: {
-      maximumAttempts: 3,
-      backoffCoefficient: 1,
-      initialInterval: '2 minutes',
-    },
+    retry: postNow ? POST_ACTIVITY_RETRY_NOW : POST_ACTIVITY_RETRY_SLOW,
   });
 };
 
-const {
-  getPostsList,
-  inAppNotification,
-  changeState,
-  updatePost,
-  sendWebhooks,
-  isCommentable,
-} = proxyActivities<PostActivity>({
-  startToCloseTimeout: '10 minute',
-  retry: {
-    maximumAttempts: 3,
-    backoffCoefficient: 1,
-    initialInterval: '2 minutes',
-  },
-});
+const mainPostActivities = (postNow: boolean) =>
+  proxyActivities<PostActivity>({
+    startToCloseTimeout: '10 minute',
+    retry: postNow ? POST_ACTIVITY_RETRY_NOW : POST_ACTIVITY_RETRY_SLOW,
+  });
 
 const { runEngagementPlugsForReleaseId } = proxyActivities<PostActivity>({
   startToCloseTimeout: '10 minute',
@@ -79,12 +78,21 @@ export async function postWorkflowV102({
     globalPlugs,
     processInternalPlug,
     processPlug,
-  } = proxyTaskQueue(taskQueue);
+  } = proxyTaskQueue(taskQueue, postNow);
 
   let poked = false;
   setHandler(poke, () => {
     poked = true;
   });
+
+  const {
+    getPostsList,
+    inAppNotification,
+    changeState,
+    updatePost,
+    sendWebhooks,
+    isCommentable,
+  } = mainPostActivities(postNow);
 
   const startTime = new Date();
   // get all the posts and comments to post

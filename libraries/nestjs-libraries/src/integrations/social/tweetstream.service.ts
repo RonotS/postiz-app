@@ -22,6 +22,8 @@ import {
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
 import { XAccountActivityHandler } from '@gitroom/nestjs-libraries/integrations/social/x.account-activity.handler';
+import { isXActivityStreamEnabled } from '@gitroom/helpers/x/x.activity-stream.env';
+import { isTweetStreamRealtimeStack } from '@gitroom/helpers/x/x.realtime.env';
 import {
   TweetStreamAccountOpResult,
   TweetStreamApiClient,
@@ -114,6 +116,13 @@ export class TweetStreamService implements OnModuleInit, OnModuleDestroy {
     }
     if (!this.shouldRunConsumer()) {
       return;
+    }
+
+    if (isTweetStreamRealtimeStack()) {
+      this.log.log(
+        `X realtime ingest=tweetstream (AAA subscriptions skipped). ` +
+          `Site stream: ${isXActivityStreamEnabled() ? 'enabled (/api/x/activity-stream)' : 'off — set X_ACTIVITY_STREAM_ENABLED=true'}`
+      );
     }
 
     try {

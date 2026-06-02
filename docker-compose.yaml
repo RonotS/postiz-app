@@ -1,8 +1,14 @@
+# Custom X ingest + x-monitor: build from Dockerfile.dev (includes x-monitor via PM2).
+# Set X_MONITOR_ENABLED=true in .env. Ingest URL for single-container: http://127.0.0.1:3000
+# Optional separate monitor: docker compose --profile split-monitor up -d postiz-x-monitor
 services:
   postiz:
     image: ghcr.io/gitroomhq/postiz-app:latest
     container_name: postiz
     restart: always
+    # Values in `environment` below override the same keys from env_file (.env).
+    env_file:
+      - .env
     environment:
       # === Required Settings
       MAIN_URL: 'http://localhost:4007'
@@ -12,6 +18,8 @@ services:
       DATABASE_URL: 'postgresql://postiz-user:postiz-password@postiz-postgres:5432/postiz-db-local'
       REDIS_URL: 'redis://postiz-redis:6379'
       BACKEND_INTERNAL_URL: 'http://localhost:3000'
+      # x-monitor runs in same container (PM2); backend listens on 3000
+      X_MONITOR_POSTIZ_INGEST_URL: 'http://127.0.0.1:3000'
       TEMPORAL_ADDRESS: "temporal:7233"
       IS_GENERAL: 'true'
       DISABLE_REGISTRATION: 'false'
@@ -123,6 +131,34 @@ services:
         condition: service_healthy
       postiz-redis:
         condition: service_healthy
+
+  # Optional: separate x-monitor container (default: x-monitor runs inside postiz via PM2)
+  postiz-x-monitor:
+    profiles:
+      - split-monitor
+    build:
+      context: .
+      dockerfile: Dockerfile.x-monitor
+    image: postiz-x-monitor:local
+    container_name: postiz-x-monitor
+    restart: always
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      # Docker network hostnames (override localhost URLs from .env)
+      DATABASE_URL: 'postgresql://postiz-user:postiz-password@postiz-postgres:5432/postiz-db-local'
+      REDIS_URL: 'redis://postiz-redis:6379'
+      X_MONITOR_POSTIZ_INGEST_URL: 'http://postiz:5000'
+    depends_on:
+      postiz:
+        condition: service_started
+      postiz-postgres:
+        condition: service_healthy
+      postiz-redis:
+        condition: service_healthy
+    networks:
+      - postiz-network
 
   postiz-postgres:
     image: postgres:17-alpine

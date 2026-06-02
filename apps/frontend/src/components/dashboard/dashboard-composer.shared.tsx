@@ -41,6 +41,54 @@ export const DEFAULT_COMPOSER_SETTINGS: ComposerSettings = {
   paidPartnership: false,
 };
 
+export function composerSettingsFromXPost(
+  raw: unknown,
+  base: ComposerSettings = DEFAULT_COMPOSER_SETTINGS
+): ComposerSettings {
+  if (!raw || typeof raw !== 'object') {
+    return { ...base };
+  }
+  const s = raw as Record<string, unknown>;
+  if (s.__type !== 'x') {
+    return { ...base };
+  }
+  const targets =
+    s.auto_dm_targets && typeof s.auto_dm_targets === 'object'
+      ? (s.auto_dm_targets as Record<string, unknown>)
+      : {};
+
+  return {
+    ...base,
+    autoRetweet: s.auto_retweet_enabled === true,
+    autoRetweetInterval: Math.max(
+      1,
+      Number(s.auto_retweet_interval_hours) || base.autoRetweetInterval
+    ),
+    autoRetweetTimes: Math.max(
+      1,
+      Number(s.auto_retweet_times) || base.autoRetweetTimes
+    ),
+    autoDm: s.auto_dm_enabled === true,
+    autoDmMessage:
+      typeof s.auto_dm_message === 'string'
+        ? s.auto_dm_message
+        : base.autoDmMessage,
+    autoDmTargetLikes: targets.likes !== false,
+    autoDmTargetRetweets: targets.retweets === true,
+    autoDmTargetReplies: targets.replies === true,
+    autoThreadReply: s.auto_thread_reply_enabled === true,
+    autoThreadReplyLikes: Math.max(
+      1,
+      Number(s.auto_thread_reply_likes) || base.autoThreadReplyLikes
+    ),
+    autoThreadReplyText:
+      typeof s.auto_thread_reply_text === 'string'
+        ? s.auto_thread_reply_text
+        : base.autoThreadReplyText,
+    paidPartnership: s.paid_partnership === true,
+  };
+}
+
 export function buildXPostSettings(settings: ComposerSettings) {
   return {
     __type: 'x' as const,

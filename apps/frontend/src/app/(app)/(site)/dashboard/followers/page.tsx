@@ -69,6 +69,7 @@ function FollowAutomationsContent() {
     rateLimit: followRateLimit,
     countdown: followCountdown,
     dailyCountdown: followDailyCountdown,
+    usesDailyTimer: followUsesDailyTimer,
   } = useXFollowRateLimit(integrationId);
 
   if (!isPublic) {
@@ -141,42 +142,48 @@ function FollowAutomationsContent() {
         </div>
       </header>
 
-      {tab === 'explorer' ? (
+      {/* Keep explorer mounted when switching tabs so search, trail, and loaded followers persist. */}
+      <div className={clsx(tab !== 'explorer' && 'hidden')}>
         <XFollowersExplorerPanel integrationId={integrationId} />
-      ) : integrationsLoading ? (
-        <div className="h-48 animate-pulse rounded-2xl bg-newBgLineColor/40" />
-      ) : !xIntegrations.length ? (
-        <p className="text-sm text-newTableText">
-          {t('connect_x_for_queue', 'Connect an X account to use the follow queue.')}
-        </p>
-      ) : (
-        <div className="flex flex-col gap-5">
-          {followRateLimit && (
-            <XFollowRateLimitBanner
-              rateLimit={followRateLimit}
-              countdown={followCountdown}
-              dailyCountdown={followDailyCountdown}
-              action="follow"
-            />
-          )}
-          <ProfileAutomationsSection
-            title={t('queue_status', 'Queue status')}
-            subtitle={t(
-              'queue_status_sub',
-              'Pending follows with estimated run times. The system automatically paces actions within X API limits.'
+      </div>
+
+      <div className={clsx(tab !== 'queue' && 'hidden')}>
+        {integrationsLoading ? (
+          <div className="h-48 animate-pulse rounded-2xl bg-newBgLineColor/40" />
+        ) : !xIntegrations.length ? (
+          <p className="text-sm text-newTableText">
+            {t('connect_x_for_queue', 'Connect an X account to use the follow queue.')}
+          </p>
+        ) : (
+          <div className="flex flex-col gap-5">
+            {followRateLimit && (
+              <XFollowRateLimitBanner
+                rateLimit={followRateLimit}
+                countdown={followCountdown}
+                dailyCountdown={followDailyCountdown}
+                usesDailyTimer={followUsesDailyTimer}
+                action="follow"
+              />
             )}
-            icon={
-              <ProfileAutomationsSectionIcon>
-                <FollowAutomationsIcon />
-              </ProfileAutomationsSectionIcon>
-            }
-          >
-            {integrationId ? (
-              <XFollowQueuePanel integrationId={integrationId} />
-            ) : null}
-          </ProfileAutomationsSection>
-        </div>
-      )}
+            <ProfileAutomationsSection
+              title={t('queue_status', 'Queue status')}
+              subtitle={t(
+                'queue_status_sub',
+                'Pending follows with estimated run times. The system automatically paces actions within X API limits.'
+              )}
+              icon={
+                <ProfileAutomationsSectionIcon>
+                  <FollowAutomationsIcon />
+                </ProfileAutomationsSectionIcon>
+              }
+            >
+              {integrationId ? (
+                <XFollowQueuePanel integrationId={integrationId} />
+              ) : null}
+            </ProfileAutomationsSection>
+          </div>
+        )}
+      </div>
     </ProfileAutomationsPageShell>
   );
 }

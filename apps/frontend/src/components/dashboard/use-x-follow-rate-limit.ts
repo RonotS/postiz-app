@@ -26,11 +26,25 @@ export type XFollowRateLimit = {
 
 export type XGraphRateAction = 'follow' | 'unfollow';
 
-function formatCountdownMs(ms: number): string {
+/** Short countdown for 15-minute windows (always under 1 hour). */
+function formatWindowCountdownMs(ms: number): string {
   if (ms <= 0) return '0:00';
   const totalSec = Math.ceil(ms / 1000);
   const m = Math.floor(totalSec / 60);
   const s = totalSec % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/** Long countdown for 24h rolling daily cap (hours when needed). */
+export function formatDurationCountdownMs(ms: number): string {
+  if (ms <= 0) return '0:00';
+  const totalSec = Math.ceil(ms / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  }
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
@@ -58,19 +72,22 @@ export function useXGraphRateLimit(
 
   const [tick, setTick] = useState(0);
 
+  const usesDailyTimer = !!(action === 'follow' && data?.daily);
+
   const bindingResetsAt = useMemo(() => {
     if (!data) return '';
-    if (data.limitedBy === 'daily' && data.daily?.resetsAt) {
+    if (usesDailyTimer && data.daily?.resetsAt) {
       return data.daily.resetsAt;
     }
     return data.resetsAt;
-  }, [data]);
+  }, [data, usesDailyTimer]);
 
   const showCountdown = useMemo(() => {
     if (!data) return false;
     if (data.limited) return true;
+    // Follow: daily timer only when the 24h cap is hit — not on every partial usage.
     if (action === 'follow' && data.daily) {
-      return data.daily.remaining < data.daily.limit;
+      return data.daily.limited;
     }
     return data.remaining < data.limit;
   }, [data, action]);
@@ -84,23 +101,13 @@ export function useXGraphRateLimit(
   const countdown = useMemo(() => {
     if (!bindingResetsAt) return '';
     const ms = new Date(bindingResetsAt).getTime() - Date.now();
-    return formatCountdownMs(ms);
+    return usesDailyTimer
+      ? formatDurationCountdownMs(ms)
+      : formatWindowCountdownMs(ms);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- tick drives countdown refresh
-  }, [bindingResetsAt, tick]);
+  }, [bindingResetsAt, usesDailyTimer, tick]);
 
-  const dailyCountdown = useMemo(() => {
-    if (!data?.daily?.resetsAt) return '';
-    const ms = new Date(data.daily.resetsAt).getTime() - Date.now();
-    if (ms <= 0) return '0:00';
-    const totalSec = Math.ceil(ms / 1000);
-    const h = Math.floor(totalSec / 3600);
-    const m = Math.floor((totalSec % 3600) / 60);
-    const s = totalSec % 60;
-    if (h > 0) {
-      return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-    }
-    return `${m}:${s.toString().padStart(2, '0')}`;
-  }, [data?.daily?.resetsAt, tick]);
+  const dailyCountdown = countdown;
 
   const resetsSoon = useMemo(() => {
     if (!bindingResetsAt) return false;
@@ -119,6 +126,7 @@ export function useXGraphRateLimit(
     mutate,
     countdown,
     dailyCountdown,
+    usesDailyTimer,
     atLimit: !!data?.limited,
     remaining: data?.remaining ?? 0,
     limit: data?.limit ?? 50,

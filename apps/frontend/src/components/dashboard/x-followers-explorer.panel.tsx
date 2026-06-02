@@ -205,6 +205,7 @@ export const XFollowersExplorerPanel: FC<XFollowersExplorerPanelProps> = ({
     mutate: mutateFollowRateLimit,
     countdown: followCountdown,
     dailyCountdown: followDailyCountdown,
+    usesDailyTimer: followUsesDailyTimer,
     atLimit: followAtLimit,
     remaining: followRemaining,
     limit: followLimit,
@@ -230,11 +231,12 @@ export const XFollowersExplorerPanel: FC<XFollowersExplorerPanelProps> = ({
     pollMinutes: plugPollMinutes,
   } = useXPlugBatchRateLimit(integrationId);
 
+  const followWindowRemaining = followRateLimit
+    ? Math.max(0, followRateLimit.limit - followRateLimit.count)
+    : 0;
   const followSlotsLeft = followAtLimit
     ? 0
-    : followRateLimit?.daily
-      ? Math.min(followRemaining, followDailyRemaining)
-      : followRemaining;
+    : Math.min(followDailyRemaining, followWindowRemaining);
   const unfollowSlotsLeft = unfollowAtLimit ? 0 : unfollowRemaining;
 
   const activeIntegration = useMemo(
@@ -1026,8 +1028,14 @@ export const XFollowersExplorerPanel: FC<XFollowersExplorerPanelProps> = ({
 
   const enqueueFollowUsers = useCallback(
     async (
-      users: Array<{ id: string; username?: string; name?: string }>
-    ): Promise<{ added: number; skipped: number } | null> => {
+      users: Array<{ id: string; username?: string; name?: string }>,
+      options?: { processFirstBatch?: boolean }
+    ): Promise<{
+      added: number;
+      skipped: number;
+      batchSucceeded?: number;
+      succeededUserIds?: string[];
+    } | null> => {
       if (!integrationId || users.length === 0) {
         return { added: 0, skipped: 0 };
       }
@@ -1041,6 +1049,7 @@ export const XFollowersExplorerPanel: FC<XFollowersExplorerPanelProps> = ({
               targetUsername: u.username,
               targetName: u.name,
             })),
+            processFirstBatch: options?.processFirstBatch === true,
           }),
         }
       );
@@ -1058,6 +1067,8 @@ export const XFollowersExplorerPanel: FC<XFollowersExplorerPanelProps> = ({
       return {
         added: data.added ?? users.length,
         skipped: data.skipped ?? 0,
+        batchSucceeded: data.batch?.succeeded,
+        succeededUserIds: data.batch?.succeededUserIds,
       };
     },
     [integrationId, fetch, mutateFollowQueue, mutateFollowRateLimit]
@@ -1160,105 +1171,58 @@ export const XFollowersExplorerPanel: FC<XFollowersExplorerPanelProps> = ({
     }
 
     const users = selectedToFollow;
-    const immediateUsers =
-      followSlotsLeft > 0 ? users.slice(0, followSlotsLeft) : [];
-    const overflowUsers = users.slice(immediateUsers.length);
-
-    if (!immediateUsers.length && !overflowUsers.length) return;
-
     setActionLoading(true);
     try {
-      let followedCount = 0;
-      let followFailed = 0;
-      const succeededIds: string[] = [];
+      const queueResult = await enqueueFollowUsers(users, {
+        processFirstBatch: true,
+      });
+      if (!queueResult) return;
 
-      if (immediateUsers.length > 0) {
-        for (let i = 0; i < immediateUsers.length; i += X_FOLLOW_BATCH_MAX) {
-          const chunk = immediateUsers
-            .slice(i, i + X_FOLLOW_BATCH_MAX)
-            .map((u) => u.id);
-          const result = await followUserIdsChunk(chunk);
-          if (!result) break;
-          succeededIds.push(...result.succeededIds);
-          followedCount += result.succeededIds.length;
-          followFailed += result.failed;
-        }
-        if (succeededIds.length > 0) {
-          markAsFollowing(succeededIds);
-        }
+      const { added, skipped, batchSucceeded = 0, succeededUserIds = [] } =
+        queueResult;
+
+      if (succeededUserIds.length > 0) {
+        markAsFollowing(succeededUserIds);
       }
 
-      const succeededSet = new Set(succeededIds);
-      const usersToQueue = [
-        ...immediateUsers.filter((u) => !succeededSet.has(u.id)),
-        ...overflowUsers,
-      ];
+      const batchCount = Math.ceil(added / X_FOLLOW_BATCH_MAX);
+      const pendingAfterFirst = Math.max(0, added - batchSucceeded);
 
-      let queueAdded = 0;
-      let queueSkipped = 0;
-      if (usersToQueue.length > 0) {
-        const queueResult = await enqueueFollowUsers(usersToQueue);
-        if (queueResult) {
-          queueAdded = queueResult.added;
-          queueSkipped = queueResult.skipped;
-        }
-      }
-
-      if (followedCount > 0 && queueAdded > 0) {
+      if (added > 0) {
         toast.show(
           t(
-            'follow_and_queue_success',
-            'Followed {{followed}} now; {{queued}} added to the follow queue for the next {{minutes}}-minute windows.',
+            'follow_selected_queue_success',
+            'Added {{added}} to the follow queue in {{batches}} batch(es). Batch 1: {{first}} followed now; {{pending}} scheduled in later 15-minute slots. Open the Follow queue tab to track or clear.',
             {
-              followed: followedCount,
-              queued: queueAdded,
-              minutes: followWindowMinutes,
+              added,
+              batches: batchCount,
+              first: batchSucceeded,
+              pending: pendingAfterFirst,
             }
           ),
           'success'
         );
-      } else if (followedCount > 0) {
+      }
+
+      if (skipped > 0) {
         toast.show(
-          t('follow_success_count', 'Followed {{count}} account(s)', {
-            count: followedCount,
+          t('queue_skipped_some', '{{count}} profile(s) were skipped (already queued).', {
+            count: skipped,
           }),
-          'success'
+          'warning'
         );
-      } else if (queueAdded > 0) {
-        toast.show(
-          t(
-            'queue_added_window_full',
-            'Added {{added}} to the follow queue ({{skipped}} skipped). They will run when the {{minutes}}-minute window opens.',
-            {
-              added: queueAdded,
-              skipped: queueSkipped,
-              minutes: followWindowMinutes,
-            }
-          ),
-          'success'
-        );
-      } else if (usersToQueue.length > 0) {
+      }
+
+      if (added === 0 && skipped > 0) {
         toast.show(
           t('queue_add_failed', 'Could not add to queue'),
           'warning'
         );
       }
 
-      if (followFailed > 0) {
-        toast.show(
-          t('follow_partial_fail', '{{count}} could not be followed', {
-            count: followFailed,
-          }),
-          'warning'
-        );
-      }
-
       setSelected((prev) => {
         const next = new Set(prev);
-        succeededIds.forEach((id) => next.delete(id));
-        if (queueAdded > 0) {
-          usersToQueue.forEach((u) => next.delete(u.id));
-        }
+        users.forEach((u) => next.delete(u.id));
         return next;
       });
     } catch (e: any) {
@@ -1272,13 +1236,10 @@ export const XFollowersExplorerPanel: FC<XFollowersExplorerPanelProps> = ({
     followAtLimit,
     followLimitedBy,
     followDailyLimit,
-    followSlotsLeft,
-    followUserIdsChunk,
     enqueueFollowUsers,
     markAsFollowing,
     t,
     toast,
-    followWindowMinutes,
   ]);
 
   const massUnfollow = useCallback(async () => {
@@ -1559,6 +1520,7 @@ export const XFollowersExplorerPanel: FC<XFollowersExplorerPanelProps> = ({
               rateLimit={followRateLimit}
               countdown={followCountdown}
               dailyCountdown={followDailyCountdown}
+              usesDailyTimer={followUsesDailyTimer}
               action="follow"
               className="h-full"
             />
@@ -1965,11 +1927,10 @@ export const XFollowersExplorerPanel: FC<XFollowersExplorerPanelProps> = ({
           <li>
             {t(
               'follow_rate_limit_hint',
-              'Up to {{windowLimit}} follows per {{minutes}} minutes and {{dailyLimit}} per day. Follow selected uses your current window first; the rest go to the follow queue automatically.',
+              'Up to {{batchSize}} follows per 15-minute batch ({{dailyLimit}} per day). Follow selected runs batch 1 now and schedules the rest; Queue selected schedules every batch — see the Follow queue tab.',
               {
+                batchSize: X_FOLLOW_BATCH_MAX,
                 dailyLimit: followDailyLimit,
-                windowLimit: followLimit,
-                minutes: followWindowMinutes,
               }
             )}
           </li>

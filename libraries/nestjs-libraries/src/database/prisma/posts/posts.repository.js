@@ -1,0 +1,897 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.PostsRepository = void 0;
+const tslib_1 = require("tslib");
+const prisma_service_1 = require("../prisma.service");
+const common_1 = require("@nestjs/common");
+const client_1 = require("@prisma/client");
+const dayjs_1 = tslib_1.__importDefault(require("dayjs"));
+const isoWeek_1 = tslib_1.__importDefault(require("dayjs/plugin/isoWeek"));
+const weekOfYear_1 = tslib_1.__importDefault(require("dayjs/plugin/weekOfYear"));
+const isSameOrAfter_1 = tslib_1.__importDefault(require("dayjs/plugin/isSameOrAfter"));
+const utc_1 = tslib_1.__importDefault(require("dayjs/plugin/utc"));
+const uuid_1 = require("uuid");
+dayjs_1.default.extend(isoWeek_1.default);
+dayjs_1.default.extend(weekOfYear_1.default);
+dayjs_1.default.extend(isSameOrAfter_1.default);
+dayjs_1.default.extend(utc_1.default);
+function dmsSentFromSettings(settings) {
+    if (!settings)
+        return 0;
+    try {
+        const o = JSON.parse(settings);
+        const n = Number(o.auto_dm_sent_count);
+        return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0;
+    }
+    catch {
+        return 0;
+    }
+}
+function withDmsSent(post) {
+    const { settings, ...rest } = post;
+    return { ...rest, dmsSent: dmsSentFromSettings(settings) };
+}
+/** Same-origin or absolute URL for stored integration avatars (e.g. `/uploads/...`). */
+function absolutizePublicUrl(url) {
+    const raw = url?.trim();
+    if (!raw)
+        return undefined;
+    if (raw.startsWith('http://') || raw.startsWith('https://'))
+        return raw;
+    const base = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+    if (!base)
+        return raw.startsWith('/') ? raw : `/${raw}`;
+    return `${base}${raw.startsWith('/') ? '' : '/'}${raw}`;
+}
+function withDmsSentAndPictures(post) {
+    const base = withDmsSent(post);
+    const pic = base.integration?.picture;
+    if (!base.integration || !pic?.trim())
+        return base;
+    const normalized = absolutizePublicUrl(pic);
+    if (!normalized)
+        return base;
+    return {
+        ...base,
+        integration: {
+            ...base.integration,
+            picture: normalized,
+        },
+    };
+}
+let PostsRepository = class PostsRepository {
+    constructor(_post, _popularPosts, _comments, _tags, _tagsPosts, _errors) {
+        this._post = _post;
+        this._popularPosts = _popularPosts;
+        this._comments = _comments;
+        this._tags = _tags;
+        this._tagsPosts = _tagsPosts;
+        this._errors = _errors;
+    }
+    searchForMissingThreeHoursPosts() {
+        return this._post.model.post.findMany({
+            where: {
+                integration: {
+                    refreshNeeded: false,
+                    inBetweenSteps: false,
+                    disabled: false,
+                },
+                publishDate: {
+                    gte: dayjs_1.default.utc().subtract(2, 'hour').toDate(),
+                    lt: dayjs_1.default.utc().add(2, 'hour').toDate(),
+                },
+                state: 'QUEUE',
+                deletedAt: null,
+                parentPostId: null,
+            },
+            select: {
+                id: true,
+                organizationId: true,
+                integration: {
+                    select: {
+                        providerIdentifier: true,
+                    },
+                },
+                publishDate: true,
+            },
+        });
+    }
+    getOldPosts(orgId, date) {
+        return this._post.model.post.findMany({
+            where: {
+                integration: {
+                    refreshNeeded: false,
+                    inBetweenSteps: false,
+                    disabled: false,
+                },
+                organizationId: orgId,
+                publishDate: {
+                    lte: (0, dayjs_1.default)(date).toDate(),
+                },
+                deletedAt: null,
+                parentPostId: null,
+            },
+            orderBy: {
+                publishDate: 'desc',
+            },
+            select: {
+                id: true,
+                content: true,
+                publishDate: true,
+                releaseURL: true,
+                state: true,
+                integration: {
+                    select: {
+                        id: true,
+                        name: true,
+                        providerIdentifier: true,
+                        picture: true,
+                        type: true,
+                    },
+                },
+            },
+        });
+    }
+    updateImages(id, images) {
+        return this._post.model.post.update({
+            where: {
+                id,
+            },
+            data: {
+                image: images,
+            },
+        });
+    }
+    getPostUrls(orgId, ids) {
+        return this._post.model.post.findMany({
+            where: {
+                organizationId: orgId,
+                id: {
+                    in: ids,
+                },
+            },
+            select: {
+                id: true,
+                releaseURL: true,
+            },
+        });
+    }
+    async getPosts(orgId, query) {
+        // Use the provided start and end dates directly
+        const startDate = dayjs_1.default.utc(query.startDate).toDate();
+        const endDate = dayjs_1.default.utc(query.endDate).toDate();
+        const list = await this._post.model.post.findMany({
+            where: {
+                AND: [
+                    {
+                        OR: [
+                            {
+                                organizationId: orgId,
+                            }
+                        ],
+                    },
+                    {
+                        OR: [
+                            {
+                                publishDate: {
+                                    gte: startDate,
+                                    lte: endDate,
+                                },
+                            },
+                            {
+                                intervalInDays: {
+                                    not: null,
+                                },
+                            },
+                        ],
+                    },
+                ],
+                integration: {
+                    deletedAt: null,
+                },
+                deletedAt: null,
+                parentPostId: null,
+                ...(query.customer
+                    ? {
+                        integration: {
+                            customerId: query.customer,
+                        },
+                    }
+                    : {}),
+            },
+            select: {
+                id: true,
+                content: true,
+                publishDate: true,
+                releaseURL: true,
+                releaseId: true,
+                state: true,
+                intervalInDays: true,
+                group: true,
+                tags: {
+                    select: {
+                        tag: true,
+                    },
+                },
+                settings: true,
+                integration: {
+                    select: {
+                        id: true,
+                        providerIdentifier: true,
+                        name: true,
+                        picture: true,
+                    },
+                },
+            },
+        });
+        const mapped = list.reduce((all, post) => {
+            if (!post.intervalInDays) {
+                return [...all, post];
+            }
+            const addMorePosts = [];
+            let startingDate = dayjs_1.default.utc(post.publishDate);
+            while (dayjs_1.default.utc(endDate).isSameOrAfter(startingDate)) {
+                if ((0, dayjs_1.default)(startingDate).isSameOrAfter(dayjs_1.default.utc(post.publishDate))) {
+                    addMorePosts.push({
+                        ...post,
+                        publishDate: startingDate.toDate(),
+                        actualDate: post.publishDate,
+                    });
+                }
+                startingDate = startingDate.add(post.intervalInDays, 'days');
+            }
+            return [...all, ...addMorePosts];
+        }, []);
+        return mapped.map((post) => withDmsSentAndPictures(post));
+    }
+    async getPostsList(orgId, query) {
+        const page = query.page || 0;
+        const limit = query.limit || 20;
+        const skip = page * limit;
+        const where = {
+            AND: [
+                {
+                    OR: [
+                        {
+                            organizationId: orgId,
+                        },
+                    ],
+                },
+                {
+                    publishDate: {
+                        gte: dayjs_1.default.utc().toDate(),
+                    },
+                },
+            ],
+            deletedAt: null,
+            parentPostId: null,
+            intervalInDays: null,
+            integration: {
+                deletedAt: null,
+            },
+            ...(query.customer
+                ? {
+                    integration: {
+                        deletedAt: null,
+                        customerId: query.customer,
+                    },
+                }
+                : {}),
+        };
+        const [posts, total] = await Promise.all([
+            this._post.model.post.findMany({
+                where,
+                skip,
+                take: limit,
+                orderBy: {
+                    publishDate: 'asc',
+                },
+                select: {
+                    id: true,
+                    content: true,
+                    publishDate: true,
+                    releaseURL: true,
+                    releaseId: true,
+                    state: true,
+                    group: true,
+                    tags: {
+                        select: {
+                            tag: true,
+                        },
+                    },
+                    integration: {
+                        select: {
+                            id: true,
+                            providerIdentifier: true,
+                            name: true,
+                            picture: true,
+                        },
+                    },
+                },
+            }),
+            this._post.model.post.count({ where }),
+        ]);
+        return {
+            posts,
+            total,
+            page,
+            limit,
+            hasMore: skip + posts.length < total,
+        };
+    }
+    async deletePost(orgId, group) {
+        await this._post.model.post.updateMany({
+            where: {
+                organizationId: orgId,
+                group,
+            },
+            data: {
+                deletedAt: new Date(),
+            },
+        });
+        return this._post.model.post.findFirst({
+            where: {
+                organizationId: orgId,
+                group,
+                parentPostId: null,
+            },
+            select: {
+                id: true,
+            },
+        });
+    }
+    getPostsByGroup(orgId, group) {
+        return this._post.model.post.findMany({
+            where: {
+                group,
+                ...(orgId ? { organizationId: orgId } : {}),
+                deletedAt: null,
+            },
+            include: {
+                integration: true,
+                tags: {
+                    select: {
+                        tag: true,
+                    },
+                },
+            },
+        });
+    }
+    getPost(id, includeIntegration = false, orgId, isFirst) {
+        return this._post.model.post.findUnique({
+            where: {
+                id,
+                ...(orgId ? { organizationId: orgId } : {}),
+                deletedAt: null,
+            },
+            include: {
+                ...(includeIntegration
+                    ? {
+                        integration: true,
+                        tags: {
+                            select: {
+                                tag: true,
+                            },
+                        },
+                    }
+                    : {}),
+                childrenPost: true,
+            },
+        });
+    }
+    updatePost(id, postId, releaseURL) {
+        return this._post.model.post.update({
+            where: {
+                id,
+            },
+            data: {
+                state: 'PUBLISHED',
+                releaseURL,
+                releaseId: postId,
+            },
+        });
+    }
+    updateReleaseId(id, orgId, releaseId) {
+        return this._post.model.post.update({
+            where: {
+                id,
+                organizationId: orgId,
+                releaseId: 'missing',
+            },
+            data: {
+                releaseId: String(releaseId),
+            },
+        });
+    }
+    findByIntegrationReleaseId(orgId, integrationId, releaseId) {
+        return this._post.model.post.findFirst({
+            where: {
+                organizationId: orgId,
+                integrationId,
+                releaseId,
+                deletedAt: null,
+            },
+            select: { id: true },
+        });
+    }
+    /** Link an already-published X tweet to Postiz for engagement automations. */
+    upsertPublishedTweetForAutomations(params) {
+        const baseData = {
+            state: 'PUBLISHED',
+            releaseId: params.releaseId,
+            releaseURL: params.releaseURL,
+            content: params.content,
+            publishDate: params.publishDate,
+            settings: params.settingsJson,
+            deletedAt: null,
+            error: null,
+        };
+        if (params.existingPostId) {
+            return this._post.model.post.update({
+                where: {
+                    id: params.existingPostId,
+                    organizationId: params.orgId,
+                },
+                data: baseData,
+            });
+        }
+        return this._post.model.post.create({
+            data: {
+                ...baseData,
+                organizationId: params.orgId,
+                integrationId: params.integrationId,
+                group: (0, uuid_1.v4)(),
+                delay: 0,
+                image: '[]',
+                approvedSubmitForOrder: client_1.APPROVED_SUBMIT_FOR_ORDER.NO,
+            },
+        });
+    }
+    async changeState(id, state, err, body) {
+        const update = await this._post.model.post.update({
+            where: {
+                id,
+            },
+            data: {
+                state,
+                ...(err
+                    ? { error: typeof err === 'string' ? err : JSON.stringify(err) }
+                    : {}),
+            },
+            include: {
+                integration: {
+                    select: {
+                        providerIdentifier: true,
+                    },
+                },
+            },
+        });
+        if (state === 'ERROR' && err && body) {
+            try {
+                await this._errors.model.errors.create({
+                    data: {
+                        message: typeof err === 'string' ? err : JSON.stringify(err),
+                        organizationId: update.organizationId,
+                        platform: update.integration.providerIdentifier,
+                        postId: update.id,
+                        body: typeof body === 'string' ? body : JSON.stringify(body),
+                    },
+                });
+            }
+            catch (err) { }
+        }
+        return update;
+    }
+    getErrorsByPostIds(postIds) {
+        return this._errors.model.errors.findMany({
+            where: {
+                postId: { in: postIds },
+            },
+            orderBy: { createdAt: 'desc' },
+        });
+    }
+    async changeDate(orgId, id, date, isDraft, action = 'schedule') {
+        return this._post.model.post.update({
+            where: {
+                organizationId: orgId,
+                id,
+            },
+            data: {
+                publishDate: (0, dayjs_1.default)(date).toDate(),
+                // schedule: set state to QUEUE (or DRAFT if it was a draft)
+                // update: don't change the state
+                ...(action === 'schedule'
+                    ? {
+                        state: isDraft ? 'DRAFT' : 'QUEUE',
+                        releaseId: null,
+                        releaseURL: null,
+                    }
+                    : {}),
+            },
+        });
+    }
+    countPostsFromDay(orgId, date) {
+        return this._post.model.post.count({
+            where: {
+                organizationId: orgId,
+                publishDate: {
+                    gte: date,
+                },
+                OR: [
+                    {
+                        deletedAt: null,
+                        state: {
+                            in: ['QUEUE'],
+                        },
+                    },
+                    {
+                        state: 'PUBLISHED',
+                    },
+                ],
+            },
+        });
+    }
+    async createOrUpdatePost(state, orgId, date, body, tags, inter) {
+        const posts = [];
+        const uuid = (0, uuid_1.v4)();
+        for (const value of body.value) {
+            const updateData = (type) => ({
+                publishDate: (0, dayjs_1.default)(date).toDate(),
+                integration: {
+                    connect: {
+                        id: body.integration.id,
+                        organizationId: orgId,
+                    },
+                },
+                ...(posts?.[posts.length - 1]?.id
+                    ? {
+                        parentPost: {
+                            connect: {
+                                id: posts[posts.length - 1]?.id,
+                            },
+                        },
+                    }
+                    : type === 'update'
+                        ? {
+                            parentPost: {
+                                disconnect: true,
+                            },
+                        }
+                        : {}),
+                content: value.content,
+                delay: value.delay || 0,
+                group: uuid,
+                intervalInDays: inter ? +inter : null,
+                approvedSubmitForOrder: client_1.APPROVED_SUBMIT_FOR_ORDER.NO,
+                ...(state === 'update'
+                    ? {}
+                    : {
+                        state: state === 'draft' ? 'DRAFT' : 'QUEUE',
+                    }),
+                image: JSON.stringify(value.image),
+                settings: JSON.stringify(body.settings),
+                organization: {
+                    connect: {
+                        id: orgId,
+                    },
+                },
+            });
+            posts.push(await this._post.model.post.upsert({
+                where: {
+                    id: value.id || (0, uuid_1.v4)(),
+                },
+                create: { ...updateData('create') },
+                update: {
+                    ...updateData('update'),
+                    lastMessage: {
+                        disconnect: true,
+                    },
+                    submittedForOrder: {
+                        disconnect: true,
+                    },
+                },
+            }));
+            if (posts.length === 1) {
+                await this._tagsPosts.model.tagsPosts.deleteMany({
+                    where: {
+                        post: {
+                            id: posts[0].id,
+                        },
+                    },
+                });
+                if (tags.length) {
+                    const tagsList = await this._tags.model.tags.findMany({
+                        where: {
+                            orgId: orgId,
+                            name: {
+                                in: tags.map((tag) => tag.label).filter((f) => f),
+                            },
+                        },
+                    });
+                    if (tagsList.length) {
+                        await this._post.model.post.update({
+                            where: {
+                                id: posts[posts.length - 1].id,
+                            },
+                            data: {
+                                tags: {
+                                    createMany: {
+                                        data: tagsList.map((tag) => ({
+                                            tagId: tag.id,
+                                        })),
+                                    },
+                                },
+                            },
+                        });
+                    }
+                }
+            }
+        }
+        const previousPost = body.group
+            ? (await this._post.model.post.findFirst({
+                where: {
+                    group: body.group,
+                    deletedAt: null,
+                    parentPostId: null,
+                },
+                select: {
+                    id: true,
+                },
+            }))?.id
+            : undefined;
+        if (body.group) {
+            await this._post.model.post.updateMany({
+                where: {
+                    group: body.group,
+                    deletedAt: null,
+                },
+                data: {
+                    parentPostId: null,
+                    deletedAt: new Date(),
+                },
+            });
+        }
+        return { previousPost, posts };
+    }
+    async submit(id, order, buyerOrganizationId) {
+        return this._post.model.post.update({
+            where: {
+                id,
+            },
+            data: {
+                submittedForOrderId: order,
+                approvedSubmitForOrder: 'WAITING_CONFIRMATION',
+                submittedForOrganizationId: buyerOrganizationId,
+            },
+            select: {
+                id: true,
+                description: true,
+                submittedForOrder: {
+                    select: {
+                        messageGroupId: true,
+                    },
+                },
+            },
+        });
+    }
+    updateMessage(id, messageId) {
+        return this._post.model.post.update({
+            where: {
+                id,
+            },
+            data: {
+                lastMessageId: messageId,
+            },
+        });
+    }
+    getPostById(id, org) {
+        return this._post.model.post.findUnique({
+            where: {
+                id,
+                ...(org ? { organizationId: org } : {}),
+            },
+            include: {
+                integration: true,
+                submittedForOrder: {
+                    include: {
+                        posts: {
+                            where: {
+                                state: 'PUBLISHED',
+                            },
+                        },
+                        ordersItems: true,
+                        seller: {
+                            select: {
+                                id: true,
+                                account: true,
+                            },
+                        },
+                    },
+                },
+            },
+        });
+    }
+    findAllExistingCategories() {
+        return this._popularPosts.model.popularPosts.findMany({
+            select: {
+                category: true,
+            },
+            distinct: ['category'],
+        });
+    }
+    findAllExistingTopicsOfCategory(category) {
+        return this._popularPosts.model.popularPosts.findMany({
+            where: {
+                category,
+            },
+            select: {
+                topic: true,
+            },
+            distinct: ['topic'],
+        });
+    }
+    findPopularPosts(category, topic) {
+        return this._popularPosts.model.popularPosts.findMany({
+            where: {
+                category,
+                ...(topic ? { topic } : {}),
+            },
+            select: {
+                content: true,
+                hook: true,
+            },
+        });
+    }
+    createPopularPosts(post) {
+        return this._popularPosts.model.popularPosts.create({
+            data: {
+                category: 'category',
+                topic: 'topic',
+                content: 'content',
+                hook: 'hook',
+            },
+        });
+    }
+    async getPostsCountsByDates(orgId, times, date) {
+        const dates = await this._post.model.post.findMany({
+            where: {
+                deletedAt: null,
+                organizationId: orgId,
+                publishDate: {
+                    in: times.map((time) => {
+                        return date.clone().add(time, 'minutes').toDate();
+                    }),
+                },
+            },
+        });
+        return times.filter((time) => date.clone().add(time, 'minutes').isAfter(dayjs_1.default.utc()) &&
+            !dates.find((dateFind) => {
+                return (dayjs_1.default
+                    .utc(dateFind.publishDate)
+                    .diff(date.clone().startOf('day'), 'minutes') == time);
+            }));
+    }
+    async getComments(postId) {
+        return this._comments.model.comments.findMany({
+            where: {
+                postId,
+            },
+            orderBy: {
+                createdAt: 'asc',
+            },
+        });
+    }
+    async getTags(orgId) {
+        return this._tags.model.tags.findMany({
+            where: {
+                orgId,
+                deletedAt: null,
+            },
+        });
+    }
+    createTag(orgId, body) {
+        return this._tags.model.tags.create({
+            data: {
+                orgId,
+                name: body.name,
+                color: body.color,
+            },
+        });
+    }
+    editTag(id, orgId, body) {
+        return this._tags.model.tags.update({
+            where: {
+                id,
+            },
+            data: {
+                name: body.name,
+                color: body.color,
+            },
+        });
+    }
+    deleteTag(id, orgId) {
+        return this._tags.model.tags.update({
+            where: {
+                id,
+                orgId,
+            },
+            data: {
+                deletedAt: new Date(),
+            },
+        });
+    }
+    createComment(orgId, userId, postId, content) {
+        return this._comments.model.comments.create({
+            data: {
+                organizationId: orgId,
+                userId,
+                postId,
+                content,
+            },
+        });
+    }
+    async getPostByForWebhookId(postId) {
+        return this._post.model.post.findMany({
+            where: {
+                id: postId,
+                deletedAt: null,
+                parentPostId: null,
+            },
+            select: {
+                id: true,
+                content: true,
+                publishDate: true,
+                releaseURL: true,
+                state: true,
+                integration: {
+                    select: {
+                        id: true,
+                        name: true,
+                        providerIdentifier: true,
+                        picture: true,
+                        type: true,
+                    },
+                },
+            },
+        });
+    }
+    async getPostsSince(orgId, since) {
+        return this._post.model.post.findMany({
+            where: {
+                organizationId: orgId,
+                publishDate: {
+                    gte: new Date(since),
+                },
+                deletedAt: null,
+                parentPostId: null,
+            },
+            select: {
+                id: true,
+                content: true,
+                publishDate: true,
+                releaseURL: true,
+                state: true,
+                integration: {
+                    select: {
+                        id: true,
+                        name: true,
+                        providerIdentifier: true,
+                        picture: true,
+                        type: true,
+                    },
+                },
+            },
+        });
+    }
+};
+exports.PostsRepository = PostsRepository;
+exports.PostsRepository = PostsRepository = tslib_1.__decorate([
+    (0, common_1.Injectable)(),
+    tslib_1.__metadata("design:paramtypes", [prisma_service_1.PrismaRepository,
+        prisma_service_1.PrismaRepository,
+        prisma_service_1.PrismaRepository,
+        prisma_service_1.PrismaRepository,
+        prisma_service_1.PrismaRepository,
+        prisma_service_1.PrismaRepository])
+], PostsRepository);
+//# sourceMappingURL=posts.repository.js.map

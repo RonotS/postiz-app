@@ -8,6 +8,11 @@ import { isXAccountActivityWebhooksEnabled } from '@gitroom/helpers/x/x.account-
 import { normalizeTweetStreamHandle } from '@gitroom/nestjs-libraries/integrations/social/tweetstream.normalize';
 import { isXquikEnabled } from '@gitroom/helpers/x/xquik.env';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
+import { XActivityStreamService } from '@gitroom/nestjs-libraries/integrations/social/x-activity-stream.service';
+import type {
+  XActivityStreamKind,
+  XActivityStreamSource,
+} from '@gitroom/nestjs-libraries/integrations/social/x-activity-stream.types';
 
 type PlugFields = Record<string, string>;
 
@@ -19,8 +24,9 @@ export class XAccountActivityHandler {
     private readonly _integrationRepository: IntegrationRepository,
     private readonly _integrationManager: IntegrationManager,
     @Inject(forwardRef(() => IntegrationService))
-    private readonly _integrationService: IntegrationService
-  ) {}
+    private readonly _integrationService: IntegrationService,
+    private readonly _activityStream: XActivityStreamService
+  ) { }
 
   async handlePayload(payload: Record<string, unknown>): Promise<void> {
     if (!isXAccountActivityWebhooksEnabled()) {
@@ -36,13 +42,14 @@ export class XAccountActivityHandler {
       await this._integrationRepository.findActiveXIntegrationsByInternalId(
         forUserId
       );
-    await this.dispatchToIntegrations(integrations, payload);
+    await this.dispatchToIntegrations(integrations, payload, 'account_activity');
   }
 
-  /** TweetStream WebSocket: resolve channel by @handle (integration.profile). */
-  async handleTweetStreamPayload(
+  /** Realtime by @handle (TweetStream, your ingest, Xquik-mapped events). */
+  async handleMonitoredHandlePayload(
     monitoredHandle: string,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    source: XActivityStreamSource = 'tweetstream'
   ): Promise<void> {
     const handle = normalizeTweetStreamHandle(monitoredHandle);
     if (!handle) {
@@ -51,7 +58,87 @@ export class XAccountActivityHandler {
 
     const integrations =
       await this._integrationRepository.findActiveXIntegrationsByProfile(handle);
-    await this.dispatchToIntegrations(integrations, payload);
+    await this.dispatchToIntegrations(integrations, payload, source);
+  }
+
+  /** @deprecated Use handleMonitoredHandlePayload */
+  async handleTweetStreamPayload(
+    monitoredHandle: string,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    return this.handleMonitoredHandlePayload(
+      monitoredHandle,
+      payload,
+      'tweetstream'
+    );
+  }
+
+  /** Custom ingest with X_CUSTOM_INGEST_AUTO_DM=false — stream only, no plugs/DMs. */
+  async emitMonitoredHandleActivityOnly(
+    monitoredHandle: string,
+    payload: Record<string, unknown>,
+    source: XActivityStreamSource = 'custom'
+  ): Promise<void> {
+    const handle = normalizeTweetStreamHandle(monitoredHandle);
+    if (!handle) {
+      return;
+    }
+
+    const integrations =
+      await this._integrationRepository.findActiveXIntegrationsByProfile(handle);
+    for (const integration of integrations) {
+      for (const ev of (payload.favorite_events as any[]) || []) {
+        const tweetId = this.tweetIdFromStatus(ev.favorited_status);
+        const likerId = this.userIdFromUser(ev.user);
+        if (!tweetId || !likerId) continue;
+        this.emitActivity(source, 'like', integration, {
+          tweetId,
+          userId: likerId,
+          username: ev.user?.screen_name,
+          note: 'Ingest only (auto-DM disabled)',
+        });
+      }
+
+      for (const ev of (payload.follow_events as any[]) || []) {
+        const followerId = this.userIdFromUser(ev.source);
+        if (!followerId) continue;
+        this.emitActivity(source, 'follow', integration, {
+          userId: followerId,
+          username: ev.source?.screen_name,
+          note: 'Ingest only (auto-DM disabled)',
+        });
+      }
+
+      for (const tw of (payload.tweet_create_events as any[]) || []) {
+        const authorId = this.userIdFromUser(tw.user);
+        if (!authorId || authorId === integration.internalId) {
+          continue;
+        }
+        const rtStatus = tw.retweeted_status;
+        if (rtStatus) {
+          const originalId = this.tweetIdFromStatus(rtStatus);
+          if (!originalId) continue;
+          this.emitActivity(source, 'retweet', integration, {
+            tweetId: originalId,
+            userId: authorId,
+            username: tw.user?.screen_name,
+            note: 'Ingest only (auto-DM disabled)',
+          });
+          continue;
+        }
+        const replyToId = String(
+          tw.in_reply_to_status_id_str ?? tw.in_reply_to_status_id ?? ''
+        ).trim();
+        if (replyToId) {
+          this.emitActivity(source, 'reply', integration, {
+            tweetId: replyToId,
+            userId: authorId,
+            username: tw.user?.screen_name,
+            note: 'Ingest only (auto-DM disabled)',
+          });
+        }
+      }
+    }
   }
 
   /**
@@ -182,7 +269,7 @@ export class XAccountActivityHandler {
           this.log.log(
             `Xquik webhook: inbound ${kind} on tweet ${parentTweetId} → DM from @${integration.profile} (monitor @${monitoredHandle ?? '?'})`
           );
-          await this.dispatchToIntegrations([integration], normalized);
+          await this.dispatchToIntegrations([integration], normalized, 'xquik');
         }
         void this._integrationService
           .runImmediateEngagementPollForReleaseIds([parentTweetId])
@@ -195,8 +282,8 @@ export class XAccountActivityHandler {
       if (follows.length > 0) {
         const integrations = monitoredHandle
           ? await this._integrationRepository.findActiveXIntegrationsByProfile(
-              monitoredHandle
-            )
+            monitoredHandle
+          )
           : [];
         if (!integrations.length) {
           this.log.warn(
@@ -208,7 +295,7 @@ export class XAccountActivityHandler {
           this.log.log(
             `Xquik webhook: new follower → welcome DM from @${integration.profile}`
           );
-          await this.dispatchToIntegrations([integration], normalized);
+          await this.dispatchToIntegrations([integration], normalized, 'xquik');
         }
         continue;
       }
@@ -221,7 +308,7 @@ export class XAccountActivityHandler {
       this.log.log(
         `Xquik webhook: dispatching @${monitoredHandle} (${Object.keys(normalized).join(',')})`
       );
-      await this.handleTweetStreamPayload(monitoredHandle, normalized);
+      await this.handleMonitoredHandlePayload(monitoredHandle, normalized, 'xquik');
     }
   }
 
@@ -480,7 +567,7 @@ export class XAccountActivityHandler {
         this.log.log(
           `Xquik webhook: @${monitored} RT'd tweet ${originalId} → DM from @${integration.profile}`
         );
-        await this.dispatchToIntegrations([integration], normalized);
+        await this.dispatchToIntegrations([integration], normalized, 'xquik');
       }
     } else if (!integrations.length) {
       this.log.warn(
@@ -924,9 +1011,36 @@ export class XAccountActivityHandler {
     return null;
   }
 
+  private emitActivity(
+    source: XActivityStreamSource,
+    kind: XActivityStreamKind,
+    integration: Integration,
+    fields: {
+      tweetId?: string;
+      userId?: string;
+      username?: string;
+      dmSent?: boolean;
+      note?: string;
+    }
+  ): void {
+    this._activityStream.publish({
+      source,
+      kind,
+      monitoredHandle: integration.profile ?? undefined,
+      integrationId: integration.id,
+      organizationId: integration.organizationId,
+      tweetId: fields.tweetId,
+      userId: fields.userId,
+      username: fields.username,
+      dmSent: fields.dmSent,
+      note: fields.note,
+    });
+  }
+
   private async dispatchToIntegrations(
     integrations: Integration[],
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    source: XActivityStreamSource = 'account_activity'
   ): Promise<void> {
     if (!integrations.length) {
       return;
@@ -938,7 +1052,12 @@ export class XAccountActivityHandler {
 
     for (const integration of integrations) {
       try {
-        await this.dispatchForIntegration(xProvider, integration, payload);
+        await this.dispatchForIntegration(
+          xProvider,
+          integration,
+          payload,
+          source
+        );
       } catch (err) {
         this.log.error(
           `dispatchToIntegrations integration=${integration.id}:`,
@@ -1174,7 +1293,8 @@ export class XAccountActivityHandler {
   private async dispatchForIntegration(
     xProvider: XProvider,
     integration: Integration,
-    payload: Record<string, unknown>
+    payload: Record<string, unknown>,
+    source: XActivityStreamSource = 'account_activity'
   ) {
     const orgId = integration.organizationId;
     const integrationId = integration.id;
@@ -1198,11 +1318,17 @@ export class XAccountActivityHandler {
       );
 
       const postSettings = await this.loadPostSettings(integrationId, tweetId);
+      if (!postSettings) {
+        this.log.warn(
+          `Like on tweet ${tweetId} for @${integration.profile ?? integration.id} but no Postiz post with that releaseId — publish/attach via Postiz so per-post auto-DM settings apply.`
+        );
+      }
       const dmPlug = await this._integrationRepository.getActivePlugByFunction(
         orgId,
         integrationId,
         'autoDmEngagers'
       );
+      let likeDmSent = false;
       if (dmPlug) {
         const fields = this.parsePlugFields(dmPlug.data);
         const ctx = this.buildEngagementPlugContext(
@@ -1219,6 +1345,7 @@ export class XAccountActivityHandler {
           postSettings,
           ctx
         );
+        likeDmSent = !!sent;
         if (sent) {
           await this._integrationRepository.incrementAutoDmSentCountForPost(
             integrationId,
@@ -1226,7 +1353,18 @@ export class XAccountActivityHandler {
             1
           );
         }
+      } else if (postSettings?.auto_dm_enabled !== false) {
+        this.log.warn(
+          `Like on tweet ${tweetId} for @${integration.profile ?? integration.id} but autoDmEngagers plug is off — enable Auto DM on the post or reconnect X.`
+        );
       }
+
+      this.emitActivity(source, 'like', integration, {
+        tweetId,
+        userId: likerId,
+        username: ev.user?.screen_name,
+        dmSent: likeDmSent,
+      });
 
       await this.runThresholdPlugs(
         xProvider,
@@ -1250,15 +1388,17 @@ export class XAccountActivityHandler {
         this.log.warn(
           `TweetStream follow event(s) for @${integration.profile} but autoDmFollowers plug is off — enable Auto-DM new followers in profile automations.`
         );
-      } else {
-        const fields = this.parsePlugFields(followerPlug.data);
-        const fCtx = this.buildFollowerPlugContext(
-          'autoDmFollowers',
-          integrationId
-        );
-        for (const ev of follows) {
-          const followerId = this.userIdFromUser(ev.source);
-          if (!followerId) continue;
+      }
+      for (const ev of follows) {
+        const followerId = this.userIdFromUser(ev.source);
+        if (!followerId) continue;
+        let followDmSent = false;
+        if (followerPlug) {
+          const fields = this.parsePlugFields(followerPlug.data);
+          const fCtx = this.buildFollowerPlugContext(
+            'autoDmFollowers',
+            integrationId
+          );
           const sent = await xProvider.webhookDmFollower(
             integration,
             followerId,
@@ -1266,6 +1406,7 @@ export class XAccountActivityHandler {
             undefined,
             fCtx
           );
+          followDmSent = !!sent;
           if (sent) {
             this.log.log(
               `TweetStream: welcome DM sent to follower ${followerId} (@${integration.profile})`
@@ -1276,6 +1417,11 @@ export class XAccountActivityHandler {
             );
           }
         }
+        this.emitActivity(source, 'follow', integration, {
+          userId: followerId,
+          username: ev.source?.screen_name,
+          dmSent: followDmSent,
+        });
       }
     }
 
@@ -1319,7 +1465,7 @@ export class XAccountActivityHandler {
             integrationId,
             originalId
           );
-          await xProvider.webhookDmEngager(
+          const sent = await xProvider.webhookDmEngager(
             integration,
             originalId,
             authorId,
@@ -1328,6 +1474,18 @@ export class XAccountActivityHandler {
             postSettings,
             ctx
           );
+          this.emitActivity(source, 'retweet', integration, {
+            tweetId: originalId,
+            userId: authorId,
+            username: tw.user?.screen_name,
+            dmSent: !!sent,
+          });
+        } else {
+          this.emitActivity(source, 'retweet', integration, {
+            tweetId: originalId,
+            userId: authorId,
+            username: tw.user?.screen_name,
+          });
         }
         continue;
       }
@@ -1357,6 +1515,7 @@ export class XAccountActivityHandler {
             integrationId,
             'autoDmEngagers'
           );
+        let replyDmSent = false;
         if (!dmPlug) {
           this.log.warn(
             `TweetStream reply on tweet ${replyToId} but autoDmEngagers plug is off for @${integration.profile} — enable Direct Message Engagers in plugs.`
@@ -1377,6 +1536,7 @@ export class XAccountActivityHandler {
             postSettings,
             ctx
           );
+          replyDmSent = !!sent;
           if (sent) {
             await this._integrationRepository.incrementAutoDmSentCountForPost(
               integrationId,
@@ -1392,6 +1552,12 @@ export class XAccountActivityHandler {
             );
           }
         }
+        this.emitActivity(source, 'reply', integration, {
+          tweetId: replyToId,
+          userId: authorId,
+          username: tw.user?.screen_name,
+          dmSent: replyDmSent,
+        });
       }
     }
   }

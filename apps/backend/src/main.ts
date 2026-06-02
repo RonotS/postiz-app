@@ -18,6 +18,8 @@ import { SubscriptionExceptionFilter } from '@gitroom/backend/services/auth/perm
 import { HttpExceptionFilter } from '@gitroom/nestjs-libraries/services/exception.filter';
 import { ConfigurationChecker } from '@gitroom/helpers/configuration/configuration.checker';
 import { startMcp } from '@gitroom/nestjs-libraries/chat/start.mcp';
+import { XActivityStreamService } from '@gitroom/nestjs-libraries/integrations/social/x-activity-stream.service';
+import { attachXActivityWebSocketServer } from '@gitroom/nestjs-libraries/integrations/social/x-activity-ws.server';
 
 async function start() {
   const frontendUrl = process.env.FRONTEND_URL;
@@ -92,6 +94,9 @@ async function start() {
   try {
     await app.listen(port);
     console.log('Backend started successfully on port ' + port);
+
+    const activityStream = app.get(XActivityStreamService);
+    attachXActivityWebSocketServer(app.getHttpServer(), activityStream);
 
     checkConfiguration(); // Do this last, so that users will see obvious issues at the end of the startup log without having to scroll up.
 

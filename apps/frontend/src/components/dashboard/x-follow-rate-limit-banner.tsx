@@ -12,12 +12,15 @@ export const XFollowRateLimitBanner: FC<{
   rateLimit?: XFollowRateLimit;
   countdown: string;
   dailyCountdown?: string;
+  /** Follow actions use the 24h daily rolling timer, not the 15-min window. */
+  usesDailyTimer?: boolean;
   className?: string;
   action?: XGraphRateAction;
 }> = ({
   rateLimit,
   countdown,
   dailyCountdown,
+  usesDailyTimer = false,
   className,
   action = 'follow',
 }) => {
@@ -37,17 +40,14 @@ export const XFollowRateLimitBanner: FC<{
       : 0;
 
   const showDaily = action === 'follow' && !!rateLimit?.daily;
-  const showWindowForAction = action === 'unfollow';
-  const showFollowBatchWindow =
-    action === 'follow' && !!rateLimit && !rateLimit.limited;
+  const showWindowProgress = action === 'unfollow' || action === 'follow';
 
   const showTimer = !!(
     rateLimit &&
     (rateLimit.limited ||
-      rateLimit.remaining < rateLimit.limit ||
-      (showDaily &&
-        rateLimit.daily &&
-        rateLimit.daily.remaining < rateLimit.daily.limit))
+      (usesDailyTimer
+        ? rateLimit.daily?.limited
+        : rateLimit.remaining < rateLimit.limit))
   );
 
   if (!rateLimit) {
@@ -84,41 +84,6 @@ export const XFollowRateLimitBanner: FC<{
                   {rateLimit.daily.count}
                   <span className="font-medium text-newTableText"> / </span>
                   {rateLimit.daily.limit}
-                </p>
-              </div>
-            )}
-            {showWindowForAction && (
-              <div
-                className={clsx(
-                  'shrink-0 rounded-xl px-3 py-2 text-center tabular-nums',
-                  rateLimit.limited && rateLimit.limitedBy !== 'daily'
-                    ? 'bg-amber-500/15'
-                    : 'bg-newBgColor'
-                )}
-              >
-                <p className="text-[10px] uppercase tracking-wide text-newTableText">
-                  {t('x_follow_counter', '{{minutes}} min window', {
-                    minutes: rateLimit.windowMinutes,
-                  })}
-                </p>
-                <p className="text-lg font-bold text-newTextColor">
-                  {rateLimit.count}
-                  <span className="font-medium text-newTableText"> / </span>
-                  {rateLimit.limit}
-                </p>
-              </div>
-            )}
-            {showFollowBatchWindow && (
-              <div className="shrink-0 rounded-xl px-3 py-2 text-center tabular-nums bg-newBgColor">
-                <p className="text-[10px] uppercase tracking-wide text-newTableText">
-                  {t('x_follow_batch_window', '{{minutes}} min batch', {
-                    minutes: rateLimit.windowMinutes,
-                  })}
-                </p>
-                <p className="text-lg font-bold text-newTextColor">
-                  {rateLimit.count}
-                  <span className="font-medium text-newTableText"> / </span>
-                  {rateLimit.limit}
                 </p>
               </div>
             )}
@@ -225,17 +190,22 @@ export const XFollowRateLimitBanner: FC<{
               )}
             >
               <p className="text-[10px] uppercase tracking-wide text-newTableText">
-                {rateLimit.limited
-                  ? rateLimit.limitedBy === 'daily'
-                    ? t('daily_resets_in', 'Daily resets in')
-                    : action === 'unfollow'
+                {usesDailyTimer || rateLimit.limitedBy === 'daily'
+                  ? rateLimit.limited
+                    ? t('daily_resets_in', 'Daily cap resets in')
+                    : t(
+                        'daily_rolling_reset_in',
+                        'Daily rolling reset in'
+                      )
+                  : rateLimit.limited
+                    ? action === 'unfollow'
                       ? t('unfollow_again_in', 'Unfollow again in')
                       : t('follow_again_in', 'Follow again in')
-                  : t('window_resets_in', 'Window resets in')}
+                    : t('window_resets_in', '15-min window resets in')}
               </p>
               <p className="text-lg font-semibold tabular-nums text-newTextColor">
-                {rateLimit.limitedBy === 'daily' && dailyCountdown
-                  ? dailyCountdown
+                {usesDailyTimer || rateLimit.limitedBy === 'daily'
+                  ? dailyCountdown || countdown
                   : countdown}
               </p>
             </div>
@@ -255,17 +225,33 @@ export const XFollowRateLimitBanner: FC<{
               />
             </div>
           )}
-          {(showWindowForAction || showFollowBatchWindow) && (
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-newBgLineColor/80">
-              <div
-                className={clsx(
-                  'h-full rounded-full transition-all duration-300',
-                  rateLimit.limited && rateLimit.limitedBy !== 'daily'
-                    ? 'bg-amber-500'
-                    : 'bg-btnPrimary/70'
-                )}
-                style={{ width: `${windowPct}%` }}
-              />
+          {showWindowProgress && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between text-[10px] text-newTableText">
+                <span>
+                  {action === 'unfollow'
+                    ? t('x_unfollow_progress_label', 'Unfollow window progress')
+                    : t(
+                        'x_follow_window_progress_label',
+                        '15-min batch window ({{minutes}} min)',
+                        { minutes: rateLimit.windowMinutes }
+                      )}
+                </span>
+                <span className="tabular-nums">
+                  {rateLimit.count}/{rateLimit.limit}
+                </span>
+              </div>
+              <div className="h-1.5 w-full overflow-hidden rounded-full bg-newBgLineColor/80">
+                <div
+                  className={clsx(
+                    'h-full rounded-full transition-all duration-300',
+                    rateLimit.limited && rateLimit.limitedBy !== 'daily'
+                      ? 'bg-amber-500'
+                      : 'bg-btnPrimary/70'
+                  )}
+                  style={{ width: `${windowPct}%` }}
+                />
+              </div>
             </div>
           )}
         </div>

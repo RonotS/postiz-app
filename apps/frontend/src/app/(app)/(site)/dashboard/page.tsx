@@ -26,6 +26,7 @@ import { AttachExistingPostModalContent } from '@gitroom/frontend/components/das
 import {
   automationEnabledSummary,
   buildXPostSettings,
+  composerSettingsFromXPost,
   ComposerSettings,
   DEFAULT_COMPOSER_SETTINGS,
   useComposerSettingsUpdater,
@@ -808,14 +809,39 @@ export default function DashboardPage() {
     });
   }, []);
 
-  const startEdit = useCallback((post: PostItem) => {
-    setEditingPost(post);
-    setComposerText(post.content);
-    setUserTouchedDate(false);
-    if (post.integration?.id) {
-      setSelectedXProfileIds([post.integration.id]);
-    }
-  }, []);
+  const startEdit = useCallback(
+    (post: PostItem) => {
+      setEditingPost(post);
+      setComposerText(post.content);
+      setUserTouchedDate(false);
+      if (post.integration?.id) {
+        setSelectedXProfileIds([post.integration.id]);
+      }
+      void (async () => {
+        try {
+          const res = await fetch(`/posts/${encodeURIComponent(post.id)}`);
+          if (!res.ok) {
+            return;
+          }
+          const data = await res.json();
+          let parsed: unknown = data?.settings;
+          if (typeof parsed === 'string') {
+            try {
+              parsed = JSON.parse(parsed);
+            } catch {
+              parsed = undefined;
+            }
+          }
+          if (parsed) {
+            setSettings((prev) => composerSettingsFromXPost(parsed, prev));
+          }
+        } catch {
+          /* keep current composer settings */
+        }
+      })();
+    },
+    [fetch]
+  );
 
   const openAttachExistingPostModal = useCallback(() => {
     const defaultProfileId =

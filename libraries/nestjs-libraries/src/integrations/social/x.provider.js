@@ -1,0 +1,2993 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.XProvider = void 0;
+exports.formatXApiErrorMessage = formatXApiErrorMessage;
+const tslib_1 = require("tslib");
+const twitter_api_v2_1 = require("twitter-api-v2");
+// https-proxy-agent v5.0.1 uses `export =` (CommonJS) — must require it, not
+// destructure-import. Using `import { HttpsProxyAgent }` resolves to undefined
+// at runtime in some bundles, which is why proxy was working only intermittently.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const HttpsProxyAgent = require('https-proxy-agent');
+const mime_types_1 = require("mime-types");
+const sharp_1 = tslib_1.__importDefault(require("sharp"));
+const read_or_fetch_1 = require("../../../../helpers/src/utils/read.or.fetch");
+const social_abstract_1 = require("../social.abstract");
+const plug_decorator_1 = require("../../../../helpers/src/decorators/plug.decorator");
+const timer_1 = require("../../../../helpers/src/utils/timer");
+const post_plug_1 = require("../../../../helpers/src/decorators/post.plug");
+const dayjs_1 = tslib_1.__importDefault(require("dayjs"));
+const lodash_1 = require("lodash");
+const strip_html_validation_1 = require("../../../../helpers/src/utils/strip.html.validation");
+const x_dto_1 = require("../../dtos/posts/providers-settings/x.dto");
+const rules_description_decorator_1 = require("../../chat/rules.description.decorator");
+const x_plug_batch_rate_limit_store_1 = require("./x-plug-batch-rate-limit.store");
+const x_account_activity_env_1 = require("../../../../helpers/src/x/x.account-activity.env");
+const tweetstream_ws_state_1 = require("./tweetstream.ws-state");
+const tweetstream_env_1 = require("../../../../helpers/src/x/tweetstream.env");
+const xquik_env_1 = require("../../../../helpers/src/x/xquik.env");
+const redis_service_1 = require("../../redis/redis.service");
+let XProvider = class XProvider extends social_abstract_1.SocialAbstract {
+    constructor() {
+        super(...arguments);
+        /** Cached following ids per integration row id (profile automations explorer). */
+        this.myFollowingIdCache = new Map();
+        this.identifier = 'x';
+        this.name = 'X';
+        this.isBetweenSteps = false;
+        this.scopes = [];
+        this.maxConcurrentJob = 1; // X has strict rate limits (300 posts per 3 hours)
+        this.toolTip = 'You will be logged in into your current account, if you would like a different account, change it first on X';
+        this.editor = 'normal';
+        this.dto = x_dto_1.XDto;
+        this.loadAllTweets = async (client, id, until, since, token = '') => {
+            const tweets = await client.v2.userTimeline(id, {
+                'tweet.fields': ['id'],
+                'user.fields': [],
+                'poll.fields': [],
+                'place.fields': [],
+                'media.fields': [],
+                exclude: ['replies', 'retweets'],
+                start_time: since,
+                end_time: until,
+                max_results: 100,
+                ...(token ? { pagination_token: token } : {}),
+            });
+            return [
+                ...tweets.data.data,
+                ...(tweets.data.data.length === 100
+                    ? await this.loadAllTweets(client, id, until, since, tweets.meta.next_token)
+                    : []),
+            ];
+        };
+        this.followListUserFields = [
+            'profile_image_url',
+            'name',
+            'username',
+            'public_metrics',
+            'created_at',
+            'verified',
+            'protected',
+            'location',
+            'description',
+        ];
+        this.subjectUserFields = [
+            'profile_image_url',
+            'name',
+            'username',
+            'public_metrics',
+        ];
+    }
+    maxLength(isTwitterPremium) {
+        return isTwitterPremium ? 4000 : 200;
+    }
+    handleErrors(body) {
+        if (body.includes('Unauthorized') || body.includes('"code":401') || body.includes('"code":32')) {
+            return {
+                type: 'bad-body',
+                value: 'X API returned Unauthorized. This may be a transient rate-limit issue on the Free tier. If this persists, try reconnecting your X account or check your X API plan limits.',
+            };
+        }
+        if (body.includes('Unsupported Authentication')) {
+            return {
+                type: 'refresh-token',
+                value: 'X authentication has expired, please reconnect your account',
+            };
+        }
+        if (body.includes('usage-capped')) {
+            return {
+                type: 'bad-body',
+                value: 'Posting failed - capped reached. Please try again later',
+            };
+        }
+        if (body.includes('duplicate-rules')) {
+            return {
+                type: 'bad-body',
+                value: 'You have already posted this post, please wait before posting again',
+            };
+        }
+        if (body.includes('The Tweet contains an invalid URL.')) {
+            return {
+                type: 'bad-body',
+                value: 'The Tweet contains a URL that is not allowed on X',
+            };
+        }
+        if (body.includes('This user is not allowed to post a video longer than 2 minutes')) {
+            return {
+                type: 'bad-body',
+                value: 'The video you are trying to post is longer than 2 minutes, which is not allowed for this account',
+            };
+        }
+        if (body.includes('CreditsDepleted')) {
+            return {
+                type: 'bad-body',
+                value: 'X API credits depleted. Please check your X Developer Portal quota.',
+            };
+        }
+        if (body.includes('exceeded the limit of 1500 Tweets')) {
+            return {
+                type: 'bad-body',
+                value: 'You have exceeded the monthly limit of 1,500 Tweets for the Free tier. Please upgrade your X API plan or check your usage.',
+            };
+        }
+        if (body.includes('not permitted to access this endpoint')) {
+            return {
+                type: 'bad-body',
+                value: 'X API permissions issue: Please ensure your App has "Read and Write" permissions enabled in the X Developer Portal under "User authentication settings".',
+            };
+        }
+        if (body.includes('subset of X API V2 endpoints') ||
+            body.includes('different access level')) {
+            return {
+                type: 'bad-body',
+                value: 'This X endpoint is not available on your current API access. Auto-DM uses POST /2/dm_conversations/with/:participant_id/messages and requires DM permission on your X App plus a plan/credits that cover "DM Interaction: Create". Check your X Developer Portal app permissions ("Read and write and Direct Messages") and your billing plan.',
+            };
+        }
+        try {
+            const parsed = JSON.parse(body);
+            const errors = parsed?.data?.errors || parsed?.errors;
+            if (Array.isArray(errors) && errors.length > 0) {
+                return {
+                    type: 'bad-body',
+                    value: errors[0].message || 'Unknown X API Error',
+                };
+            }
+            if (parsed?.data?.detail) {
+                return {
+                    type: 'bad-body',
+                    value: parsed.data.detail,
+                };
+            }
+        }
+        catch (e) {
+            /**/
+        }
+        return undefined;
+    }
+    async autoRepostPost(integration, id, fields, postSettings) {
+        // Per-post opt-out — composer can disable auto-retweet for a specific tweet
+        // even when the plug itself is active.
+        if (postSettings?.auto_retweet_enabled === false) {
+            return true; // returning true marks this run as "complete" so the plug doesn't keep retrying
+        }
+        // @ts-ignore
+        // eslint-disable-next-line prefer-rest-params
+        const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        try {
+            const likes = await client.v2.tweetLikedBy(id);
+            if ((likes?.meta?.result_count || 0) >= +fields.likesAmount) {
+                await (0, timer_1.timer)(2000);
+                await client.v2.retweet(integration.internalId, id);
+                return true;
+            }
+        }
+        catch (err) {
+            console.error('X AUTO REPOST ERROR:', err);
+        }
+        return false;
+    }
+    async repostPostUsers(integration, originalIntegration, postId, information) {
+        const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        const { data: { id }, } = await client.v2.me();
+        try {
+            await client.v2.retweet(id, postId);
+        }
+        catch (err) {
+            /** nothing **/
+        }
+    }
+    async autoPlugPost(integration, id, fields) {
+        // @ts-ignore
+        // eslint-disable-next-line prefer-rest-params
+        const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        try {
+            const likes = await client.v2.tweetLikedBy(id);
+            if ((likes?.meta?.result_count || 0) >= +fields.likesAmount) {
+                await (0, timer_1.timer)(2000);
+                await client.v2.tweet({
+                    text: (0, strip_html_validation_1.stripHtmlValidation)('normal', fields.post, true),
+                    reply: { in_reply_to_tweet_id: id },
+                });
+                return true;
+            }
+        }
+        catch (err) {
+            console.error('X AUTO PLUG ERROR:', err);
+        }
+        return false;
+    }
+    async autoThreadReply(integration, id, fields, postSettings, plugContext) {
+        // Per-post opt-out — composer can disable the thread reply for a specific
+        // tweet even when the plug itself is active. Return true so the workflow
+        // doesn't keep retrying this run on a disabled tweet.
+        if (postSettings?.auto_thread_reply_enabled === false) {
+            return true;
+        }
+        const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        // Resolve likes threshold: per-post override > plug-level default.
+        const threshold = Number(postSettings?.auto_thread_reply_likes ?? fields.likesAmount ?? 0);
+        // Resolve the thread text: per-post override > plug-level default.
+        const rawThreadInput = typeof postSettings?.auto_thread_reply_text === 'string' &&
+            postSettings.auto_thread_reply_text.trim() !== ''
+            ? postSettings.auto_thread_reply_text
+            : fields.thread || '';
+        try {
+            const readPause = await (0, x_plug_batch_rate_limit_store_1.isXPlugApiReadPaused)(integration.id);
+            if (readPause.paused) {
+                return false;
+            }
+            let likeCount = 0;
+            if (this.canUseXquikReads()) {
+                try {
+                    const payload = await this.xquikGetFirstAvailable([
+                        `/x/tweets/${id}/favoriters`,
+                        `/x/tweets/${id}/favoriters/list`,
+                    ]);
+                    const ids = this.extractXquikUserIds(payload);
+                    likeCount =
+                        Number(payload?.meta?.result_count ?? payload?.meta?.count) ||
+                            ids.length;
+                }
+                catch (err) {
+                    if ((0, x_plug_batch_rate_limit_store_1.isXApiRateLimitError)(err)) {
+                        await (0, x_plug_batch_rate_limit_store_1.markPlugBatchLimitedFromError)(integration.id, err);
+                    }
+                    console.warn('X AUTO THREAD REPLY: Xquik like count failed; skipping this run:', err);
+                    return false;
+                }
+            }
+            else {
+                const likes = await client.v2.tweetLikedBy(id);
+                likeCount = likes?.meta?.result_count || 0;
+            }
+            if (likeCount < threshold) {
+                return false;
+            }
+            // Idempotency marker — if a previous run already posted the thread,
+            // skip without re-posting. Stored via the generic engagement plug
+            // context (key is namespaced by methodName + postId already).
+            const doneMarker = 'thread_posted_v1';
+            if (plugContext?.loadDmdUserIds) {
+                const existing = await plugContext.loadDmdUserIds([doneMarker]);
+                if (existing.has(doneMarker)) {
+                    return true;
+                }
+            }
+            const rawText = (0, strip_html_validation_1.stripHtmlValidation)('normal', rawThreadInput, true);
+            const parts = rawText
+                .split(/\n\s*\n\s*\n+/)
+                .map((s) => s.trim())
+                .filter(Boolean);
+            if (parts.length === 0) {
+                return true;
+            }
+            // Post each part as a reply chained to the previous one — true X thread.
+            let parentTweetId = id;
+            for (const part of parts) {
+                await (0, timer_1.timer)(2000); // small delay so X doesn't 429
+                const created = await client.v2.tweet({
+                    text: part,
+                    reply: { in_reply_to_tweet_id: parentTweetId },
+                });
+                parentTweetId = created?.data?.id || parentTweetId;
+            }
+            if (plugContext?.saveDmdUserIds) {
+                try {
+                    await plugContext.saveDmdUserIds([doneMarker]);
+                }
+                catch (err) {
+                    console.warn('X AUTO THREAD REPLY: failed to persist done marker (may re-post on retry):', err);
+                }
+            }
+            return true;
+        }
+        catch (err) {
+            console.error('X AUTO THREAD REPLY ERROR:', err);
+        }
+        return false;
+    }
+    async sendDmWithBatchGate(integration, client, targetUserId, dmText, plugContext, delayMs = 2000, options) {
+        if (!options?.realtime && plugContext?.tryReserveDm) {
+            const allowed = await plugContext.tryReserveDm();
+            if (!allowed) {
+                return false;
+            }
+        }
+        try {
+            if (delayMs > 0) {
+                await (0, timer_1.timer)(delayMs);
+            }
+            await client.v2.sendDmToParticipant(targetUserId, { text: dmText });
+            if (plugContext?.confirmDmSent) {
+                await plugContext.confirmDmSent();
+            }
+            console.log(`X AUTO DM: sent DM to user ${targetUserId} from @${integration.profile ?? integration.id}`);
+            return true;
+        }
+        catch (dmErr) {
+            await (0, x_plug_batch_rate_limit_store_1.markPlugBatchLimitedFromError)(integration.id, dmErr);
+            const status = dmErr?.code ?? dmErr?.data?.status;
+            if (status === 403) {
+                const detail = formatXApiErrorMessage(dmErr, 'Forbidden');
+                const detailLower = detail.toLowerCase();
+                const permissionIssue = detailLower.includes('oauth1') ||
+                    detailLower.includes('permission') ||
+                    detailLower.includes('dm.write') ||
+                    detailLower.includes('not enrolled');
+                const hint = permissionIssue
+                    ? `Reconnect @${integration.profile ?? 'this channel'} in Postiz (X token may lack Direct Message scope on the app).`
+                    : `X blocked the DM to user ${targetUserId} — they must follow @${integration.profile ?? 'you'} or allow DMs from non-followers (API cannot override privacy).`;
+                console.warn(`X AUTO DM: cannot DM user ${targetUserId} from @${integration.profile ?? integration.id} (403). ${hint} X says: ${detail}`);
+            }
+            else if ((0, x_plug_batch_rate_limit_store_1.isXApiRateLimitError)(dmErr)) {
+                console.error(`X AUTO DM: rate limited (429) for user ${targetUserId}:`, dmErr?.data || dmErr);
+            }
+            else {
+                console.error(`X AUTO DM ERROR for user ${targetUserId}:`, dmErr?.data || dmErr);
+            }
+            return false;
+        }
+    }
+    autoDmSentKey(integrationId, tweetId, userId) {
+        return `x:auto-dm:sent:${integrationId}:${tweetId}:${userId}`;
+    }
+    autoDmLockKey(integrationId, tweetId, userId) {
+        return `x:auto-dm:lock:${integrationId}:${tweetId}:${userId}`;
+    }
+    async reserveAutoDmSend(integrationId, tweetId, userId) {
+        const sentKey = this.autoDmSentKey(integrationId, tweetId, userId);
+        const alreadySent = await redis_service_1.ioRedis.get(sentKey);
+        if (alreadySent) {
+            return false;
+        }
+        const lockKey = this.autoDmLockKey(integrationId, tweetId, userId);
+        const lock = await redis_service_1.ioRedis.set(lockKey, '1', 'EX', 60, 'NX');
+        return lock === 'OK';
+    }
+    async confirmAutoDmSend(integrationId, tweetId, userId) {
+        const sentKey = this.autoDmSentKey(integrationId, tweetId, userId);
+        const lockKey = this.autoDmLockKey(integrationId, tweetId, userId);
+        await redis_service_1.ioRedis.set(sentKey, '1', 'EX', 60 * 60 * 24 * 30);
+        await redis_service_1.ioRedis.del(lockKey);
+    }
+    async releaseAutoDmReservation(integrationId, tweetId, userId) {
+        await redis_service_1.ioRedis.del(this.autoDmLockKey(integrationId, tweetId, userId));
+    }
+    canUseXquikReads() {
+        return (0, xquik_env_1.isXquikEnabled)() && !!(0, xquik_env_1.getXquikApiKey)();
+    }
+    /** Inbound repliers on a tweet (strict inReplyToId match; excludes owner). */
+    async countInboundRepliersViaXquik(tweetId, ownerUserId) {
+        if (!this.canUseXquikReads()) {
+            return 0;
+        }
+        return (await this.fetchXquikRepliers(tweetId, ownerUserId)).length;
+    }
+    extractXquikNextCursor(payload) {
+        const next = String(payload?.next_cursor ?? payload?.nextCursor ?? '').trim();
+        return next || undefined;
+    }
+    /**
+     * Resolve the original tweet id for a retweet/repost row (Xquik webhook often omits
+     * retweetedTweetId on tweet.retweet).
+     */
+    async resolveXquikRetweetedTweetId(retweetRowId) {
+        if (!this.canUseXquikReads()) {
+            return undefined;
+        }
+        const id = String(retweetRowId ?? '').trim();
+        if (!id) {
+            return undefined;
+        }
+        try {
+            const payload = await this.xquikGetFirstAvailable([
+                `/x/tweets/${id}`,
+                `/x/tweet/${id}`,
+            ]);
+            return this.extractRetweetedTweetIdFromXquikPayload(payload);
+        }
+        catch {
+            return undefined;
+        }
+    }
+    /** When Xquik omits retweetedTweetId, load the RT row via X API (uses RT author token). */
+    async resolveRetweetedTweetIdViaXApi(integration, retweetRowId) {
+        const id = String(retweetRowId ?? '').trim();
+        if (!id) {
+            return undefined;
+        }
+        try {
+            const client = this.buildClientForIntegration(integration);
+            const res = await client.v2.singleTweet(id, {
+                'tweet.fields': ['referenced_tweets'],
+            });
+            const refs = res?.data?.referenced_tweets ?? [];
+            for (const r of refs) {
+                const type = String(r?.type ?? '').toLowerCase();
+                if (type === 'retweeted' && r?.id) {
+                    return String(r.id);
+                }
+            }
+        }
+        catch (err) {
+            console.warn(`X AUTO DM: X API could not resolve retweet target for row ${id}:`, err);
+        }
+        return undefined;
+    }
+    extractRetweetedTweetIdFromXquikPayload(payload) {
+        const roots = [
+            payload?.data?.tweet,
+            payload?.data,
+            payload?.tweet,
+            payload,
+        ];
+        for (const root of roots) {
+            if (!root || typeof root !== 'object') {
+                continue;
+            }
+            const direct = String(root.retweetedTweetId ??
+                root.retweeted_tweet_id ??
+                root.retweetedStatusId ??
+                '').trim();
+            if (direct) {
+                return direct;
+            }
+            const nested = root.retweeted_status ??
+                root.retweetedStatus ??
+                root.retweetedTweet;
+            if (nested && typeof nested === 'object') {
+                const nestedId = String(nested.id ?? nested.id_str ?? nested.tweetId ?? '').trim();
+                if (nestedId) {
+                    return nestedId;
+                }
+            }
+            const refs = root.referenced_tweets ?? root.referencedTweets;
+            if (Array.isArray(refs)) {
+                for (const r of refs) {
+                    const type = String(r?.type ?? '').toLowerCase();
+                    if (type === 'retweeted' || type === 'retweet') {
+                        const refId = String(r?.id ?? r?.id_str ?? '').trim();
+                        if (refId) {
+                            return refId;
+                        }
+                    }
+                }
+            }
+        }
+        return undefined;
+    }
+    extractXquikUserIds(payload) {
+        const rows = (Array.isArray(payload?.users) && payload.users) ||
+            (Array.isArray(payload?.data?.users) && payload.data.users) ||
+            (Array.isArray(payload?.data) && payload.data) ||
+            (Array.isArray(payload?.results) && payload.results) ||
+            [];
+        const ids = new Set();
+        for (const row of rows) {
+            const id = String(row?.id ??
+                row?.user_id ??
+                row?.rest_id ??
+                row?.legacy?.id_str ??
+                '').trim();
+            if (id)
+                ids.add(id);
+        }
+        return Array.from(ids);
+    }
+    /** X user ids are snowflakes — always compare as strings, never as JS numbers. */
+    normalizeXSnowflakeId(id) {
+        if (id == null || id === '') {
+            return '';
+        }
+        if (typeof id === 'bigint') {
+            return id.toString();
+        }
+        if (typeof id === 'number' && Number.isFinite(id)) {
+            return String(id);
+        }
+        return String(id).trim();
+    }
+    /**
+     * Only true replies to `parentTweetId` (Xquik /replies can include unrelated tweets).
+     */
+    extractXquikReplyAuthorIds(payload, parentTweetId, ownerUserId) {
+        const rows = (Array.isArray(payload?.tweets) && payload.tweets) ||
+            (Array.isArray(payload?.data?.tweets) && payload.data.tweets) ||
+            (Array.isArray(payload?.replies) && payload.replies) ||
+            (Array.isArray(payload?.data?.replies) && payload.data.replies) ||
+            (Array.isArray(payload?.data) && payload.data) ||
+            (Array.isArray(payload?.results) && payload.results) ||
+            [];
+        const parent = String(parentTweetId).trim();
+        const owner = this.normalizeXSnowflakeId(ownerUserId);
+        const ids = new Set();
+        for (const row of rows) {
+            const tweetId = String(row?.id ?? row?.tweet_id ?? row?.tweetId ?? '').trim();
+            if (!tweetId || tweetId === parent) {
+                continue;
+            }
+            const replyParent = String(row?.inReplyToId ??
+                row?.in_reply_to_tweet_id ??
+                row?.inReplyToTweetId ??
+                row?.in_reply_to_status_id ??
+                '').trim();
+            if (replyParent !== parent) {
+                continue;
+            }
+            const authorId = this.normalizeXSnowflakeId(row?.author_id ??
+                row?.author?.id ??
+                row?.user?.id ??
+                row?.user_id ??
+                '');
+            if (!authorId || (owner && authorId === owner)) {
+                continue;
+            }
+            ids.add(authorId);
+        }
+        return Array.from(ids);
+    }
+    async fetchXquikRepliers(tweetId, ownerUserId) {
+        const id = String(tweetId ?? '').trim();
+        if (!id) {
+            return [];
+        }
+        const ids = new Set();
+        let cursor;
+        for (let page = 0; page < 5; page++) {
+            const payload = await this.xquikGetFirstAvailable([`/x/tweets/${id}/replies`, `/x/tweets/${id}/reply`], { limit: 100, cursor });
+            for (const authorId of this.extractXquikReplyAuthorIds(payload, id, ownerUserId)) {
+                ids.add(authorId);
+            }
+            const next = this.extractXquikNextCursor(payload);
+            if (!next || payload?.has_next_page === false) {
+                break;
+            }
+            cursor = next;
+        }
+        return Array.from(ids);
+    }
+    async xquikGet(path, query) {
+        const base = (0, xquik_env_1.getXquikApiBase)();
+        const key = (0, xquik_env_1.getXquikApiKey)();
+        if (!key) {
+            throw new Error('Xquik API key missing');
+        }
+        const params = new URLSearchParams();
+        for (const [k, v] of Object.entries(query || {})) {
+            if (v === undefined || v === null || String(v).trim() === '')
+                continue;
+            params.set(k, String(v));
+        }
+        const url = `${base}${path}${params.toString() ? `?${params.toString()}` : ''}`;
+        const res = await fetch(url, {
+            method: 'GET',
+            headers: { 'x-api-key': key },
+        });
+        if (!res.ok) {
+            const body = await res.text();
+            throw { code: res.status, data: { status: res.status, detail: body } };
+        }
+        return res.json();
+    }
+    async xquikGetFirstAvailable(paths, query) {
+        let lastErr;
+        for (const path of paths) {
+            try {
+                return await this.xquikGet(path, query);
+            }
+            catch (err) {
+                lastErr = err;
+                if (err?.code === 404)
+                    continue;
+                throw err;
+            }
+        }
+        throw lastErr;
+    }
+    // Fetch user IDs of accounts that LIKED a tweet.
+    // Returns up to 100 user IDs (X V2 API page size).
+    async fetchLikers(client, tweetId, integrationId) {
+        if (this.canUseXquikReads()) {
+            try {
+                const payload = await this.xquikGetFirstAvailable([
+                    `/x/tweets/${tweetId}/favoriters`,
+                    `/x/tweets/${tweetId}/favoriters/list`,
+                ]);
+                const ids = this.extractXquikUserIds(payload);
+                console.log(`X AUTO DM: Xquik favoriters for tweet ${tweetId}: ${ids.length} user(s)`);
+                if (ids.length > 0) {
+                    return ids;
+                }
+                console.log(`X AUTO DM: Xquik returned 0 likers for ${tweetId} — falling back to X API liked_by`);
+            }
+            catch (err) {
+                if (integrationId && (0, x_plug_batch_rate_limit_store_1.isXApiRateLimitError)(err)) {
+                    await (0, x_plug_batch_rate_limit_store_1.markPlugBatchLimitedFromError)(integrationId, err);
+                }
+                console.warn('X AUTO DM: Xquik likers fetch failed; falling back to X API:', err);
+            }
+        }
+        try {
+            const res = await client.v2.tweetLikedBy(tweetId, { max_results: 100 });
+            const ids = (res?.data || []).map((u) => String(u.id)).filter(Boolean);
+            if (ids.length > 0) {
+                console.log(`X AUTO DM: X API liked_by for tweet ${tweetId}: ${ids.length} user(s)`);
+            }
+            return ids;
+        }
+        catch (err) {
+            if (integrationId && (0, x_plug_batch_rate_limit_store_1.isXApiRateLimitError)(err)) {
+                await (0, x_plug_batch_rate_limit_store_1.markPlugBatchLimitedFromError)(integrationId, err);
+            }
+            console.error('X AUTO DM: failed to fetch likers from X API:', err);
+            return [];
+        }
+    }
+    // Fetch user IDs of accounts that RETWEETED a tweet.
+    // Same V2 endpoint shape as likers.
+    async fetchRetweeters(client, tweetId, integrationId) {
+        if (this.canUseXquikReads()) {
+            try {
+                const payload = await this.xquikGetFirstAvailable([
+                    `/x/tweets/${tweetId}/retweeters`,
+                    `/x/tweets/${tweetId}/reposters`,
+                ]);
+                const ids = this.extractXquikUserIds(payload);
+                if (ids.length > 0) {
+                    console.log(`X AUTO DM: fetched ${ids.length} retweeters from Xquik for tweet ${tweetId}`);
+                    return ids;
+                }
+                console.log(`X AUTO DM: Xquik returned 0 retweeters for ${tweetId} — falling back to X API`);
+            }
+            catch (err) {
+                if (integrationId && (0, x_plug_batch_rate_limit_store_1.isXApiRateLimitError)(err)) {
+                    await (0, x_plug_batch_rate_limit_store_1.markPlugBatchLimitedFromError)(integrationId, err);
+                }
+                console.warn('X AUTO DM: Xquik retweeters fetch failed; falling back to X API:', err);
+            }
+        }
+        try {
+            const res = await client.v2.tweetRetweetedBy(tweetId, { max_results: 100 });
+            const ids = (res?.data || []).map((u) => String(u.id)).filter(Boolean);
+            if (ids.length > 0) {
+                console.log(`X AUTO DM: X API retweeted_by for tweet ${tweetId}: ${ids.length} user(s)`);
+            }
+            return ids;
+        }
+        catch (err) {
+            console.error('X AUTO DM: failed to fetch retweeters:', err);
+            return [];
+        }
+    }
+    collectReplierIdsFromTweets(tweets, parentTweetId) {
+        const parent = String(parentTweetId).trim();
+        const ids = new Set();
+        for (const t of tweets) {
+            if (!t?.id || String(t.id) === parent) {
+                continue;
+            }
+            const refs = t.referenced_tweets ?? [];
+            const directReply = refs.some((r) => r.type === 'replied_to' && String(r.id ?? '') === parent);
+            if (!directReply || !t.author_id) {
+                continue;
+            }
+            ids.add(String(t.author_id));
+        }
+        return Array.from(ids);
+    }
+    async fetchRepliersViaConversationSearch(client, tweetId, integrationId) {
+        const queries = [
+            `conversation_id:${tweetId} -is:retweet`,
+            `conversation_id:${tweetId} is:reply -is:retweet`,
+        ];
+        for (const query of queries) {
+            try {
+                const paginator = await client.v2.search(query, {
+                    max_results: 100,
+                    'tweet.fields': ['author_id', 'referenced_tweets'],
+                });
+                const collected = [];
+                for await (const t of paginator) {
+                    collected.push(t);
+                }
+                const ids = this.collectReplierIdsFromTweets(collected, tweetId);
+                const metaCount = paginator
+                    .meta?.result_count;
+                if (ids.length > 0) {
+                    console.log(`X AUTO DM: fetchRepliers found ${ids.length} replier(s) on tweet ${tweetId} via search (meta=${metaCount ?? '?'})`);
+                    return ids;
+                }
+                console.log(`X AUTO DM: search "${query}" returned meta=${metaCount ?? 0} for tweet ${tweetId}`);
+            }
+            catch (err) {
+                if (integrationId && (0, x_plug_batch_rate_limit_store_1.isXApiRateLimitError)(err)) {
+                    await (0, x_plug_batch_rate_limit_store_1.markPlugBatchLimitedFromError)(integrationId, err);
+                    throw err;
+                }
+                console.warn(`X AUTO DM: search failed query="${query}":`, err);
+            }
+        }
+        return [];
+    }
+    /** Replies that @mention the channel (misses reply-without-@). */
+    async fetchRepliersViaMentionTimeline(client, tweetId, channelUserId, integrationId) {
+        const uid = String(channelUserId ?? '').trim();
+        if (!uid) {
+            return [];
+        }
+        try {
+            const paginator = await client.v2.userMentionTimeline(uid, {
+                max_results: 100,
+                'tweet.fields': ['author_id', 'referenced_tweets'],
+            });
+            const collected = [];
+            for await (const t of paginator) {
+                collected.push(t);
+            }
+            const ids = this.collectReplierIdsFromTweets(collected, tweetId);
+            if (ids.length > 0) {
+                console.log(`X AUTO DM: fetchRepliers found ${ids.length} replier(s) on tweet ${tweetId} via mention timeline`);
+            }
+            return ids;
+        }
+        catch (err) {
+            if (integrationId && (0, x_plug_batch_rate_limit_store_1.isXApiRateLimitError)(err)) {
+                await (0, x_plug_batch_rate_limit_store_1.markPlugBatchLimitedFromError)(integrationId, err);
+                throw err;
+            }
+            console.warn('X AUTO DM: mention timeline repliers fetch failed:', err);
+            return [];
+        }
+    }
+    // Fetch user IDs of accounts that REPLIED to a tweet (search + mention fallback).
+    async fetchRepliers(client, tweetId, integrationId, channelUserId) {
+        const id = String(tweetId ?? '').trim();
+        if (!id) {
+            return [];
+        }
+        if (this.canUseXquikReads()) {
+            try {
+                let ids = await this.fetchXquikRepliers(id, channelUserId);
+                if (ids.length > 0) {
+                    console.log(`X AUTO DM: fetchRepliers found ${ids.length} replier(s) on tweet ${id} via Xquik`);
+                    return ids;
+                }
+                if (channelUserId) {
+                    ids = await this.fetchRepliersViaMentionTimeline(client, id, channelUserId, integrationId);
+                    if (ids.length > 0) {
+                        console.log(`X AUTO DM: Xquik had 0 repliers on tweet ${id}; found ${ids.length} via X mention timeline (reply may be missing from Xquik)`);
+                    }
+                }
+                return ids;
+            }
+            catch (err) {
+                if (integrationId && (0, x_plug_batch_rate_limit_store_1.isXApiRateLimitError)(err)) {
+                    await (0, x_plug_batch_rate_limit_store_1.markPlugBatchLimitedFromError)(integrationId, err);
+                }
+                console.error('X AUTO DM: failed to fetch repliers from Xquik:', err);
+                return [];
+            }
+        }
+        try {
+            let ids = await this.fetchRepliersViaConversationSearch(client, id, integrationId);
+            if (ids.length === 0 && channelUserId) {
+                ids = await this.fetchRepliersViaMentionTimeline(client, id, channelUserId, integrationId);
+            }
+            if (ids.length === 0) {
+                console.log(`X AUTO DM: fetchRepliers found 0 users for tweet ${id} — X Search likely unavailable on your app tier (needs Basic + Search), or use TweetStream for realtime replies`);
+            }
+            return ids;
+        }
+        catch (err) {
+            if (integrationId && (0, x_plug_batch_rate_limit_store_1.isXApiRateLimitError)(err)) {
+                await (0, x_plug_batch_rate_limit_store_1.markPlugBatchLimitedFromError)(integrationId, err);
+            }
+            console.error('X AUTO DM: failed to fetch repliers:', err);
+            return [];
+        }
+    }
+    async autoDmEngagers(integration, id, fields, postSettings, plugContext) {
+        const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        // Decide which target types to DM. Plug-level checkboxes set the default;
+        // post-level settings (auto_dm_targets) override if present.
+        const truthy = (v) => v === true || v === 'true' || v === 1 || v === '1';
+        const postTargets = postSettings?.auto_dm_targets || {};
+        const targetLikes = postTargets.likes !== undefined
+            ? truthy(postTargets.likes)
+            : truthy(fields.targetLikes);
+        const targetRetweets = postTargets.retweets !== undefined
+            ? truthy(postTargets.retweets)
+            : truthy(fields.targetRetweets);
+        const targetReplies = postTargets.replies !== undefined
+            ? truthy(postTargets.replies)
+            : truthy(fields.targetReplies);
+        // Per-post settings can disable auto-DM for a specific tweet entirely.
+        if (postSettings?.auto_dm_enabled === false) {
+            return false;
+        }
+        // Backwards-compat: if no targets are explicitly enabled at either level,
+        // default to "likes" (the original behavior of this plug).
+        const noTargetsExplicit = !targetLikes && !targetRetweets && !targetReplies;
+        const effectiveTargetLikes = noTargetsExplicit ? true : targetLikes;
+        const effectiveTargetRetweets = noTargetsExplicit ? false : targetRetweets;
+        const effectiveTargetReplies = noTargetsExplicit ? false : targetReplies;
+        // Resolve the DM message: per-post override > plug-level default.
+        const rawMessage = (typeof postSettings?.auto_dm_message === 'string' &&
+            postSettings.auto_dm_message.trim() !== ''
+            ? postSettings.auto_dm_message
+            : fields.message) || '';
+        const dmText = (0, strip_html_validation_1.stripHtmlValidation)('normal', rawMessage, true);
+        if (!dmText || dmText.trim() === '') {
+            console.warn('X AUTO DM: no message configured; skipping');
+            return false;
+        }
+        try {
+            const readPause = await (0, x_plug_batch_rate_limit_store_1.isXPlugApiReadPaused)(integration.id);
+            if (readPause.paused) {
+                return false;
+            }
+            const useXquik = this.canUseXquikReads();
+            const tweetStreamWsActive = !useXquik && (await (0, tweetstream_ws_state_1.isTweetStreamWsConsumerActive)());
+            const pollLikes = useXquik
+                ? effectiveTargetLikes
+                : effectiveTargetLikes &&
+                    (!tweetStreamWsActive || (0, tweetstream_env_1.isTweetStreamPollLikesWhenWsActive)());
+            const pollRetweets = useXquik
+                ? effectiveTargetRetweets
+                : tweetStreamWsActive
+                    ? false
+                    : effectiveTargetRetweets;
+            const pollReplies = useXquik
+                ? effectiveTargetReplies
+                : effectiveTargetReplies &&
+                    (!tweetStreamWsActive || (0, tweetstream_env_1.isTweetStreamPollRepliesWhenWsActive)());
+            if (!useXquik &&
+                tweetStreamWsActive &&
+                !pollLikes &&
+                !pollRetweets &&
+                !pollReplies) {
+                return false;
+            }
+            // Collect user IDs from each enabled target. Deduplicate so a user who
+            // both liked and retweeted only gets DM'd once. No minimum engagement
+            // count — even a single engager is enough to trigger a DM.
+            const userIdSet = new Set();
+            if (pollLikes) {
+                const ids = await this.fetchLikers(client, id, integration.id);
+                ids.forEach((uid) => userIdSet.add(uid));
+            }
+            if (pollRetweets) {
+                const ids = await this.fetchRetweeters(client, id, integration.id);
+                ids.forEach((uid) => userIdSet.add(uid));
+            }
+            if (pollReplies) {
+                const ids = await this.fetchRepliers(client, id, integration.id, integration.internalId);
+                ids.forEach((uid) => userIdSet.add(uid));
+            }
+            const ownerId = this.normalizeXSnowflakeId(integration.internalId);
+            const allUserIds = Array.from(userIdSet).filter((uid) => !ownerId || uid !== ownerId);
+            if (allUserIds.length === 0) {
+                if (pollLikes || pollRetweets || pollReplies) {
+                    const ownerFiltered = userIdSet.size > 0 && ownerId && userIdSet.size === 1 && userIdSet.has(ownerId);
+                    console.log(`X AUTO DM: no engagers to DM on tweet ${id} after poller fetch (likes=${pollLikes} RT=${pollRetweets} replies=${pollReplies}; raw=${userIdSet.size}${ownerFiltered ? '; only engager was post owner' : ''})`);
+                }
+                return false;
+            }
+            const { toDm: userIds } = await this.resolveEngagersToDm(allUserIds, plugContext);
+            if (userIds.length === 0) {
+                return false;
+            }
+            const successfullyDmd = [];
+            for (const userId of userIds) {
+                const reserved = await this.reserveAutoDmSend(integration.id, id, userId);
+                if (!reserved) {
+                    continue;
+                }
+                try {
+                    const sent = await this.sendDmWithBatchGate(integration, client, userId, dmText, plugContext);
+                    if (sent) {
+                        successfullyDmd.push(userId);
+                        await this.confirmAutoDmSend(integration.id, id, userId);
+                    }
+                    else {
+                        await this.releaseAutoDmReservation(integration.id, id, userId);
+                    }
+                }
+                catch (err) {
+                    await this.releaseAutoDmReservation(integration.id, id, userId);
+                    throw err;
+                }
+            }
+            // Persist the IDs we successfully DM'd so future runs of this plug
+            // for this post skip them. Failures here are non-fatal — worst case
+            // is a duplicate DM next run.
+            if (plugContext?.saveEngagerSnapshot) {
+                try {
+                    await plugContext.saveEngagerSnapshot(allUserIds);
+                }
+                catch (err) {
+                    console.warn('X AUTO DM: failed to save engager snapshot:', err);
+                }
+            }
+            if (successfullyDmd.length > 0 && plugContext?.saveDmdUserIds) {
+                try {
+                    await plugContext.saveDmdUserIds(successfullyDmd);
+                }
+                catch (err) {
+                    console.warn('X AUTO DM: failed to persist DMd user IDs (next run may duplicate):', err);
+                }
+            }
+            else if (userIds.length > 0) {
+                console.warn(`X AUTO DM: ${userIds.length} engager(s) on tweet ${id} but none DM'd (X 403/429, DM batch cap, or API gate — check logs above)`);
+            }
+            // IMPORTANT: always return false (never `true`) so the post workflow
+            // does NOT cancel the remaining scheduled runs. We want every one of
+            // the `totalRuns` ticks to execute so engagers who arrive AFTER an
+            // earlier successful run can still be DM'd. Cross-run dedup above
+            // guarantees no one ever gets a duplicate DM.
+            return false;
+        }
+        catch (err) {
+            console.error('X AUTO DM FATAL ERROR:', err);
+        }
+        return false;
+    }
+    /** Paginated GET /2/users/:id/followers — newest followers tend to appear first. */
+    async fetchFollowerUserIds(client, userId, options, integrationId) {
+        if (this.canUseXquikReads()) {
+            const ids = [];
+            const pageSize = Math.min(Math.max(options.pageSize, 10), 1000);
+            let cursor;
+            for (let p = 0; p < options.maxPages; p++) {
+                try {
+                    const payload = await this.xquikGetFirstAvailable([`/x/users/${userId}/followers`, `/x/followers`], {
+                        limit: pageSize,
+                        userId,
+                        ...(cursor ? { cursor } : {}),
+                        ...(cursor ? { after: cursor } : {}),
+                        ...(cursor ? { next_cursor: cursor } : {}),
+                    });
+                    ids.push(...this.extractXquikUserIds(payload));
+                    cursor = this.extractXquikNextCursor(payload);
+                    if (!cursor)
+                        break;
+                }
+                catch (err) {
+                    if (integrationId && (0, x_plug_batch_rate_limit_store_1.isXApiRateLimitError)(err)) {
+                        await (0, x_plug_batch_rate_limit_store_1.markPlugBatchLimitedFromError)(integrationId, err);
+                    }
+                    console.error('X AUTO DM FOLLOWERS: Xquik followers fetch failed:', err);
+                    break;
+                }
+            }
+            if (ids.length > 0) {
+                return Array.from(new Set(ids));
+            }
+            return [];
+        }
+        const ids = [];
+        const pageSize = Math.min(Math.max(options.pageSize, 10), 1000);
+        let pagination_token;
+        for (let p = 0; p < options.maxPages; p++) {
+            const res = await client.v2.followers(userId, {
+                max_results: pageSize,
+                ...(pagination_token ? { pagination_token } : {}),
+            });
+            const users = res?.data || [];
+            for (const u of users) {
+                if (u?.id)
+                    ids.push(String(u.id));
+            }
+            pagination_token = res?.meta?.next_token;
+            if (!pagination_token)
+                break;
+        }
+        return ids;
+    }
+    /** Paginated GET /2/users/:id/following */
+    async fetchFollowingUserIds(client, userId, options) {
+        const ids = [];
+        const pageSize = Math.min(Math.max(options.pageSize, 10), 1000);
+        let pagination_token;
+        for (let p = 0; p < options.maxPages; p++) {
+            const res = await client.v2.following(userId, {
+                max_results: pageSize,
+                ...(pagination_token ? { pagination_token } : {}),
+            });
+            const users = res?.data || [];
+            for (const u of users) {
+                if (u?.id)
+                    ids.push(String(u.id));
+            }
+            pagination_token = res?.meta?.next_token;
+            if (!pagination_token)
+                break;
+        }
+        return ids;
+    }
+    /** Accounts the connected channel already follows (cached ~10 min). */
+    async getMyFollowingIdSet(integration, client) {
+        const cacheKey = integration.id;
+        const cached = this.myFollowingIdCache.get(cacheKey);
+        const ttlMs = 10 * 60 * 1000;
+        if (cached && Date.now() - cached.at < ttlMs) {
+            return cached.ids;
+        }
+        const ownerId = integration.internalId;
+        if (!ownerId) {
+            return new Set();
+        }
+        const ids = await this.fetchFollowingUserIds(client, ownerId, {
+            maxPages: 5,
+            pageSize: 1000,
+        });
+        const set = new Set(ids);
+        this.myFollowingIdCache.set(cacheKey, { at: Date.now(), ids: set });
+        return set;
+    }
+    markMyFollowingIds(integrationId, userIds) {
+        if (!userIds.length)
+            return;
+        const cached = this.myFollowingIdCache.get(integrationId);
+        if (cached) {
+            for (const id of userIds) {
+                cached.ids.add(String(id));
+            }
+            return;
+        }
+        this.myFollowingIdCache.set(integrationId, {
+            at: Date.now(),
+            ids: new Set(userIds.map(String)),
+        });
+    }
+    unmarkMyFollowingIds(integrationId, userIds) {
+        if (!userIds.length)
+            return;
+        const cached = this.myFollowingIdCache.get(integrationId);
+        if (!cached)
+            return;
+        for (const id of userIds) {
+            cached.ids.delete(String(id));
+        }
+    }
+    async autoDmFollowers(integration, _tweetReleaseId, fields, postSettings, plugContext) {
+        if (postSettings?.auto_dm_followers_enabled === false) {
+            return true;
+        }
+        const rawMessage = (typeof postSettings?.auto_dm_followers_message === 'string' &&
+            postSettings.auto_dm_followers_message.trim() !== ''
+            ? postSettings.auto_dm_followers_message
+            : fields.message) || '';
+        const dmText = (0, strip_html_validation_1.stripHtmlValidation)('normal', rawMessage, true);
+        if (!dmText || dmText.trim() === '') {
+            console.warn('X AUTO DM FOLLOWERS: no message configured; skipping');
+            return false;
+        }
+        const ownerId = integration.internalId;
+        if (!ownerId) {
+            console.warn('X AUTO DM FOLLOWERS: missing integration.internalId');
+            return false;
+        }
+        const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        if (!plugContext?.loadDmdUserIds ||
+            !plugContext?.saveDmdUserIds ||
+            !plugContext?.hasFollowerBaselineMarker ||
+            !plugContext?.setFollowerBaselineMarker ||
+            !plugContext?.loadFollowerSnapshotContains ||
+            !plugContext?.saveFollowerSnapshotIds) {
+            console.warn('X AUTO DM FOLLOWERS: missing plug context');
+            return false;
+        }
+        try {
+            const baselineDone = await plugContext.hasFollowerBaselineMarker();
+            if (!baselineDone) {
+                const snapshotIds = await this.fetchFollowerUserIds(client, ownerId, {
+                    maxPages: 3,
+                    pageSize: 1000,
+                }, integration.id);
+                if (snapshotIds.length > 0) {
+                    await plugContext.saveFollowerSnapshotIds(snapshotIds);
+                }
+                if (plugContext.savePreviousFollowerPollIds) {
+                    await plugContext.savePreviousFollowerPollIds(snapshotIds);
+                }
+                await plugContext.setFollowerBaselineMarker();
+                return false;
+            }
+            const previousSet = plugContext.loadPreviousFollowerPollIds
+                ? await plugContext.loadPreviousFollowerPollIds()
+                : new Set();
+            const recentIds = await this.fetchFollowerUserIds(client, ownerId, {
+                maxPages: 1,
+                pageSize: 500,
+            }, integration.id);
+            const recentSet = new Set(recentIds);
+            const leftFollowers = [...previousSet].filter((uid) => !recentSet.has(uid));
+            if (leftFollowers.length && plugContext.removeFollowerTracking) {
+                await plugContext.removeFollowerTracking(leftFollowers);
+                console.log(`X AUTO DM FOLLOWERS: ${leftFollowers.length} unfollow(s) detected on @${integration.profile} — cleared welcome-DM tracking`);
+            }
+            if (plugContext.savePreviousFollowerPollIds) {
+                await plugContext.savePreviousFollowerPollIds(recentIds);
+            }
+            if (recentIds.length === 0) {
+                return false;
+            }
+            const newFollowers = recentIds.filter((uid) => !previousSet.has(uid));
+            const toWelcome = newFollowers.filter((uid) => uid !== ownerId);
+            if (toWelcome.length === 0) {
+                return false;
+            }
+            console.log(`X AUTO DM FOLLOWERS: ${toWelcome.length} new follower(s) on @${integration.profile} since last poll`);
+            let dmSent = false;
+            const successfullyDmd = [];
+            const snapshotAdds = [];
+            for (const userId of toWelcome) {
+                const sent = await this.sendDmWithBatchGate(integration, client, userId, dmText, plugContext);
+                if (sent) {
+                    successfullyDmd.push(userId);
+                    snapshotAdds.push(userId);
+                    dmSent = true;
+                }
+            }
+            if (successfullyDmd.length > 0) {
+                await plugContext.saveFollowerSnapshotIds(snapshotAdds);
+                console.log(`X AUTO DM FOLLOWERS: welcome DM sent to ${successfullyDmd.length} follower(s) on @${integration.profile}`);
+            }
+            return dmSent;
+        }
+        catch (err) {
+            console.error('X AUTO DM FOLLOWERS FATAL ERROR:', err);
+        }
+        return false;
+    }
+    truthyPlugField(v) {
+        return v === true || v === 'true' || v === 1 || v === '1';
+    }
+    buildClientForIntegration(integration) {
+        const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+        return this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+    }
+    mapPinnedTweetPreview(tweet) {
+        const metrics = tweet.public_metrics;
+        return {
+            id: String(tweet.id),
+            text: tweet.text || '',
+            createdAt: tweet.created_at || null,
+            url: `https://twitter.com/i/web/status/${tweet.id}`,
+            likeCount: metrics?.like_count ?? 0,
+            repostCount: metrics?.retweet_count ?? 0,
+            replyCount: metrics?.reply_count ?? 0,
+        };
+    }
+    /**
+     * Loads pinned tweet id for the connected channel. Prefer `GET /2/users/me`
+     * (OAuth context) over `GET /2/users/:id` — more reliable after reconnect.
+     */
+    async resolvePinnedTweetId(integration) {
+        const result = await this.fetchPinnedTweetForIntegration(integration);
+        return result.pinnedId;
+    }
+    async fetchPinnedTweetForIntegration(integration) {
+        if (!integration.internalId) {
+            return {
+                error: 'Missing X user id on this channel. Disconnect and reconnect your X account.',
+            };
+        }
+        const client = this.buildClientForIntegration(integration);
+        try {
+            const me = await client.v2.me({
+                'user.fields': ['pinned_tweet_id'],
+                expansions: ['pinned_tweet_id'],
+                'tweet.fields': ['created_at', 'text', 'public_metrics'],
+            });
+            const pinnedRaw = me.data?.pinned_tweet_id;
+            if (!pinnedRaw) {
+                return {};
+            }
+            const pinnedId = String(pinnedRaw);
+            const includes = me.includes;
+            const tweets = includes?.tweets;
+            const embedded = Array.isArray(tweets)
+                ? tweets.find((t) => String(t.id) === pinnedId)
+                : undefined;
+            if (embedded?.id) {
+                return { pinnedId, tweet: embedded };
+            }
+            return { pinnedId };
+        }
+        catch (meErr) {
+            console.warn('X pinned tweet: GET /2/users/me failed, trying user(id):', meErr);
+        }
+        try {
+            const ownerId = integration.internalId;
+            const userResult = await client.v2.user(ownerId, {
+                'user.fields': ['pinned_tweet_id'],
+                expansions: ['pinned_tweet_id'],
+                'tweet.fields': ['created_at', 'text', 'public_metrics'],
+            });
+            const pinnedRaw = userResult.data?.pinned_tweet_id;
+            if (!pinnedRaw) {
+                return {};
+            }
+            const pinnedId = String(pinnedRaw);
+            const tweets = userResult.includes
+                ?.tweets;
+            const embedded = Array.isArray(tweets)
+                ? tweets.find((t) => String(t.id) === pinnedId)
+                : undefined;
+            if (embedded?.id) {
+                return { pinnedId, tweet: embedded };
+            }
+            return { pinnedId };
+        }
+        catch (err) {
+            const msg = formatXApiErrorMessage(err, 'Could not load pinned post from X');
+            console.error('X PINNED TWEET LOOKUP ERROR:', msg, err);
+            return { error: msg };
+        }
+    }
+    async getPinnedTweetPreview(integration) {
+        const loaded = await this.fetchPinnedTweetForIntegration(integration);
+        if (loaded.error) {
+            return { pinned: null, error: loaded.error };
+        }
+        if (!loaded.pinnedId) {
+            return { pinned: null };
+        }
+        if (loaded.tweet?.id) {
+            return { pinned: this.mapPinnedTweetPreview(loaded.tweet) };
+        }
+        try {
+            const client = this.buildClientForIntegration(integration);
+            const { data } = await client.v2.singleTweet(loaded.pinnedId, {
+                'tweet.fields': ['created_at', 'text', 'public_metrics'],
+            });
+            if (!data?.id) {
+                return {
+                    pinned: null,
+                    error: 'X returned a pinned tweet id but the tweet could not be loaded. It may be deleted or restricted on your API plan.',
+                };
+            }
+            return { pinned: this.mapPinnedTweetPreview(data) };
+        }
+        catch (err) {
+            const msg = formatXApiErrorMessage(err, 'Could not load pinned tweet details from X');
+            console.error('X PINNED TWEET PREVIEW ERROR:', msg, err);
+            return { pinned: null, error: msg };
+        }
+    }
+    async autoDeleteProfile(integration, _tweetReleaseId, fields) {
+        const ownerId = integration.internalId;
+        if (!ownerId)
+            return false;
+        const applyPosts = this.truthyPlugField(fields.applyPosts);
+        const applyReposts = this.truthyPlugField(fields.applyReposts);
+        const applyQuotes = this.truthyPlugField(fields.applyQuotes);
+        const applyReplies = this.truthyPlugField(fields.applyReplies);
+        if (!applyPosts && !applyReposts && !applyQuotes && !applyReplies) {
+            return false;
+        }
+        const ruleByDate = this.truthyPlugField(fields.ruleByDate);
+        const ruleByKeywords = this.truthyPlugField(fields.ruleByKeywords);
+        const ruleByTweetCount = this.truthyPlugField(fields.ruleByTweetCount);
+        const ruleByLikes = this.truthyPlugField(fields.ruleByLikes);
+        if (!ruleByDate && !ruleByKeywords && !ruleByTweetCount && !ruleByLikes) {
+            return false;
+        }
+        const olderThanDays = Math.max(1, Number(fields.dateOlderThanDays) || 30);
+        const dateCutoff = Date.now() - olderThanDays * 86_400_000;
+        const keywordList = (fields.keywords || '')
+            .split(',')
+            .map((k) => k.trim().toLowerCase())
+            .filter(Boolean);
+        const maxTweets = Math.max(100, Number(fields.maxTweetCount) || 1000);
+        const maxLikes = Math.max(0, Number(fields.maxLikes) || 5);
+        const client = this.buildClientForIntegration(integration);
+        let deleted = false;
+        const matchesContentType = (tweet) => {
+            const refs = tweet.referenced_tweets || [];
+            const isRetweet = refs.some((r) => r.type === 'retweeted');
+            const isQuote = refs.some((r) => r.type === 'quoted');
+            const isReply = refs.some((r) => r.type === 'replied_to');
+            if (isRetweet)
+                return applyReposts;
+            if (isQuote)
+                return applyQuotes;
+            if (isReply)
+                return applyReplies;
+            return applyPosts;
+        };
+        const matchesNonCountRules = (tweet) => {
+            if (ruleByDate && tweet.created_at) {
+                if (new Date(tweet.created_at).getTime() > dateCutoff)
+                    return false;
+            }
+            if (ruleByKeywords) {
+                if (!keywordList.length)
+                    return false;
+                const text = (tweet.text || '').toLowerCase();
+                if (!keywordList.some((kw) => text.includes(kw)))
+                    return false;
+            }
+            if (ruleByLikes) {
+                const likes = tweet.public_metrics?.like_count ?? 0;
+                if (likes > maxLikes)
+                    return false;
+            }
+            return true;
+        };
+        try {
+            const exclude = [];
+            if (!applyReplies)
+                exclude.push('replies');
+            if (!applyReposts)
+                exclude.push('retweets');
+            const timeline = await client.v2.userTimeline(ownerId, {
+                'tweet.fields': [
+                    'created_at',
+                    'referenced_tweets',
+                    'public_metrics',
+                    'text',
+                ],
+                exclude: exclude.length ? exclude : undefined,
+                max_results: 100,
+            });
+            const tweets = (timeline.data.data || []).filter((t) => t?.id);
+            let toDelete = tweets.filter((t) => matchesContentType(t) && matchesNonCountRules(t));
+            if (ruleByTweetCount && toDelete.length > maxTweets) {
+                toDelete = [...toDelete].sort((a, b) => new Date(a.created_at || 0).getTime() -
+                    new Date(b.created_at || 0).getTime());
+                const excess = toDelete.length - maxTweets;
+                toDelete = toDelete.slice(0, excess);
+            }
+            if (!toDelete.length) {
+                return false;
+            }
+            for (const tweet of toDelete) {
+                try {
+                    await (0, timer_1.timer)(1500);
+                    await client.v2.deleteTweet(tweet.id);
+                    deleted = true;
+                }
+                catch (delErr) {
+                    console.error(`X AUTO DELETE PROFILE ERROR ${tweet.id}:`, delErr);
+                }
+            }
+        }
+        catch (err) {
+            console.error('X AUTO DELETE PROFILE FATAL:', err);
+        }
+        return deleted;
+    }
+    async autoDeleteReposts(integration, _tweetReleaseId, fields) {
+        const ownerId = integration.internalId;
+        if (!ownerId)
+            return false;
+        const hours = Math.min(48, Math.max(1, Number(fields.deleteAfterHours) || 24));
+        const cutoff = Date.now() - hours * 3_600_000;
+        const client = this.buildClientForIntegration(integration);
+        let deleted = false;
+        try {
+            const timeline = await client.v2.userTimeline(ownerId, {
+                'tweet.fields': ['created_at', 'referenced_tweets'],
+                exclude: ['replies'],
+                max_results: 100,
+            });
+            for (const tweet of timeline.data.data || []) {
+                if (!tweet?.id || !tweet.created_at)
+                    continue;
+                const isRetweet = tweet.referenced_tweets?.some((r) => r.type === 'retweeted');
+                if (!isRetweet)
+                    continue;
+                if (new Date(tweet.created_at).getTime() > cutoff)
+                    continue;
+                try {
+                    await (0, timer_1.timer)(1500);
+                    await client.v2.deleteTweet(tweet.id);
+                    deleted = true;
+                }
+                catch (delErr) {
+                    console.error(`X AUTO DELETE REPOST ERROR ${tweet.id}:`, delErr);
+                }
+            }
+        }
+        catch (err) {
+            console.error('X AUTO DELETE REPOSTS FATAL:', err);
+        }
+        return deleted;
+    }
+    async autoDmPinnedPost(integration, _tweetReleaseId, fields, _postSettings, plugContext) {
+        const pinnedId = await this.resolvePinnedTweetId(integration);
+        if (!pinnedId) {
+            console.warn('X PINNED AUTO DM: no pinned tweet on profile');
+            return false;
+        }
+        const rawMessage = fields.message || '';
+        const dmText = (0, strip_html_validation_1.stripHtmlValidation)('normal', rawMessage.replace(/\[tweet\]/gi, `https://twitter.com/i/web/status/${pinnedId}`), true);
+        if (!dmText.trim())
+            return false;
+        const targetLike = this.truthyPlugField(fields.targetLike);
+        const targetRepost = this.truthyPlugField(fields.targetRepost);
+        const targetReply = this.truthyPlugField(fields.targetReply);
+        if (!targetLike && !targetRepost && !targetReply)
+            return false;
+        if (!plugContext?.loadDmdUserIds || !plugContext?.saveDmdUserIds) {
+            return false;
+        }
+        const client = this.buildClientForIntegration(integration);
+        const userIdSet = new Set();
+        try {
+            if (targetLike) {
+                const ids = await this.fetchLikers(client, pinnedId, integration.id);
+                ids.forEach((uid) => userIdSet.add(uid));
+            }
+            if (targetRepost) {
+                const ids = await this.fetchRetweeters(client, pinnedId);
+                ids.forEach((uid) => userIdSet.add(uid));
+            }
+            if (targetReply) {
+                const ids = await this.fetchRepliers(client, pinnedId);
+                ids.forEach((uid) => userIdSet.add(uid));
+            }
+            const ownerId = integration.internalId;
+            const candidates = Array.from(userIdSet).filter((uid) => uid && uid !== ownerId);
+            if (!candidates.length)
+                return false;
+            const { toDm } = await this.resolveEngagersToDm(candidates, plugContext);
+            if (!toDm.length)
+                return false;
+            let sent = false;
+            const success = [];
+            for (const userId of toDm) {
+                const ok = await this.sendDmWithBatchGate(integration, client, userId, dmText, plugContext);
+                if (ok) {
+                    success.push(userId);
+                    sent = true;
+                }
+            }
+            if (plugContext.saveEngagerSnapshot) {
+                await plugContext.saveEngagerSnapshot(candidates);
+            }
+            if (success.length) {
+                await plugContext.saveDmdUserIds(success);
+            }
+            return sent;
+        }
+        catch (err) {
+            console.error('X PINNED AUTO DM FATAL:', err);
+        }
+        return false;
+    }
+    /**
+     * DM users who newly appear in the current engager set (like/unlike/like sends again).
+     * Falls back to legacy per-user dedup when snapshot helpers are unavailable.
+     */
+    async resolveEngagersToDm(currentUserIds, plugContext) {
+        let toDm = [...currentUserIds];
+        if (plugContext?.loadEngagerSnapshot &&
+            plugContext?.saveEngagerSnapshot) {
+            const previous = await plugContext.loadEngagerSnapshot();
+            toDm = toDm.filter((uid) => !previous.has(uid));
+        }
+        if (plugContext?.loadDmdUserIds && toDm.length > 0) {
+            try {
+                const alreadyDmd = await plugContext.loadDmdUserIds(toDm);
+                toDm = toDm.filter((uid) => !alreadyDmd.has(uid));
+            }
+            catch (err) {
+                console.warn('X AUTO DM: failed to load already-DMd users (will proceed without dedup):', err);
+            }
+        }
+        if (toDm.length > 0) {
+            console.log(`X AUTO DM: ${toDm.length} engager(s) to DM (${currentUserIds.length} in current set)`);
+        }
+        return { toDm };
+    }
+    async refreshToken() {
+        return {
+            id: '',
+            name: '',
+            accessToken: '',
+            refreshToken: '',
+            expiresIn: 0,
+            picture: '',
+            username: '',
+        };
+    }
+    async generateAuthUrl() {
+        try {
+            const client = this.buildTwitterApi({
+                appKey: process.env.X_API_KEY,
+                appSecret: process.env.X_API_SECRET,
+            });
+            // IMPORTANT: do NOT pass authAccessType here.
+            //
+            // Twitter's OAuth 1.0a `x_auth_access_type` parameter (which the
+            // twitter-api-v2 library forwards from `authAccessType`) only accepts
+            // 'read' | 'write'. There is no 'dm' value, and passing 'write'
+            // CAPS the minted token at write-only — explicitly excluding Direct
+            // Message scope, even when the X App itself is configured with
+            // "Read and write and Direct messages" permission.
+            //
+            // The correct behavior is to OMIT this parameter entirely so the token
+            // inherits the App's full configured permission set. This is required
+            // for auto-DM to work; otherwise X returns 403
+            // "oauth1-permissions" on every DM call.
+            //
+            // linkMode: 'authenticate' uses X's /oauth/authenticate endpoint, which
+            // auto-redirects when the user already has an X session in the same
+            // browser. We deliberately do NOT pass `forceLogin: true` — that would
+            // force the user to re-enter X credentials even when they're already
+            // logged in, which is the opposite of what /auth users expect.
+            //
+            // Trade-off: if you change your X App's permission set after a user has
+            // already authorized (e.g., add Direct Messages later), existing tokens
+            // won't auto-pick up the new scope. Users with stale tokens have to
+            // explicitly disconnect + reconnect to mint a fresh token. This is
+            // acceptable because the alternative — forcing every user through a
+            // login form on every connect — is much worse UX.
+            const { url, oauth_token, oauth_token_secret } = await client.generateAuthLink((process.env.X_URL || process.env.FRONTEND_URL) +
+                `/integrations/social/x`, {
+                linkMode: 'authenticate',
+            });
+            return {
+                url,
+                codeVerifier: oauth_token + ':' + oauth_token_secret,
+                state: oauth_token,
+            };
+        }
+        catch (err) {
+            console.error('X AUTH ERROR:', err);
+            throw err;
+        }
+    }
+    async authenticate(params) {
+        const { code, codeVerifier } = params;
+        const [oauth_token, oauth_token_secret] = codeVerifier.split(':');
+        const startingClient = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: oauth_token,
+            accessSecret: oauth_token_secret,
+        });
+        const { accessToken, client, accessSecret } = await startingClient.login(code);
+        const { data: { username, verified, profile_image_url, name, id }, } = await client.v2.me({
+            'user.fields': [
+                'username',
+                'verified',
+                'verified_type',
+                'profile_image_url',
+                'name',
+            ],
+        });
+        return {
+            id: String(id),
+            accessToken: accessToken + ':' + accessSecret,
+            name,
+            refreshToken: '',
+            expiresIn: 999999999,
+            picture: profile_image_url || '',
+            username,
+            additionalSettings: [
+                {
+                    title: 'Verified',
+                    description: 'Is this a verified user? (Premium)',
+                    type: 'checkbox',
+                    value: verified,
+                },
+            ],
+        };
+    }
+    // Pick a random proxy from the X_PROXIES env var if configured. Format:
+    //   X_PROXIES="http://user:pass@host1:port1,http://user:pass@host2:port2,..."
+    // When set, all X API calls (post, comment, OAuth, plugs that go through
+    // buildTwitterApi) route through a randomly-selected residential proxy so
+    // X sees a non-datacenter source IP.
+    //
+    // STRICT MODE: when X_PROXIES is set, the proxy is *required*. If
+    // construction fails for the randomly-picked URL, this method tries every
+    // remaining configured proxy and only returns undefined as a last resort
+    // (which then triggers a hard error in buildTwitterApi). This prevents the
+    // silent fallback to a direct (datacenter-IP) connection that would defeat
+    // the whole point of configuring a proxy.
+    //
+    // Trade-off: this can violate X's Developer Agreement if the proxy is
+    // detected as anonymizing. Use only with full understanding of the risk.
+    // If X_PROXIES is unset or empty, behavior is unchanged (direct connection).
+    getProxyAgent() {
+        const proxiesEnv = process.env.X_PROXIES?.trim();
+        if (!proxiesEnv)
+            return undefined;
+        const proxies = proxiesEnv
+            .split(',')
+            .map((p) => p.trim())
+            .filter(Boolean);
+        if (proxies.length === 0)
+            return undefined;
+        // Shuffle so we still get random selection but fall back through all of
+        // them if one fails to construct.
+        const shuffled = [...proxies].sort(() => Math.random() - 0.5);
+        for (const proxyUrl of shuffled) {
+            try {
+                return new HttpsProxyAgent(proxyUrl);
+            }
+            catch (err) {
+                console.error('X PROXY: failed to construct proxy agent for', proxyUrl, err);
+                // try the next proxy
+            }
+        }
+        // All proxies failed to construct — return undefined; buildTwitterApi
+        // will treat this as a hard error since X_PROXIES was set.
+        return undefined;
+    }
+    // Centralized TwitterApi factory — applies proxy agent if configured so that
+    // every code path (post, comment, OAuth, plugs) routes through the same egress.
+    //
+    // When X_PROXIES is set but no usable proxy could be constructed, this
+    // throws explicitly rather than silently falling back to a direct (datacenter
+    // IP) connection. The thrown error propagates up the post() retry loop and
+    // shows up in logs / Temporal failure messages, so the cause is visible
+    // instead of producing a "post failed but proxy log missing" mystery.
+    buildTwitterApi(creds) {
+        const proxiesConfigured = !!process.env.X_PROXIES?.trim();
+        const httpAgent = this.getProxyAgent();
+        if (proxiesConfigured && !httpAgent) {
+            // X_PROXIES is set, but every entry failed to construct. Refuse to fall
+            // through to a direct connection — the operator clearly wants traffic
+            // routed through a proxy, and silently bypassing it would emit calls
+            // from Railway's datacenter IP (likely flagged by X), producing
+            // confusing "post fails on Railway but works on local" symptoms.
+            console.error('X PROXY: X_PROXIES is set but no proxy could be constructed. ' +
+                'Refusing to send X API call via direct connection. ' +
+                'Check that X_PROXIES contains valid http(s)://user:pass@host:port URLs.');
+            throw new Error('X_PROXIES is configured but no usable proxy is available — refusing to bypass to direct connection.');
+        }
+        if (httpAgent) {
+            console.log('X PROXY: routing call through residential proxy');
+        }
+        else {
+            // Explicit log when proxy is NOT configured so operators can confirm
+            // direct-connection mode is intentional.
+            console.log('X PROXY: not configured — using direct connection');
+        }
+        // The twitter-api-v2 second arg is Partial<IClientSettings>; httpAgent is
+        // typed as `Agent` but HttpsProxyAgent satisfies the runtime contract.
+        return new twitter_api_v2_1.TwitterApi(creds, httpAgent ? { httpAgent } : undefined);
+    }
+    async getClient(accessToken) {
+        const [accessTokenSplit, accessSecretSplit] = accessToken.split(':');
+        return this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+    }
+    // Race a promise against a timeout. If the timeout wins, throw an error
+    // tagged so the post() retry loop can recognize it as transient.
+    // Without this, X API calls can hang for the full 10-minute Temporal activity
+    // timeout when the connection stalls between Railway and X.
+    withTimeout(p, ms, label) {
+        return new Promise((resolve, reject) => {
+            const t = setTimeout(() => {
+                reject(new Error(`${label} timed out after ${ms}ms (likely network stall)`));
+            }, ms);
+            p.then((v) => {
+                clearTimeout(t);
+                resolve(v);
+            }, (e) => {
+                clearTimeout(t);
+                reject(e);
+            });
+        });
+    }
+    /**
+     * Optional delay before each tweet/comment attempt. Defaults to a tiny 0–400ms
+     * stagger so posting feels immediate; set X_POST_JITTER_MS_MIN / X_POST_JITTER_MS_MAX
+     * (e.g. 8000 and 25000) if you need stronger anti-burst behavior for your API tier.
+     */
+    getPostAttemptJitterMs() {
+        const parseMs = (v, fallback) => {
+            const n = parseInt(String(v ?? '').trim(), 10);
+            return Number.isFinite(n) && n >= 0 ? n : fallback;
+        };
+        const min = parseMs(process.env.X_POST_JITTER_MS_MIN, 0);
+        const max = parseMs(process.env.X_POST_JITTER_MS_MAX, 50);
+        const lo = Math.min(min, max);
+        const hi = Math.max(min, max);
+        return lo + Math.floor(Math.random() * (hi - lo + 1));
+    }
+    async uploadMedia(client, postDetails) {
+        return (await Promise.all(postDetails.flatMap((p) => p?.media?.flatMap(async (m) => {
+            return {
+                id: await this.runInConcurrent(async () => client.v2.uploadMedia(m.path.indexOf('mp4') > -1
+                    ? Buffer.from(await (0, read_or_fetch_1.readOrFetch)(m.path))
+                    : await (0, sharp_1.default)(await (0, read_or_fetch_1.readOrFetch)(m.path), {
+                        animated: (0, mime_types_1.lookup)(m.path) === 'image/gif',
+                    })
+                        .resize({
+                        width: 1000,
+                    })
+                        .gif()
+                        .toBuffer(), {
+                    media_type: ((0, mime_types_1.lookup)(m.path) || ''),
+                }), true),
+                postId: p.id,
+            };
+        })))).reduce((acc, val) => {
+            if (!val?.id) {
+                return acc;
+            }
+            acc[val.postId] = acc[val.postId] || [];
+            acc[val.postId].push(val.id);
+            return acc;
+        }, {});
+    }
+    normalizeTweetText(text) {
+        return text.replace(/\s+/g, ' ').trim();
+    }
+    async findRecentlyPostedTweet(client, userId, text, startedAt) {
+        const normalizedText = this.normalizeTweetText(text);
+        for (const attempt of [0, 1, 2]) {
+            if (attempt > 0) {
+                await (0, timer_1.timer)(500);
+            }
+            try {
+                const timeline = await client.v2.userTimeline(userId, {
+                    'tweet.fields': ['id', 'text', 'created_at'],
+                    exclude: ['replies', 'retweets'],
+                    max_results: 10,
+                });
+                const recentTweet = timeline.data.data?.find((tweet) => {
+                    if (!tweet?.text || !tweet?.created_at) {
+                        return false;
+                    }
+                    return (this.normalizeTweetText(tweet.text) === normalizedText &&
+                        new Date(tweet.created_at).getTime() >= startedAt - 60000);
+                });
+                if (recentTweet) {
+                    return recentTweet;
+                }
+            }
+            catch (err) {
+                console.error('X POST VERIFICATION ERROR:', err);
+            }
+        }
+        return undefined;
+    }
+    async post(id, accessToken, postDetails) {
+        const startedAt = Date.now();
+        const [firstPost] = postDetails;
+        const maxRetries = 3;
+        // Create the client ONCE for this post. Reusing it across retries keeps the
+        // Node.js HTTP agent connection pool warm: if attempt 1 fails because of
+        // an HTTPS cold-start (fresh TCP handshake, TLS edge case on a datacenter
+        // egress), attempt 2 reuses the now-warmed connection and typically succeeds.
+        // Creating a fresh client per retry would re-introduce the cold-start each time.
+        const client = await this.getClient(accessToken);
+        // Upload media once up front (only matters when media exists). This also
+        // serves as a connection-pool warmup before the tweet call.
+        let uploadAll = {};
+        if (firstPost?.media?.length) {
+            try {
+                uploadAll = await this.uploadMedia(client, [firstPost]);
+            }
+            catch (mediaErr) {
+                console.error('X MEDIA UPLOAD ERROR:', JSON.stringify(mediaErr?.data || mediaErr, null, 2));
+                throw mediaErr;
+            }
+        }
+        const media_ids = (uploadAll[firstPost.id] || []).filter((f) => f);
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                const jitterMs = this.getPostAttemptJitterMs();
+                if (jitterMs > 0) {
+                    console.log(`X POST jitter (attempt ${attempt + 1}/${maxRetries + 1}): ${jitterMs}ms`);
+                }
+                await (0, timer_1.timer)(jitterMs);
+                // @ts-ignore
+                const { data } = await this.runInConcurrent(async () => 
+                // 30-second hard timeout per attempt: aborts hung connections so
+                // the retry loop can run instead of blocking until Temporal's
+                // 10-minute activity timeout.
+                this.withTimeout(
+                // @ts-ignore
+                client.v2.tweet({
+                    ...(!firstPost?.settings?.who_can_reply_post ||
+                        firstPost?.settings?.who_can_reply_post === 'everyone'
+                        ? {}
+                        : {
+                            reply_settings: firstPost?.settings?.who_can_reply_post,
+                        }),
+                    ...(firstPost?.settings?.community
+                        ? {
+                            share_with_followers: true,
+                            community_id: firstPost?.settings?.community?.split('/').pop() || '',
+                        }
+                        : {}),
+                    text: firstPost.message,
+                    ...(media_ids.length ? { media: { media_ids } } : {}),
+                    made_with_ai: !!firstPost?.settings?.made_with_ai,
+                    paid_partnership: !!firstPost?.settings?.paid_partnership,
+                }), 30000, 'X tweet'));
+                return [
+                    {
+                        postId: data.id,
+                        id: firstPost.id,
+                        releaseURL: `https://twitter.com/i/web/status/${data.id}`,
+                        status: 'posted',
+                    },
+                ];
+            }
+            catch (err) {
+                const errMsg = err?.message || err?.cause?.message || '';
+                const rawData = err?.data || {};
+                const rawString = JSON.stringify(rawData);
+                const errCode = err?.code || err?.cause?.code || '';
+                const errStatus = err?.status || err?.cause?.status || rawData?.status || '';
+                // Always log the raw error on every attempt so we can see what X actually
+                // returned, regardless of how it gets classified below. Without this, a
+                // failure path that doesn't match the keyword checks below disappears
+                // silently from logs.
+                console.warn(`X POST: attempt ${attempt + 1}/${maxRetries + 1} failed. ` +
+                    `errMsg="${errMsg}" errCode="${errCode}" errStatus="${errStatus}" ` +
+                    `rawData=${rawString}`);
+                // Broaden the retry condition: anything that smells like 401/403/auth
+                // failure, network hiccup, or unspecified about:blank from X is treated
+                // as transient. Datacenter-to-X connections occasionally produce these
+                // even on valid tokens; retrying with a fresh client (after jitter) is
+                // the most reliable mitigation.
+                const isTransient = errMsg.includes('Unauthorized') ||
+                    errMsg.includes('401') ||
+                    errMsg.includes('403') ||
+                    errMsg.includes('32') ||
+                    errMsg.includes('about:blank') ||
+                    errMsg.includes('socket hang up') ||
+                    errMsg.includes('ETIMEDOUT') ||
+                    errMsg.includes('ECONNRESET') ||
+                    errMsg.includes('ENOTFOUND') ||
+                    errMsg.includes('timed out') ||
+                    errMsg.includes('network stall') ||
+                    rawString.includes('Unauthorized') ||
+                    rawString.includes('about:blank') ||
+                    rawString.includes('Could not authenticate you') ||
+                    errStatus === 401 ||
+                    errStatus === 403 ||
+                    errStatus === 429;
+                if (isTransient && attempt < maxRetries) {
+                    const waitTime = (15 + attempt * 15) * 1000;
+                    console.warn(`X POST: Transient error on attempt ${attempt + 1}/${maxRetries + 1}. ` +
+                        `Retrying in ${waitTime / 1000}s (reusing same client to keep connection pool warm)...`);
+                    await (0, timer_1.timer)(waitTime);
+                    continue;
+                }
+                // On final attempt, check if the tweet was actually posted
+                if (client && firstPost) {
+                    const recentTweet = await this.findRecentlyPostedTweet(client, id, firstPost.message || '', startedAt);
+                    if (recentTweet) {
+                        return [
+                            {
+                                postId: recentTweet.id,
+                                id: firstPost.id,
+                                releaseURL: `https://twitter.com/i/web/status/${recentTweet.id}`,
+                                status: 'posted',
+                            },
+                        ];
+                    }
+                }
+                console.error('X POST FINAL ERROR:', JSON.stringify(err?.data || err, null, 2));
+                throw err;
+            }
+        }
+        // Should never reach here, but just in case
+        throw new Error('X POST: Max retries exceeded');
+    }
+    async comment(id, postId, lastCommentId, accessToken, postDetails, integration) {
+        const startedAt = Date.now();
+        const [commentPost] = postDetails;
+        const maxRetries = 3;
+        // Create the client ONCE for this comment. Reusing it across retries keeps
+        // the HTTP connection pool warm so attempt-2 doesn't repeat the cold-start
+        // failure attempt-1 may have hit.
+        const client = await this.getClient(accessToken);
+        // Upload media once up front (only matters when media exists).
+        let uploadAll = {};
+        if (commentPost?.media?.length) {
+            uploadAll = await this.uploadMedia(client, [commentPost]);
+        }
+        const media_ids = (uploadAll[commentPost.id] || []).filter((f) => f);
+        const replyToId = lastCommentId || postId;
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                const jitterMs = this.getPostAttemptJitterMs();
+                if (jitterMs > 0) {
+                    console.log(`X COMMENT jitter (attempt ${attempt + 1}/${maxRetries + 1}): ${jitterMs}ms`);
+                }
+                await (0, timer_1.timer)(jitterMs);
+                // @ts-ignore
+                const { data } = await this.runInConcurrent(async () => this.withTimeout(
+                // @ts-ignore
+                client.v2.tweet({
+                    text: commentPost.message,
+                    ...(media_ids.length ? { media: { media_ids } } : {}),
+                    reply: { in_reply_to_tweet_id: replyToId },
+                    made_with_ai: !!commentPost?.settings?.made_with_ai,
+                    paid_partnership: !!commentPost?.settings?.paid_partnership,
+                }), 30000, 'X comment tweet'));
+                return [
+                    {
+                        postId: data.id,
+                        id: commentPost.id,
+                        releaseURL: `https://twitter.com/i/web/status/${data.id}`,
+                        status: 'posted',
+                    },
+                ];
+            }
+            catch (err) {
+                const errMsg = err?.message || err?.cause?.message || '';
+                const rawData = err?.data || {};
+                const rawString = JSON.stringify(rawData);
+                const errCode = err?.code || err?.cause?.code || '';
+                const errStatus = err?.status || err?.cause?.status || rawData?.status || '';
+                console.warn(`X COMMENT: attempt ${attempt + 1}/${maxRetries + 1} failed. ` +
+                    `errMsg="${errMsg}" errCode="${errCode}" errStatus="${errStatus}" ` +
+                    `rawData=${rawString}`);
+                const isTransient = errMsg.includes('Unauthorized') ||
+                    errMsg.includes('401') ||
+                    errMsg.includes('403') ||
+                    errMsg.includes('32') ||
+                    errMsg.includes('about:blank') ||
+                    errMsg.includes('socket hang up') ||
+                    errMsg.includes('ETIMEDOUT') ||
+                    errMsg.includes('ECONNRESET') ||
+                    errMsg.includes('ENOTFOUND') ||
+                    errMsg.includes('timed out') ||
+                    errMsg.includes('network stall') ||
+                    rawString.includes('Unauthorized') ||
+                    rawString.includes('about:blank') ||
+                    rawString.includes('Could not authenticate you') ||
+                    errStatus === 401 ||
+                    errStatus === 403 ||
+                    errStatus === 429;
+                if (isTransient && attempt < maxRetries) {
+                    const waitTime = (15 + attempt * 15) * 1000;
+                    console.warn(`X COMMENT: Transient error on attempt ${attempt + 1}/${maxRetries + 1}. ` +
+                        `Retrying in ${waitTime / 1000}s (reusing same client to keep connection pool warm)...`);
+                    await (0, timer_1.timer)(waitTime);
+                    continue;
+                }
+                if (client && commentPost) {
+                    const recentTweet = await this.findRecentlyPostedTweet(client, id, commentPost.message || '', startedAt);
+                    if (recentTweet) {
+                        return [
+                            {
+                                postId: recentTweet.id,
+                                id: commentPost.id,
+                                releaseURL: `https://twitter.com/i/web/status/${recentTweet.id}`,
+                                status: 'posted',
+                            },
+                        ];
+                    }
+                }
+                console.error('X COMMENT ERROR:', JSON.stringify(err?.data || err, null, 2));
+                throw err;
+            }
+        }
+        // Unreachable in practice (the loop above either returns or throws), but
+        // satisfies TypeScript's all-paths-return check.
+        throw new Error('X COMMENT: Max retries exceeded');
+    }
+    async analytics(id, accessToken, date) {
+        if (process.env.DISABLE_X_ANALYTICS) {
+            return [];
+        }
+        const until = (0, dayjs_1.default)().endOf('day');
+        const since = (0, dayjs_1.default)().subtract(date > 100 ? 100 : date, 'day');
+        const [accessTokenSplit, accessSecretSplit] = accessToken.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        try {
+            const tweets = (0, lodash_1.uniqBy)(await this.loadAllTweets(client, id, until.format('YYYY-MM-DDTHH:mm:ssZ'), since.format('YYYY-MM-DDTHH:mm:ssZ')), (p) => p.id);
+            if (tweets.length === 0) {
+                return [];
+            }
+            const data = await client.v2.tweets(tweets.map((p) => p.id), {
+                'tweet.fields': ['public_metrics'],
+            });
+            const metrics = data.data.reduce((all, current) => {
+                all.impression_count =
+                    (all.impression_count || 0) +
+                        +current.public_metrics.impression_count;
+                all.bookmark_count =
+                    (all.bookmark_count || 0) + +current.public_metrics.bookmark_count;
+                all.like_count =
+                    (all.like_count || 0) + +current.public_metrics.like_count;
+                all.quote_count =
+                    (all.quote_count || 0) + +current.public_metrics.quote_count;
+                all.reply_count =
+                    (all.reply_count || 0) + +current.public_metrics.reply_count;
+                all.retweet_count =
+                    (all.retweet_count || 0) + +current.public_metrics.retweet_count;
+                return all;
+            }, {
+                impression_count: 0,
+                bookmark_count: 0,
+                like_count: 0,
+                quote_count: 0,
+                reply_count: 0,
+                retweet_count: 0,
+            });
+            return Object.entries(metrics).map(([key, value]) => ({
+                label: key.replace('_count', '').replace('_', ' ').toUpperCase(),
+                percentageChange: 5,
+                data: [
+                    {
+                        total: String(0),
+                        date: since.format('YYYY-MM-DD'),
+                    },
+                    {
+                        total: String(value),
+                        date: until.format('YYYY-MM-DD'),
+                    },
+                ],
+            }));
+        }
+        catch (err) {
+            console.log(err);
+        }
+        return [];
+    }
+    async postAnalytics(integrationId, accessToken, postId, date) {
+        if (process.env.DISABLE_X_ANALYTICS) {
+            return [];
+        }
+        const today = (0, dayjs_1.default)().format('YYYY-MM-DD');
+        const [accessTokenSplit, accessSecretSplit] = accessToken.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        try {
+            // Fetch the specific tweet with public metrics
+            const tweet = await client.v2.singleTweet(postId, {
+                'tweet.fields': ['public_metrics', 'created_at'],
+            });
+            if (!tweet?.data?.public_metrics) {
+                return [];
+            }
+            const metrics = tweet.data.public_metrics;
+            const result = [];
+            if (metrics.impression_count !== undefined) {
+                result.push({
+                    label: 'Impressions',
+                    percentageChange: 0,
+                    data: [{ total: String(metrics.impression_count), date: today }],
+                });
+            }
+            if (metrics.like_count !== undefined) {
+                result.push({
+                    label: 'Likes',
+                    percentageChange: 0,
+                    data: [{ total: String(metrics.like_count), date: today }],
+                });
+            }
+            if (metrics.retweet_count !== undefined) {
+                result.push({
+                    label: 'Retweets',
+                    percentageChange: 0,
+                    data: [{ total: String(metrics.retweet_count), date: today }],
+                });
+            }
+            if (metrics.reply_count !== undefined) {
+                result.push({
+                    label: 'Replies',
+                    percentageChange: 0,
+                    data: [{ total: String(metrics.reply_count), date: today }],
+                });
+            }
+            if (metrics.quote_count !== undefined) {
+                result.push({
+                    label: 'Quotes',
+                    percentageChange: 0,
+                    data: [{ total: String(metrics.quote_count), date: today }],
+                });
+            }
+            if (metrics.bookmark_count !== undefined) {
+                result.push({
+                    label: 'Bookmarks',
+                    percentageChange: 0,
+                    data: [{ total: String(metrics.bookmark_count), date: today }],
+                });
+            }
+            return result;
+        }
+        catch (err) {
+            console.log('Error fetching X post analytics:', err);
+        }
+        return [];
+    }
+    /**
+     * Resolve a published tweet for dashboard "attach automations" flow.
+     * Ensures the tweet exists and belongs to the connected account.
+     */
+    async lookupPublishedTweet(accessToken, tweetId, expectedAuthorId) {
+        const [accessTokenSplit, accessSecretSplit] = accessToken.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        const tweet = await client.v2.singleTweet(tweetId, {
+            'tweet.fields': ['created_at', 'author_id', 'text'],
+        });
+        const data = tweet?.data;
+        if (!data?.id) {
+            throw new Error('Tweet not found or not accessible with this X account');
+        }
+        if (String(data.author_id) !== String(expectedAuthorId)) {
+            throw new Error('This tweet was not posted by the selected connected X account');
+        }
+        return {
+            text: (data.text || '').trim(),
+            createdAt: data.created_at,
+        };
+    }
+    /**
+     * Batch-fetch public_metrics for tweet IDs (dashboard queue). Up to 100 ids
+     * per X API request. OAuth user context; each connected account has its own limits.
+     */
+    async batchTweetPublicMetrics(accessToken, tweetIds) {
+        const out = new Map();
+        if (process.env.DISABLE_X_ANALYTICS) {
+            return out;
+        }
+        const uniq = [...new Set((tweetIds || []).filter(Boolean))];
+        if (!uniq.length) {
+            return out;
+        }
+        const client = await this.getClient(accessToken);
+        const CHUNK = 100;
+        try {
+            for (let i = 0; i < uniq.length; i += CHUNK) {
+                const slice = uniq.slice(i, i + CHUNK);
+                const res = await client.v2.tweets(slice, {
+                    'tweet.fields': ['public_metrics'],
+                });
+                for (const tw of res.data || []) {
+                    const pm = tw.public_metrics;
+                    if (!pm)
+                        continue;
+                    out.set(tw.id, {
+                        likeCount: Math.max(0, Number(pm.like_count) || 0),
+                        retweetCount: Math.max(0, Number(pm.retweet_count) || 0),
+                        replyCount: Math.max(0, Number(pm.reply_count) || 0),
+                    });
+                }
+            }
+        }
+        catch (err) {
+            console.warn('batchTweetPublicMetrics:', err);
+        }
+        return out;
+    }
+    async mention(token, d) {
+        const [accessTokenSplit, accessSecretSplit] = token.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        try {
+            const data = await client.v2.userByUsername(d.query, {
+                'user.fields': ['username', 'name', 'profile_image_url'],
+            });
+            if (!data?.data?.username) {
+                return [];
+            }
+            return [
+                {
+                    id: data.data.username,
+                    image: data.data.profile_image_url,
+                    label: data.data.name,
+                },
+            ];
+        }
+        catch (err) {
+            console.log(err);
+        }
+        return [];
+    }
+    /**
+     * Account Activity webhook: DM a single engager (like / RT / reply) for one tweet.
+     */
+    async webhookDmEngager(integration, tweetId, engagerUserId, eventType, fields, postSettings, plugContext) {
+        const engagerId = this.normalizeXSnowflakeId(engagerUserId);
+        const ownerId = this.normalizeXSnowflakeId(integration.internalId);
+        if (!engagerId || (ownerId && engagerId === ownerId)) {
+            return false;
+        }
+        if (postSettings?.auto_dm_enabled === false) {
+            return false;
+        }
+        const truthy = (v) => v === true || v === 'true' || v === 1 || v === '1';
+        const postTargets = postSettings?.auto_dm_targets || {};
+        const targetLikes = postTargets.likes !== undefined
+            ? truthy(postTargets.likes)
+            : truthy(fields.targetLikes);
+        const targetRetweets = postTargets.retweets !== undefined
+            ? truthy(postTargets.retweets)
+            : truthy(fields.targetRetweets);
+        const targetReplies = postTargets.replies !== undefined
+            ? truthy(postTargets.replies)
+            : truthy(fields.targetReplies);
+        const noTargetsExplicit = !targetLikes && !targetRetweets && !targetReplies;
+        const effectiveTargetLikes = noTargetsExplicit ? true : targetLikes;
+        const effectiveTargetRetweets = noTargetsExplicit ? false : targetRetweets;
+        const effectiveTargetReplies = noTargetsExplicit ? false : targetReplies;
+        const enabled = (eventType === 'like' && effectiveTargetLikes) ||
+            (eventType === 'retweet' && effectiveTargetRetweets) ||
+            (eventType === 'reply' && effectiveTargetReplies);
+        if (!enabled) {
+            console.log(`X AUTO DM: skip ${eventType} for user ${engagerUserId} on tweet ${tweetId} (target disabled in post/plug settings)`);
+            return false;
+        }
+        const rawMessage = (typeof postSettings?.auto_dm_message === 'string' &&
+            postSettings.auto_dm_message.trim() !== ''
+            ? postSettings.auto_dm_message
+            : fields.message) || '';
+        const dmText = (0, strip_html_validation_1.stripHtmlValidation)('normal', rawMessage, true);
+        if (!dmText.trim()) {
+            return false;
+        }
+        if (plugContext?.loadDmdUserIds) {
+            try {
+                const alreadyDmd = await plugContext.loadDmdUserIds([engagerUserId]);
+                if (alreadyDmd.has(engagerUserId)) {
+                    console.log(`X AUTO DM: skip ${eventType} for user ${engagerUserId} on tweet ${tweetId} (already DM'd)`);
+                    return false;
+                }
+            }
+            catch (err) {
+                console.warn('X AUTO DM: failed to check already-DMd user before realtime send:', err);
+            }
+        }
+        const reserved = await this.reserveAutoDmSend(integration.id, tweetId, engagerId);
+        if (!reserved) {
+            console.log(`X AUTO DM: skip ${eventType} for user ${engagerId} on tweet ${tweetId} (duplicate in-flight or already sent)`);
+            return false;
+        }
+        const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        try {
+            const sent = await this.sendDmWithBatchGate(integration, client, engagerUserId, dmText, plugContext, (0, x_account_activity_env_1.getXWebhookDmDelayMs)(), { realtime: true });
+            if (sent) {
+                await this.confirmAutoDmSend(integration.id, tweetId, engagerId);
+                if (plugContext?.saveDmdUserIds) {
+                    await plugContext.saveDmdUserIds([engagerUserId]);
+                }
+            }
+            else {
+                await this.releaseAutoDmReservation(integration.id, tweetId, engagerId);
+                console.warn(`X AUTO DM: realtime ${eventType} DM to ${engagerUserId} on tweet ${tweetId} was not sent (X API or batch gate)`);
+            }
+            return sent;
+        }
+        catch (err) {
+            await this.releaseAutoDmReservation(integration.id, tweetId, engagerId);
+            throw err;
+        }
+    }
+    /** Account Activity: DM engagers on the account's pinned tweet only. */
+    async webhookPinnedPostDm(integration, pinnedTweetId, engagerUserId, eventType, fields, plugContext) {
+        if (!engagerUserId || engagerUserId === integration.internalId) {
+            return false;
+        }
+        const enabled = (eventType === 'like' && this.truthyPlugField(fields.targetLike)) ||
+            (eventType === 'retweet' && this.truthyPlugField(fields.targetRepost)) ||
+            (eventType === 'reply' && this.truthyPlugField(fields.targetReply));
+        if (!enabled)
+            return false;
+        const dmText = (0, strip_html_validation_1.stripHtmlValidation)('normal', (fields.message || '').replace(/\[tweet\]/gi, `https://twitter.com/i/web/status/${pinnedTweetId}`), true);
+        if (!dmText.trim())
+            return false;
+        const client = this.buildClientForIntegration(integration);
+        const sent = await this.sendDmWithBatchGate(integration, client, engagerUserId, dmText, plugContext, (0, x_account_activity_env_1.getXWebhookDmDelayMs)(), { realtime: true });
+        if (sent && plugContext?.saveDmdUserIds) {
+            await plugContext.saveDmdUserIds([engagerUserId]);
+        }
+        return sent;
+    }
+    /**
+     * Account Activity webhook: welcome DM for one new follower (no full-list poll).
+     */
+    async webhookDmFollower(integration, followerUserId, fields, postSettings, plugContext) {
+        if (postSettings?.auto_dm_followers_enabled === false) {
+            return false;
+        }
+        const ownerId = integration.internalId;
+        if (!ownerId || !followerUserId || followerUserId === ownerId) {
+            return false;
+        }
+        if (!plugContext) {
+            return false;
+        }
+        if (plugContext.removeFollowerTracking) {
+            await plugContext.removeFollowerTracking([followerUserId]);
+        }
+        const baselineDone = await plugContext.hasFollowerBaselineMarker();
+        if (!baselineDone) {
+            await plugContext.setFollowerBaselineMarker();
+            await plugContext.saveFollowerSnapshotIds([followerUserId]);
+            return false;
+        }
+        const rawMessage = (typeof postSettings?.auto_dm_followers_message === 'string' &&
+            postSettings.auto_dm_followers_message.trim() !== ''
+            ? postSettings.auto_dm_followers_message
+            : fields.message) || '';
+        const dmText = (0, strip_html_validation_1.stripHtmlValidation)('normal', rawMessage, true);
+        if (!dmText.trim()) {
+            return false;
+        }
+        const alreadyWelcomed = await plugContext.loadFollowerSnapshotContains([followerUserId]);
+        if (alreadyWelcomed.has(followerUserId)) {
+            console.log(`X AUTO DM FOLLOWERS: skip welcome DM to ${followerUserId} (already sent)`);
+            return false;
+        }
+        const alreadyDmd = await plugContext.loadDmdUserIds([followerUserId]);
+        if (alreadyDmd.has(followerUserId)) {
+            console.log(`X AUTO DM FOLLOWERS: skip welcome DM to ${followerUserId} (already recorded)`);
+            return false;
+        }
+        const followerId = this.normalizeXSnowflakeId(followerUserId);
+        if (!followerId) {
+            return false;
+        }
+        const followScope = '__follow__';
+        const reserved = await this.reserveAutoDmSend(integration.id, followScope, followerId);
+        if (!reserved) {
+            console.log(`X AUTO DM FOLLOWERS: skip welcome DM to ${followerId} (duplicate in-flight or already sent)`);
+            return false;
+        }
+        const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        try {
+            const sent = await this.sendDmWithBatchGate(integration, client, followerUserId, dmText, plugContext, (0, x_account_activity_env_1.getXWebhookDmDelayMs)(), { realtime: true });
+            if (sent) {
+                await this.confirmAutoDmSend(integration.id, followScope, followerId);
+                await plugContext.saveFollowerSnapshotIds([followerUserId]);
+                await plugContext.saveDmdUserIds([followerUserId]);
+                console.log(`X AUTO DM FOLLOWERS: realtime welcome DM to ${followerUserId} (@${integration.profile})`);
+            }
+            else {
+                await this.releaseAutoDmReservation(integration.id, followScope, followerId);
+            }
+            return sent;
+        }
+        catch (err) {
+            await this.releaseAutoDmReservation(integration.id, followScope, followerId);
+            throw err;
+        }
+    }
+    /**
+     * Account Activity webhook: when a like arrives, run threshold-based plugs once.
+     */
+    async webhookRunLikeThresholdPlugs(integration, tweetId, plugs, postSettings, plugContext) {
+        const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+        const client = this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+        let likeCount = 0;
+        try {
+            const tw = await client.v2.singleTweet(tweetId, {
+                'tweet.fields': ['public_metrics'],
+            });
+            likeCount = Math.max(0, Number(tw?.data?.public_metrics?.like_count) || 0);
+        }
+        catch (err) {
+            console.error('X WEBHOOK: failed to read tweet metrics:', err);
+            return;
+        }
+        if (plugs.autoRepostPost && postSettings?.auto_retweet_enabled !== false) {
+            const threshold = Number(postSettings?.auto_retweet_like_threshold ??
+                plugs.autoRepostPost.likesAmount ??
+                0);
+            if (likeCount >= threshold) {
+                try {
+                    await (0, timer_1.timer)(1000);
+                    await client.v2.retweet(integration.internalId, tweetId);
+                }
+                catch (err) {
+                    console.error('X WEBHOOK AUTO REPOST:', err);
+                }
+            }
+        }
+        if (plugs.autoPlugPost) {
+            const threshold = Number(plugs.autoPlugPost.likesAmount ?? 0);
+            if (likeCount >= threshold) {
+                const text = (0, strip_html_validation_1.stripHtmlValidation)('normal', plugs.autoPlugPost.post, true);
+                if (text) {
+                    try {
+                        await (0, timer_1.timer)(1000);
+                        await client.v2.tweet({
+                            text,
+                            reply: { in_reply_to_tweet_id: tweetId },
+                        });
+                    }
+                    catch (err) {
+                        console.error('X WEBHOOK AUTO PLUG REPLY:', err);
+                    }
+                }
+            }
+        }
+        if (plugs.autoThreadReply &&
+            postSettings?.auto_thread_reply_enabled !== false) {
+            const threshold = Number(postSettings?.auto_thread_reply_likes ??
+                plugs.autoThreadReply.likesAmount ??
+                0);
+            if (likeCount < threshold) {
+                return;
+            }
+            const doneMarker = 'thread_posted_v1';
+            if (plugContext?.loadDmdUserIds) {
+                const existing = await plugContext.loadDmdUserIds([doneMarker]);
+                if (existing.has(doneMarker)) {
+                    return;
+                }
+            }
+            const rawThreadInput = typeof postSettings?.auto_thread_reply_text === 'string' &&
+                postSettings.auto_thread_reply_text.trim() !== ''
+                ? postSettings.auto_thread_reply_text
+                : plugs.autoThreadReply.thread || '';
+            const rawText = (0, strip_html_validation_1.stripHtmlValidation)('normal', rawThreadInput, true);
+            const parts = rawText
+                .split(/\n\s*\n\s*\n+/)
+                .map((s) => s.trim())
+                .filter(Boolean);
+            if (parts.length === 0) {
+                return;
+            }
+            let parentTweetId = tweetId;
+            try {
+                for (const part of parts) {
+                    await (0, timer_1.timer)(2000);
+                    const created = await client.v2.tweet({
+                        text: part,
+                        reply: { in_reply_to_tweet_id: parentTweetId },
+                    });
+                    parentTweetId = created?.data?.id || parentTweetId;
+                }
+                if (plugContext?.saveDmdUserIds) {
+                    await plugContext.saveDmdUserIds([doneMarker]);
+                }
+            }
+            catch (err) {
+                console.error('X WEBHOOK AUTO THREAD REPLY:', err);
+            }
+        }
+    }
+    mentionFormat(idOrHandle, name) {
+        return `@${idOrHandle}`;
+    }
+    clientForIntegration(integration) {
+        const [accessTokenSplit, accessSecretSplit] = integration.token.split(':');
+        return this.buildTwitterApi({
+            appKey: process.env.X_API_KEY,
+            appSecret: process.env.X_API_SECRET,
+            accessToken: accessTokenSplit,
+            accessSecret: accessSecretSplit,
+        });
+    }
+    /** Resolve an X user by @handle for follow automations search. */
+    async resolveUserByUsername(integration, username) {
+        const handle = String(username || '')
+            .trim()
+            .replace(/^@+/, '');
+        if (!handle) {
+            throw new Error('Enter a username');
+        }
+        const client = this.clientForIntegration(integration);
+        const lookup = await client.v2.userByUsername(handle, {
+            'user.fields': ['profile_image_url', 'name', 'username'],
+        });
+        const u = lookup?.data;
+        if (!u?.id) {
+            throw new Error(`User @${handle} not found`);
+        }
+        return {
+            id: String(u.id),
+            name: u.name || handle,
+            username: u.username || handle,
+            picture: u.profile_image_url || undefined,
+        };
+    }
+    mapFollowListUser(u, myFollowingIds) {
+        const id = String(u.id);
+        const metrics = u.public_metrics;
+        return {
+            id,
+            name: u.name || u.username || id,
+            username: u.username || '',
+            picture: u.profile_image_url || undefined,
+            alreadyFollowing: myFollowingIds.has(id),
+            ...(metrics
+                ? {
+                    publicMetrics: {
+                        followersCount: metrics.followers_count ?? 0,
+                        followingCount: metrics.following_count ?? 0,
+                        tweetCount: metrics.tweet_count ?? 0,
+                        listedCount: metrics.listed_count,
+                    },
+                }
+                : {}),
+            createdAt: u.created_at,
+            verified: u.verified === true,
+            protected: u.protected === true,
+            location: typeof u.location === 'string' ? u.location : undefined,
+            description: typeof u.description === 'string' ? u.description : undefined,
+        };
+    }
+    async resolveSubjectMeta(client, subjectId, integration) {
+        const fallback = {
+            id: subjectId,
+            name: integration.name || '',
+            username: integration.profile || '',
+            picture: integration.picture || undefined,
+        };
+        try {
+            const lookup = await client.v2.user(subjectId, {
+                'user.fields': [...this.subjectUserFields],
+            });
+            const u = lookup?.data;
+            if (!u?.id) {
+                return fallback;
+            }
+            const metrics = u.public_metrics;
+            return {
+                id: String(u.id),
+                name: u.name || fallback.name,
+                username: u.username || fallback.username,
+                picture: u.profile_image_url || fallback.picture,
+                ...(metrics
+                    ? {
+                        publicMetrics: {
+                            followersCount: metrics.followers_count ?? 0,
+                            followingCount: metrics.following_count ?? 0,
+                            tweetCount: metrics.tweet_count ?? 0,
+                            listedCount: metrics.listed_count,
+                        },
+                    }
+                    : {}),
+            };
+        }
+        catch (err) {
+            console.warn('X resolveSubjectMeta:', err);
+            return fallback;
+        }
+    }
+    /** Follow automations: paginated follower list for any X user id. */
+    async listFollowersPage(integration, subjectUserId, paginationToken) {
+        const client = this.clientForIntegration(integration);
+        const subjectId = String(subjectUserId || integration.internalId);
+        const subjectMeta = await this.resolveSubjectMeta(client, subjectId, integration);
+        const res = await client.v2.followers(subjectId, {
+            max_results: 100,
+            ...(paginationToken ? { pagination_token: paginationToken } : {}),
+            'user.fields': [...this.followListUserFields],
+        });
+        const myFollowingIds = await this.getMyFollowingIdSet(integration, client);
+        const users = (res?.data || []).map((u) => this.mapFollowListUser(u, myFollowingIds));
+        return {
+            listType: 'followers',
+            subject: subjectMeta,
+            users,
+            nextToken: res?.meta?.next_token || undefined,
+        };
+    }
+    /** Paginated accounts the subject user follows (use for unfollow cleanup on your profile). */
+    async listFollowingPage(integration, subjectUserId, paginationToken) {
+        const client = this.clientForIntegration(integration);
+        const subjectId = String(subjectUserId || integration.internalId);
+        const subjectMeta = await this.resolveSubjectMeta(client, subjectId, integration);
+        const res = await client.v2.following(subjectId, {
+            max_results: 100,
+            ...(paginationToken ? { pagination_token: paginationToken } : {}),
+            'user.fields': [...this.followListUserFields],
+        });
+        const myFollowingIds = await this.getMyFollowingIdSet(integration, client);
+        const users = (res?.data || []).map((u) => {
+            const mapped = this.mapFollowListUser(u, myFollowingIds);
+            return {
+                ...mapped,
+                alreadyFollowing: subjectId === integration.internalId ? true : mapped.alreadyFollowing,
+            };
+        });
+        return {
+            listType: 'following',
+            subject: subjectMeta,
+            users,
+            nextToken: res?.meta?.next_token || undefined,
+        };
+    }
+    /** Follow target accounts as the connected integration (rate-limited batch). */
+    async followUsers(integration, targetUserIds) {
+        const ownerId = integration.internalId;
+        if (!ownerId) {
+            return { succeeded: [], failed: [{ id: '', error: 'Missing channel id' }] };
+        }
+        const client = this.clientForIntegration(integration);
+        const unique = [
+            ...new Set((targetUserIds || [])
+                .map((id) => String(id).trim())
+                .filter((id) => id && id !== ownerId)),
+        ].slice(0, 25);
+        const succeeded = [];
+        const failed = [];
+        for (const targetId of unique) {
+            try {
+                await (0, timer_1.timer)(1200);
+                await client.v2.follow(ownerId, targetId);
+                succeeded.push(targetId);
+                this.markMyFollowingIds(integration.id, [targetId]);
+            }
+            catch (err) {
+                const msg = err?.data?.detail ||
+                    err?.data?.title ||
+                    err?.message ||
+                    'Follow failed';
+                failed.push({ id: targetId, error: String(msg) });
+            }
+        }
+        return { succeeded, failed };
+    }
+    /** Unfollow target accounts as the connected integration (rate-limited batch). */
+    async unfollowUsers(integration, targetUserIds) {
+        const ownerId = integration.internalId;
+        if (!ownerId) {
+            return { succeeded: [], failed: [{ id: '', error: 'Missing channel id' }] };
+        }
+        const client = this.clientForIntegration(integration);
+        const unique = [
+            ...new Set((targetUserIds || [])
+                .map((id) => String(id).trim())
+                .filter((id) => id && id !== ownerId)),
+        ].slice(0, 25);
+        const succeeded = [];
+        const failed = [];
+        for (const targetId of unique) {
+            try {
+                await (0, timer_1.timer)(1200);
+                await client.v2.unfollow(ownerId, targetId);
+                succeeded.push(targetId);
+                this.unmarkMyFollowingIds(integration.id, [targetId]);
+            }
+            catch (err) {
+                const msg = err?.data?.detail ||
+                    err?.data?.title ||
+                    err?.message ||
+                    'Unfollow failed';
+                failed.push({ id: targetId, error: String(msg) });
+            }
+        }
+        return { succeeded, failed };
+    }
+};
+exports.XProvider = XProvider;
+tslib_1.__decorate([
+    (0, plug_decorator_1.Plug)({
+        identifier: 'x-autoRepostPost',
+        title: 'Auto Repost Posts',
+        disabled: !!process.env.DISABLE_X_ANALYTICS,
+        description: 'When a post reached a certain number of likes, repost it to increase engagement (1 week old posts)',
+        // 5 hours between plug runs. Lower values cause the X worker (which has
+        // maxConcurrentJob=1) to be permanently busy with plug calls, queueing
+        // up new post workflows behind the plug backlog. Don't lower this in
+        // production; if you need faster plug testing, do it on local only.
+        runEveryMilliseconds: 30_000,
+        totalRuns: 3,
+        fields: [
+            {
+                name: 'likesAmount',
+                type: 'number',
+                placeholder: 'Amount of likes',
+                description: 'The amount of likes to trigger the repost',
+                validation: /^\d+$/,
+            },
+        ],
+    }),
+    tslib_1.__metadata("design:type", Function),
+    tslib_1.__metadata("design:paramtypes", [Object, String, Object, Object]),
+    tslib_1.__metadata("design:returntype", Promise)
+], XProvider.prototype, "autoRepostPost", null);
+tslib_1.__decorate([
+    (0, post_plug_1.PostPlug)({
+        identifier: 'x-repost-post-users',
+        title: 'Add Re-posters',
+        description: 'Add accounts to repost your post',
+        pickIntegration: ['x'],
+        fields: [],
+    }),
+    tslib_1.__metadata("design:type", Function),
+    tslib_1.__metadata("design:paramtypes", [Object, Object, String, Object]),
+    tslib_1.__metadata("design:returntype", Promise)
+], XProvider.prototype, "repostPostUsers", null);
+tslib_1.__decorate([
+    (0, plug_decorator_1.Plug)({
+        identifier: 'x-autoPlugPost',
+        title: 'Auto Reply (Plug)',
+        disabled: !!process.env.DISABLE_X_ANALYTICS,
+        description: 'When a post reaches a certain number of likes, automatically reply to the original post with your promotional message.',
+        // runEveryMilliseconds: 18000000, // 5 hours
+        runEveryMilliseconds: 30_000,
+        totalRuns: 10,
+        fields: [
+            {
+                name: 'likesAmount',
+                type: 'number',
+                placeholder: 'Amount of likes',
+                description: 'The amount of likes to trigger the repost',
+                validation: /^\d+$/,
+            },
+            {
+                name: 'post',
+                type: 'richtext',
+                placeholder: 'Post to plug',
+                description: 'Message content to plug',
+                validation: /^[\s\S]{3,}$/g,
+            },
+        ],
+    }),
+    tslib_1.__metadata("design:type", Function),
+    tslib_1.__metadata("design:paramtypes", [Object, String, Object]),
+    tslib_1.__metadata("design:returntype", Promise)
+], XProvider.prototype, "autoPlugPost", null);
+tslib_1.__decorate([
+    (0, plug_decorator_1.Plug)({
+        identifier: 'x-autoThreadReply',
+        title: 'Auto plug',
+        disabled: !!process.env.DISABLE_X_ANALYTICS,
+        description: 'When a post reaches a certain number of likes, automatically reply with a full thread (multiple chained tweets). Separate each tweet in the thread with three blank lines — same convention as the composer. The first reply is to the original tweet, each subsequent tweet replies to the previous one.',
+        runEveryMilliseconds: 30_000,
+        totalRuns: 10,
+        fields: [
+            {
+                name: 'likesAmount',
+                type: 'number',
+                placeholder: 'Amount of likes',
+                description: 'The amount of likes required to trigger the thread reply',
+                validation: /^\d+$/,
+            },
+            {
+                name: 'thread',
+                type: 'richtext',
+                placeholder: 'Thread content (separate each tweet with three blank lines)',
+                description: 'The thread to reply with. Use three blank lines between tweets to split them; tweets are posted in order, each as a reply to the previous.',
+                validation: /^[\s\S]{3,}$/g,
+            },
+        ],
+    }),
+    tslib_1.__metadata("design:type", Function),
+    tslib_1.__metadata("design:paramtypes", [Object, String, Object, Object, Object]),
+    tslib_1.__metadata("design:returntype", Promise)
+], XProvider.prototype, "autoThreadReply", null);
+tslib_1.__decorate([
+    (0, plug_decorator_1.Plug)({
+        identifier: 'x-autoDmEngagers',
+        title: 'Direct Message Engagers',
+        disabled: !!process.env.DISABLE_X_ANALYTICS,
+        description: 'Send a Direct Message to anyone who engages with a post — every liker / retweeter / replier (based on the targets you enable) gets a DM the next time the plug runs. There is no minimum engagement count: a single engagement is enough. Each post in the composer chooses its own targets and can override the message below. Recipients must follow you or have open DMs, and X API rate limits apply.',
+        // runEveryMilliseconds: 18000000, // 5 hours
+        runEveryMilliseconds: 30_000,
+        totalRuns: 3,
+        fields: [
+            {
+                name: 'message',
+                type: 'richtext',
+                placeholder: 'Default DM message',
+                description: 'Used when a post does not specify its own DM message. Per-tweet message overrides this.',
+                validation: /^[\s\S]{3,}$/g,
+            },
+        ],
+    }),
+    tslib_1.__metadata("design:type", Function),
+    tslib_1.__metadata("design:paramtypes", [Object, String, Object, Object, Object]),
+    tslib_1.__metadata("design:returntype", Promise)
+], XProvider.prototype, "autoDmEngagers", null);
+tslib_1.__decorate([
+    (0, plug_decorator_1.Plug)({
+        identifier: 'x-autoDmFollowers',
+        title: 'Auto DM New Followers',
+        disabled: !!process.env.DISABLE_X_ANALYTICS,
+        description: 'Runs on its own schedule (no posting required): polls your X followers and sends a welcome DM to new ones. The first run only records your current followers (no DMs) so existing fans are not messaged. Requires DM API access on your X app. Large accounts only scan recent follower pages per run.',
+        // Metadata for Plugs UI; the live poller interval is `pollIntervalMs` on
+        // `xFollowerDmPollerWorkflow` (default 2m, override with X_FOLLOWER_DM_POLL_INTERVAL_MS).
+        runEveryMilliseconds: 30_000,
+        totalRuns: 3,
+        fields: [
+            {
+                name: 'message',
+                type: 'richtext',
+                placeholder: 'Welcome DM for new followers',
+                description: 'Default message when a post does not set its own new-follower DM text.',
+                validation: /^[\s\S]{3,}$/g,
+            },
+        ],
+    }),
+    tslib_1.__metadata("design:type", Function),
+    tslib_1.__metadata("design:paramtypes", [Object, String, Object, Object, Object]),
+    tslib_1.__metadata("design:returntype", Promise)
+], XProvider.prototype, "autoDmFollowers", null);
+tslib_1.__decorate([
+    (0, plug_decorator_1.Plug)({
+        identifier: 'x-autoDeleteProfile',
+        title: 'Auto-Delete',
+        disabled: !!process.env.DISABLE_X_ANALYTICS,
+        description: 'Automatically delete your posts on X based on rules you configure.',
+        runEveryMilliseconds: 30_000,
+        totalRuns: 3,
+        fields: [],
+    }),
+    tslib_1.__metadata("design:type", Function),
+    tslib_1.__metadata("design:paramtypes", [Object, String, Object]),
+    tslib_1.__metadata("design:returntype", Promise)
+], XProvider.prototype, "autoDeleteProfile", null);
+tslib_1.__decorate([
+    (0, plug_decorator_1.Plug)({
+        identifier: 'x-autoDeleteReposts',
+        title: 'Repost Auto-Delete',
+        disabled: !!process.env.DISABLE_X_ANALYTICS,
+        description: 'Delete your reposts (retweets) after a configured number of hours.',
+        runEveryMilliseconds: 30_000,
+        totalRuns: 3,
+        fields: [
+            {
+                name: 'deleteAfterHours',
+                type: 'number',
+                placeholder: '24',
+                description: 'Hours after which reposts are deleted (max 48)',
+                validation: /^\d+$/,
+            },
+        ],
+    }),
+    tslib_1.__metadata("design:type", Function),
+    tslib_1.__metadata("design:paramtypes", [Object, String, Object]),
+    tslib_1.__metadata("design:returntype", Promise)
+], XProvider.prototype, "autoDeleteReposts", null);
+tslib_1.__decorate([
+    (0, plug_decorator_1.Plug)({
+        identifier: 'x-autoDmPinnedPost',
+        title: 'Pinned Post Auto-DM',
+        disabled: !!process.env.DISABLE_X_ANALYTICS,
+        description: 'Send a DM when people interact with your pinned post (like, repost, or reply).',
+        runEveryMilliseconds: 30_000,
+        totalRuns: 3,
+        fields: [
+            {
+                name: 'message',
+                type: 'richtext',
+                placeholder: 'DM message (use [tweet] for the pinned post link)',
+                description: 'Message sent when engagement conditions are met',
+                validation: /^[\s\S]{3,}$/g,
+            },
+        ],
+    }),
+    tslib_1.__metadata("design:type", Function),
+    tslib_1.__metadata("design:paramtypes", [Object, String, Object, Object, Object]),
+    tslib_1.__metadata("design:returntype", Promise)
+], XProvider.prototype, "autoDmPinnedPost", null);
+exports.XProvider = XProvider = tslib_1.__decorate([
+    (0, rules_description_decorator_1.Rules)('X can have maximum 4 pictures, or maximum one video, it can also be without attachments')
+], XProvider);
+/** Human-readable message from twitter-api-v2 / X HTTP errors. */
+function formatXApiErrorMessage(err, fallback = 'X API request failed') {
+    const e = err;
+    const data = e?.data;
+    if (data?.detail)
+        return String(data.detail);
+    if (data?.title)
+        return String(data.title);
+    const errors = data?.errors;
+    if (Array.isArray(errors) && errors.length) {
+        const first = errors[0];
+        if (typeof first === 'string')
+            return first;
+        if (first && typeof first === 'object') {
+            if (first.detail)
+                return String(first.detail);
+            if (first.message)
+                return String(first.message);
+            if (first.title)
+                return String(first.title);
+        }
+    }
+    if (e?.code === 404) {
+        return ('X returned not found (404). The account may not exist, followers/following may not be available for your API tier on that user, or the pagination token expired — try searching again from page 1.');
+    }
+    if (e?.code === 403) {
+        return 'X denied access (403). Your app may lack permission for this endpoint or account.';
+    }
+    return e?.message || fallback;
+}
+//# sourceMappingURL=x.provider.js.map

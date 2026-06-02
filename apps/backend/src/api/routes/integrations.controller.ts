@@ -33,7 +33,10 @@ import {
 import { uniqBy } from 'lodash';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { XMassFollowDto } from '@gitroom/nestjs-libraries/dtos/integrations/x-mass-follow.dto';
-import { XFollowQueueEnqueueDto } from '@gitroom/nestjs-libraries/dtos/integrations/x-follow-queue.dto';
+import {
+  XFollowQueueClearItemsDto,
+  XFollowQueueEnqueueDto,
+} from '@gitroom/nestjs-libraries/dtos/integrations/x-follow-queue.dto';
 
 function integrationPictureForClient(
   stored: string | null | undefined
@@ -295,7 +298,8 @@ export class IntegrationsController {
     return this._integrationService.enqueueXFollowQueue(
       org.id,
       id,
-      body.entries
+      body.entries,
+      { processFirstBatch: body.processFirstBatch }
     );
   }
 
@@ -320,6 +324,29 @@ export class IntegrationsController {
     @Param('id') id: string
   ) {
     return this._integrationService.clearXFollowQueueCompleted(org.id, id);
+  }
+
+  @Post('/:id/x-follow-queue/resume')
+  @CheckPolicies([AuthorizationActions.Update, Sections.CHANNEL])
+  async resumeXFollowQueueAfterCredits(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string
+  ) {
+    return this._integrationService.resumeXFollowQueueAfterCredits(org.id, id);
+  }
+
+  @Post('/:id/x-follow-queue/clear-items')
+  @CheckPolicies([AuthorizationActions.Update, Sections.CHANNEL])
+  async clearXFollowQueueItems(
+    @GetOrgFromRequest() org: Organization,
+    @Param('id') id: string,
+    @Body() body: XFollowQueueClearItemsDto
+  ) {
+    return this._integrationService.clearXFollowQueueItems(
+      org.id,
+      id,
+      body.itemIds
+    );
   }
 
   @Get('/:id')
